@@ -605,21 +605,15 @@ impl Server {
             .arg(port.to_string())
             .arg("--hostname")
             .arg("127.0.0.1")
+            // 2.x prefers OPENCODE_PASSWORD over the legacy name; a user's
+            // own value would otherwise lock us out of our server (401).
+            .env("OPENCODE_PASSWORD", &password)
             .env("OPENCODE_SERVER_PASSWORD", &password)
             .env("OPENCODE_CLIENT", "zeron");
         if let Some(mcp) = mcp {
-            let version_exe = exe.to_path_buf();
-            let version = tokio::task::spawn_blocking(move || {
-                crate::executable::binary_version(&version_exe)
-            })
-            .await
-            .ok()
-            .flatten();
-            // The config shape differs by generation, so an unknown version
-            // skips the Zeron MCP server rather than failing the run. The
-            // probe's result is cached per binary: one slow `--version` used
-            // to fail every later run until restart.
-            match version {
+            // The config shape differs by generation. If even the cold probe
+            // can't tell, run without the Zeron MCP server rather than fail.
+            match opencode_version(exe).await {
                 Some(version) => {
                     let protocol = if version.major >= 2 {
                         Protocol::V2
@@ -4242,6 +4236,46 @@ mod context_tests {
     }
 }
 
+/// Budget for a `--version` the shared probe gave up on: a freshly installed
+/// binary's first exec waits on the OS malware scan (1.1s on an M-series Mac
+/// for 2.0.20, longer on slower machines and under Windows Defender).
+const COLD_VERSION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The shared probe caps `--version` at 2s and caches a timeout for the
+/// binary's lifetime, so one cold first exec after an upgrade failed every
+/// later run instantly until restart. Retry past that cache with a longer
+/// budget, and on success clear the cached failure for other callers.
+async fn opencode_version(exe: &std::path::Path) -> Option<semver::Version> {
+    let cached_exe = exe.to_path_buf();
+    let cached =
+        tokio::task::spawn_blocking(move || crate::executable::binary_version(&cached_exe))
+            .await
+            .ok()
+            .flatten();
+    if cached.is_some() {
+        return cached;
+    }
+    let mut cmd = Command::new(exe);
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(COLD_VERSION_TIMEOUT, cmd.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = crate::executable::parse_version(&output.stdout)
+        .or_else(|| crate::executable::parse_version(&output.stderr))?;
+    if let Some(stem) = exe.file_stem().and_then(|s| s.to_str()) {
+        crate::executable::invalidate_versions(&[stem]);
+    }
+    Some(version)
+}
+
 /// Inline config is the final user config layer. Preserve inherited overrides
 /// and other MCP servers; never write chat identity into a shared config file.
 fn mcp_config(
@@ -4392,6 +4426,68 @@ http.createServer((req, res) => {
         let probe = server.get_json("/config-probe", None).await.unwrap();
         server.shutdown(Duration::from_millis(100)).await;
         assert_eq!(probe["config"], Value::Null);
+    }
+
+    /// A freshly installed binary's first `--version` outlasts the shared
+    /// 2s probe (OS malware scan). That cached failure used to fail every
+    /// run; the cold retry must still find 2.x and inject the MCP config.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cold_first_version_probe_still_injects_mcp() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let exe = fixture.path().join("opencode");
+        let warmed = fixture.path().join("warmed");
+        let script = format!(
+            r#"#!/usr/bin/env node
+const fs = require('node:fs');
+const http = require('node:http');
+if (process.argv.includes('--version')) {{
+  const cold = !fs.existsSync({warmed:?});
+  fs.writeFileSync({warmed:?}, '');
+  setTimeout(() => {{ console.log('opencode v2.0.20'); process.exit(0); }}, cold ? 3000 : 0);
+}} else {{
+  const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT);
+  const auth = {{
+    password: process.env.OPENCODE_PASSWORD,
+    legacy: process.env.OPENCODE_SERVER_PASSWORD,
+  }};
+  const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
+  http.createServer((req, res) => {{
+    res.setHeader('content-type', 'application/json');
+    if (req.url === '/config-probe') {{
+      res.end(JSON.stringify({{server: config.mcp.servers.zeron, auth}})); return;
+    }}
+    if (req.url === '/api/info') {{ res.end(JSON.stringify({{version: '2.0.20'}})); return; }}
+    res.statusCode = 404; res.end('{{}}');
+  }}).listen(port, '127.0.0.1');
+}}
+"#
+        );
+        std::fs::write(&exe, script).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mcp = zeron_proto::McpServer {
+            name: "zeron".into(),
+            command: "zeron".into(),
+            args: vec!["mcp".into()],
+            env: Default::default(),
+        };
+        for _ in 0..2 {
+            let mut server = Server::spawn(
+                &exe,
+                fixture.path().to_str(),
+                Duration::from_secs(10),
+                Some(&mcp),
+            )
+            .await
+            .expect("a slow first --version must not fail the run");
+            let probe = server.get_json("/config-probe", None).await.unwrap();
+            server.shutdown(Duration::from_millis(100)).await;
+            assert_eq!(probe["server"]["command"], json!(["zeron", "mcp"]));
+            // 2.x reads OPENCODE_PASSWORD first: both must carry ours.
+            assert!(probe["auth"]["password"].is_string());
+            assert_eq!(probe["auth"]["password"], probe["auth"]["legacy"]);
+        }
     }
 
     #[test]
