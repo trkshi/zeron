@@ -613,25 +613,33 @@ impl Server {
                 crate::executable::binary_version(&version_exe)
             })
             .await
-            .map_err(|e| HarnessError::Protocol(format!("opencode version probe: {e}")))?
-            .ok_or_else(|| {
-                HarnessError::Protocol(
-                    "cannot determine opencode version for MCP configuration".into(),
-                )
-            })?;
-            let protocol = if version.major >= 2 {
-                Protocol::V2
-            } else {
-                Protocol::V1
-            };
-            cmd.env(
-                "OPENCODE_CONFIG_CONTENT",
-                mcp_config(
-                    std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
-                    mcp,
-                    protocol,
-                )?,
-            );
+            .ok()
+            .flatten();
+            // The config shape differs by generation, so an unknown version
+            // skips the Zeron MCP server rather than failing the run. The
+            // probe's result is cached per binary: one slow `--version` used
+            // to fail every later run until restart.
+            match version {
+                Some(version) => {
+                    let protocol = if version.major >= 2 {
+                        Protocol::V2
+                    } else {
+                        Protocol::V1
+                    };
+                    cmd.env(
+                        "OPENCODE_CONFIG_CONTENT",
+                        mcp_config(
+                            std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
+                            mcp,
+                            protocol,
+                        )?,
+                    );
+                }
+                None => tracing::warn!(
+                    binary_path = %exe.display(),
+                    "opencode version unknown; starting without the Zeron MCP server"
+                ),
+            }
         }
         crate::compose_child_path(&mut cmd, exe);
         if let Some(cwd) = cwd {
@@ -4344,6 +4352,46 @@ http.createServer((req, res) => {{
                 json!(["/path with spaces/zeron", "mcp"])
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unknown_version_starts_without_mcp_instead_of_failing() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let exe = fixture.path().join("opencode");
+        // `--version` fails (a probe that timed out or printed no version).
+        let script = r#"#!/usr/bin/env node
+const http = require('node:http');
+if (process.argv.includes('--version')) process.exit(1);
+const config = process.env.OPENCODE_CONFIG_CONTENT ?? null;
+const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
+http.createServer((req, res) => {
+  res.setHeader('content-type', 'application/json');
+  if (req.url === '/config-probe') { res.end(JSON.stringify({config})); return; }
+  if (req.url === '/api/info') { res.end(JSON.stringify({version: '2.0.20'})); return; }
+  res.statusCode = 404; res.end('{}');
+}).listen(port, '127.0.0.1');
+"#;
+        std::fs::write(&exe, script).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mcp = zeron_proto::McpServer {
+            name: "zeron".into(),
+            command: "zeron".into(),
+            args: vec!["mcp".into()],
+            env: Default::default(),
+        };
+        let mut server = Server::spawn(
+            &exe,
+            fixture.path().to_str(),
+            Duration::from_secs(5),
+            Some(&mcp),
+        )
+        .await
+        .expect("an unknown version must not fail the run");
+        let probe = server.get_json("/config-probe", None).await.unwrap();
+        server.shutdown(Duration::from_millis(100)).await;
+        assert_eq!(probe["config"], Value::Null);
     }
 
     #[test]
