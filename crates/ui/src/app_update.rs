@@ -66,7 +66,7 @@ pub enum StripAction {
 pub struct AppUpdate {
     install: InstallKind,
     blocker: Option<UpdateBlocker>,
-    /// Background download + install on quit (`ZERON_AUTO_UPDATE` unset or on).
+    /// Background download + install on quit.
     automatic: bool,
     edge_url: String,
     data_dir: PathBuf,
@@ -125,7 +125,8 @@ impl AppUpdate {
         Self {
             install,
             blocker,
-            automatic: zeron_update::desktop_auto_update_enabled(),
+            // Official updates would replace this build's personal patches.
+            automatic: false,
             edge_url,
             data_dir,
             checker,
