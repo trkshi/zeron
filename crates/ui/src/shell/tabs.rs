@@ -181,25 +181,17 @@ impl Shell {
         }
     }
 
-    /// Boot landing: the most recently active visible chat once the first
-    /// chats frame has synced (manual selection wins; no chats → the
-    /// new-session canvas shows).
+    /// Boot landing stays on the new-session canvas once chats have synced.
+    /// Manual conversation selections and deep links keep their targets.
     pub(super) fn boot_select_chat(&mut self, cx: &mut Context<Self>) {
-        let first = {
+        {
             let state = self.state.read(cx);
             if !state.chats_synced || state.selected_chat.is_some() || state.auto_selected {
                 return;
             }
-            state
-                .overview_chats(Utc::now())
-                .first()
-                .map(|(_, c)| c.id.clone())
-        };
-        if let Some(first) = first {
-            self.focus_composer(cx);
-            self.state
-                .update(cx, |s, cx| s.select_chat(Some(first), cx));
         }
+        self.state.update(cx, |s, _| s.auto_selected = true);
+        self.focus_composer(cx);
     }
 
     /// Open a session from the sidebar: select it, the main area follows.

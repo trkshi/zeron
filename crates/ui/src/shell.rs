@@ -2791,8 +2791,8 @@ impl Shell {
                 self.schedule_save(cx);
             }
         }
-        // Boot landing: the most recent session once the first chats frame
-        // syncs (manual selection wins).
+        // Boot landing: stay on the new-session canvas after chats sync;
+        // manual selections and deep links still take precedence.
         self.boot_select_chat(cx);
         // Heal a dangling sidebar filter (space deleted, possibly elsewhere):
         // fall back to "All" rather than filtering everything out.
