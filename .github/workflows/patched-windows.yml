@@ -1,0 +1,95 @@
+name: Patched Windows Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: patched-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Locate Windows SDK shader compiler
+        run: |
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/fxc.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $fxc) { throw 'Windows SDK fxc.exe is required for GPUI release shaders' }
+          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          cache-workspace-crates: true
+
+      - name: Build installer and portable app
+        run: |
+          ./scripts/package-windows.ps1 -ReleasesUrl "https://github.com/$env:GITHUB_REPOSITORY/releases/latest/download"
+
+      - name: Record build provenance and checksums
+        run: |
+          $package = Join-Path $env:GITHUB_WORKSPACE 'target/package'
+          Copy-Item -LiteralPath './PATCHES.md' -Destination $package
+          @(
+            'Zeron personal Windows build'
+            "Repository: $env:GITHUB_REPOSITORY"
+            "Source commit: $env:GITHUB_SHA"
+            "Build: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            'Startup: new chat; manual selections and deep links remain supported'
+            'Automatic desktop update downloads: disabled'
+            'App name, account, and conversation storage: unchanged'
+          ) | Set-Content -Encoding utf8NoBOM -LiteralPath (Join-Path $package 'PATCHED-BUILD.txt')
+          Get-ChildItem -LiteralPath $package -File |
+            Where-Object { $_.Extension -in '.exe', '.zip', '.json' } |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            } | Set-Content -Encoding utf8NoBOM -LiteralPath (Join-Path $package 'SHA256SUMS.txt')
+
+      - name: Upload Windows download
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeron-windows-x86_64
+          path: |
+            target/package/*.exe
+            target/package/*.zip
+            target/package/manifest.json
+            target/package/PATCHES.md
+            target/package/PATCHED-BUILD.txt
+            target/package/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Write download summary
+        env:
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          @(
+            '## Zeron Windows Build'
+            ''
+            "[Download the installer and portable app]($env:ARTIFACT_URL)"
+            ''
+            "Source commit: $env:GITHUB_SHA"
+            ''
+            'Close Zeron and back up `%LOCALAPPDATA%\Zeron` before replacing the app.'
+            'The installer preserves the Zeron name and existing conversation data.'
+            'Use this workflow for future updates; automatic downloads are disabled.'
+          ) >> $env:GITHUB_STEP_SUMMARY
