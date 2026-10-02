@@ -1044,6 +1044,10 @@ pub enum RowKind {
         /// [`Row::compact_fold`], not chips.
         compact_shell: bool,
     },
+    /// Stored wall-clock duration, shown once after a completed assistant turn.
+    TurnDuration {
+        seconds: i64,
+    },
     InputChip {
         /// First question's header (chat-view.tsx `InputChip`: the resolved
         /// chip shows it; unresolved shows "Awaiting your answer…" — which
@@ -1719,6 +1723,25 @@ pub fn rows_for_entry(
         );
     }
 
+    if !compact
+        && entry.role == MessageRole::Assistant
+        && entry.status == Some(MessageStatus::Complete)
+        && !rows.is_empty()
+        && let Some(ms) = entry.duration_ms.filter(|&ms| ms > 0)
+    {
+        let seconds = (ms / 1000).max(1);
+        rows.push(Row {
+            id: format!("{}#duration", entry.id).into(),
+            version: seconds as u64,
+            turn_start: false,
+            kind: RowKind::TurnDuration { seconds },
+            entry_id: entry_id.clone(),
+            timestamp: None,
+            copy_text: None,
+            compact_fold: None,
+        });
+    }
+
     if let Some(first) = rows.first_mut() {
         first.turn_start = true;
     }
@@ -1900,6 +1923,9 @@ fn part_prefix(id: &str) -> &str {
 pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
     if row.turn_start {
         return Theme::SPACE_LG;
+    }
+    if matches!(row.kind, RowKind::TurnDuration { .. }) {
+        return Theme::SPACE_SM;
     }
     let is_md = |k: &RowKind| matches!(k, RowKind::Markdown { .. } | RowKind::LiveMarkdown { .. });
     let same_part_markdown = prev.is_some_and(|p| {
@@ -6623,6 +6649,13 @@ impl Transcript {
                 &theme,
                 cx,
             ),
+            RowKind::TurnDuration { seconds } => div()
+                .w_full()
+                .text_size(crate::typography::ui_rems(12.0))
+                .line_height(crate::typography::ui_rems(18.0))
+                .text_color(theme.text_muted)
+                .child(SharedString::from(worked_for_label(*seconds)))
+                .into_any_element(),
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
             }
@@ -10888,6 +10921,142 @@ mod tests {
     }
 
     #[test]
+    fn normal_mode_appends_worked_for_below_plain_replies() {
+        let mut entry = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![text_part("r0", "All done.")],
+        );
+        entry.created_at = 42;
+        for (ms, seconds, label) in [
+            (138_000, 138, "Worked for 2m 18s"),
+            (999, 1, "Worked for 1s"),
+        ] {
+            entry.duration_ms = Some(ms);
+            let rows = rows_for_entry(&entry, false, false, &mut parse);
+            assert_eq!(rows.len(), 2);
+            assert!(matches!(rows[0].kind, RowKind::Markdown { .. }));
+            assert!(rows[0].turn_start);
+            let footer = rows.last().unwrap();
+            assert!(matches!(footer.kind, RowKind::TurnDuration { seconds: s } if s == seconds));
+            assert_eq!(worked_for_label(seconds), label);
+            assert_eq!(footer.id.as_ref(), "a1#duration");
+            assert_eq!(footer.entry_id.as_ref(), "a1");
+            assert!(!footer.turn_start);
+            assert!(footer.compact_fold.is_none());
+            assert_eq!(top_gap_for(Some(&rows[0]), footer), Theme::SPACE_SM);
+            assert_eq!(footer.timestamp, Some(42));
+            assert_eq!(footer.copy_text.as_deref(), Some("All done."));
+            assert!(rows[0].timestamp.is_none());
+            assert!(rows[0].copy_text.is_none());
+        }
+    }
+
+    #[test]
+    fn normal_mode_emits_one_duration_after_all_work_and_reply_blocks() {
+        let mut entry = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![
+                reasoning_part("think", "Checking the files."),
+                tool_part("t0", "ls"),
+                text_part("n0", "Found the files."),
+                tool_part("t1", "pwd"),
+                text_part("r0", "First paragraph.\n\nSecond paragraph."),
+            ],
+        );
+        entry.duration_ms = Some(138_000);
+        let rows = rows_for_entry(&entry, false, false, &mut parse);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| matches!(row.kind, RowKind::TurnDuration { .. }))
+                .count(),
+            1
+        );
+        let footer = rows.last().unwrap();
+        assert!(matches!(footer.kind, RowKind::TurnDuration { seconds: 138 }));
+        assert_eq!(
+            footer.copy_text.as_deref(),
+            Some("Found the files.\n\nFirst paragraph.\n\nSecond paragraph.")
+        );
+        assert!(
+            rows[..rows.len() - 1]
+                .iter()
+                .all(|row| row.timestamp.is_none() && row.copy_text.is_none())
+        );
+
+        entry.parts = vec![tool_part("t0", "ls")];
+        let rows = rows_for_entry(&entry, false, false, &mut parse);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(top_gap_for(Some(&rows[0]), &rows[1]), Theme::SPACE_SM);
+        assert!(rows[1].copy_text.is_none());
+    }
+
+    #[test]
+    fn normal_mode_duration_requires_completed_assistant_content_and_stored_timing() {
+        let mut entry = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![text_part("r0", "All done.")],
+        );
+        for duration_ms in [None, Some(0), Some(-1)] {
+            entry.duration_ms = duration_ms;
+            let rows = rows_for_entry(&entry, false, false, &mut parse);
+            assert_eq!(rows.len(), 1);
+            assert!(matches!(rows[0].kind, RowKind::Markdown { .. }));
+        }
+        entry.duration_ms = Some(138_000);
+        for status in [
+            None,
+            Some(MessageStatus::Streaming),
+            Some(MessageStatus::Aborted),
+        ] {
+            entry.status = status;
+            let rows = rows_for_entry(&entry, false, false, &mut parse);
+            assert_eq!(rows.len(), 1);
+            assert!(!matches!(rows[0].kind, RowKind::TurnDuration { .. }));
+        }
+        entry.status = Some(MessageStatus::Complete);
+        for role in [MessageRole::User, MessageRole::System] {
+            entry.role = role;
+            let rows = rows_for_entry(&entry, false, false, &mut parse);
+            assert_eq!(rows.len(), 1);
+            assert!(!matches!(rows[0].kind, RowKind::TurnDuration { .. }));
+        }
+        entry.role = MessageRole::Assistant;
+        entry.parts = vec![text_part("r0", "\n\n")];
+        assert!(rows_for_entry(&entry, false, false, &mut parse).is_empty());
+    }
+
+    #[test]
+    fn normal_mode_duration_has_stable_identity_and_versions_displayed_seconds() {
+        let mut entry = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![text_part("r0", "All done.")],
+        );
+        entry.duration_ms = Some(138_000);
+        let original = rows_for_entry(&entry, false, false, &mut parse);
+        let fingerprint = entry_fingerprint(&entry, false);
+        entry.duration_ms = Some(138_999);
+        let same_seconds = rows_for_entry(&entry, false, false, &mut parse);
+        assert_ne!(entry_fingerprint(&entry, false), fingerprint);
+        assert!(diff_rows(&original, &same_seconds).is_none());
+
+        entry.duration_ms = Some(139_000);
+        let changed = rows_for_entry(&entry, false, false, &mut parse);
+        assert_eq!(original[1].id, changed[1].id);
+        assert_ne!(original[1].version, changed[1].version);
+        assert_eq!(diff_rows(&original, &changed), Some((1..2, 1)));
+
+        entry.duration_ms = None;
+        let missing = rows_for_entry(&entry, false, false, &mut parse);
+        assert_eq!(missing[0].timestamp, Some(entry.created_at));
+        assert_eq!(missing[0].copy_text.as_deref(), Some("All done."));
+        assert_eq!(diff_rows(&changed, &missing), Some((0..2, 1)));
+    }
+
+    #[test]
     fn compact_mode_carries_worked_for_duration_on_the_work_group() {
         let mut entry = assistant(
             "a1",
@@ -10896,12 +11065,27 @@ mod tests {
         );
         entry.duration_ms = Some(310_000);
         let rows = rows_for_entry(&entry, false, true, &mut parse);
+        assert!(
+            rows.iter()
+                .all(|row| !matches!(row.kind, RowKind::TurnDuration { .. })),
+            "compact mode keeps one duration on its existing header, even when expanded"
+        );
         let RowKind::ToolGroup { worked_secs, .. } = &rows[0].kind else {
             panic!("expected a tool group");
         };
         assert_eq!(*worked_secs, Some(310));
         assert_eq!(worked_for_label(310), "Worked for 5m 10s");
         assert_eq!(worked_for_label(95), "Worked for 1m 35s");
+
+        let mut plain = assistant(
+            "a2",
+            MessageStatus::Complete,
+            vec![text_part("r0", "All done.")],
+        );
+        plain.duration_ms = Some(310_000);
+        let rows = rows_for_entry(&plain, false, true, &mut parse);
+        assert_eq!(rows.len(), 1, "compact reply-only turns have no new footer");
+        assert!(matches!(rows[0].kind, RowKind::Markdown { .. }));
 
         let streaming = assistant("a1", MessageStatus::Streaming, vec![tool_part("t0", "ls")]);
         let mut streaming = streaming;

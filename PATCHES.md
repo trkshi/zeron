@@ -28,6 +28,10 @@ official Zeron release.
   after the turn finishes; delivery errors preserve answers for retry. Remote
   chats require the patched engine on both devices. Installing this Windows
   build alone does not update the Ubuntu host.
+- Show a persistent **Worked for** footer beneath completed assistant replies
+  in normal mode, using the full stored turn duration, including tool work and
+  waiting for input. Compact mode keeps its existing duration label; older
+  turns without stored timing remain unchanged.
 - Keep the app name, version, installer identity, account handling, and
   conversation storage unchanged.
 
