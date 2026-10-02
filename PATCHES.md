@@ -18,6 +18,10 @@ official Zeron release.
   native picker selects a file on this computer; Zeron saves a small square
   copy in its local data directory and remembers it separately for each
   account. Images stay on this device and are not uploaded or synced.
+- Remove trailing blank lines when sending or saving queued messages, but only
+  when the Markdown parser produces identical content. Preserve indentation,
+  spaces on nonblank lines, internal paragraph breaks, and meaningful code or
+  raw-HTML whitespace. Failed sends still restore the original draft.
 - Keep the app name, version, installer identity, account handling, and
   conversation storage unchanged.
 

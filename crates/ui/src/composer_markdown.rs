@@ -2,6 +2,29 @@
 use pulldown_cmark::{Event, Options, Parser, Tag};
 use std::ops::Range;
 
+/// Remove trailing blank lines only when the Markdown content stays identical.
+pub fn trim_trailing_blank_lines(text: &str) -> &str {
+    let mut trimmed = text;
+    while let Some((before, line)) = trimmed.rsplit_once('\n') {
+        if !line.trim_matches([' ', '\t', '\r']).is_empty() {
+            break;
+        }
+        trimmed = before.strip_suffix('\r').unwrap_or(before);
+    }
+    if trimmed.len() == text.len() {
+        return text;
+    }
+    // Compare content events, not source offsets. Literal code and raw HTML
+    // can own these newlines even when they look like empty space in prose.
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    if Parser::new_ext(text, options).eq(Parser::new_ext(trimmed, options)) {
+        trimmed
+    } else {
+        text
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Face {
     Bold,
@@ -498,6 +521,62 @@ pub fn decorations(text: &str, active: Range<usize>) -> Vec<(Range<usize>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trailing_blank_lines_preserve_other_whitespace() {
+        for (text, expected) in [
+            ("", ""),
+            ("\n\n", ""),
+            ("example text\n", "example text"),
+            ("example text\n\n\n", "example text"),
+            ("\n\nexample text\n\n", "\n\nexample text"),
+            ("example text\n \t\n \t", "example text"),
+            ("  example text  \n\n", "  example text  "),
+            ("example text \t", "example text \t"),
+            ("example text\r\n\r\n \t\r\n", "example text"),
+            ("caf\u{e9}\n\n", "caf\u{e9}"),
+            ("example text\n\u{a0}\n\n", "example text\n\u{a0}"),
+            (
+                "first  \nsecond\\\nthird\n\nlast\n\n",
+                "first  \nsecond\\\nthird\n\nlast",
+            ),
+        ] {
+            assert_eq!(trim_trailing_blank_lines(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn closed_code_blocks_keep_their_body_and_trim_only_after_the_fence() {
+        for code in [
+            "```rust\nlet value = 1;\n\n```",
+            "~~~text\nvalue\n\n~~~",
+            "> ```text\n> value\n> \n> ```",
+            "```text\r\nvalue\r\n\r\n```",
+        ] {
+            let text = format!("{code}\n\n");
+            assert_eq!(trim_trailing_blank_lines(&text), code, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn literal_code_and_raw_html_keep_meaningful_terminal_newlines() {
+        for text in [
+            "```text\nvalue\n\n",
+            "~~~\nvalue\n \t\n",
+            "````text\n```\n\n",
+            "```text\nvalue\n    ```\n\n",
+            "```text\r\nvalue\r\n\r\n",
+            "    value\n\n",
+            "\tvalue\n\n",
+            "<pre>\nvalue\n\n",
+            "<script>\nconsole.log('value');\n\n",
+            "<textarea>\nvalue\n\n",
+            "<!-- literal\n\n",
+        ] {
+            assert_eq!(trim_trailing_blank_lines(text), text, "{text:?}");
+        }
+    }
+
     #[test]
     fn decorations_preserve_rules_code_and_nested_emphasis() {
         for rule in ["- - -", "* * *", "___"] {

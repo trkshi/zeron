@@ -7528,8 +7528,8 @@ impl Composer {
             self.wizard_advance(cx);
             return;
         }
-        // Leading indentation distinguishes literal Markdown from native commands
-        // and skill invocations. Only the empty-content check may trim the draft.
+        // Leading indentation distinguishes literal Markdown from commands and
+        // skills. Keep the raw draft; send normalizes only trailing blank lines.
         let text = self.input.read(cx).text().to_string();
         if let Some(action) = self
             .slash_cache
@@ -7697,7 +7697,10 @@ impl Composer {
             taken
         });
         let typed = text.clone();
-        let text = crate::comments::with_comments(&text, &comments);
+        let text = crate::comments::with_comments(
+            composer_markdown::trim_trailing_blank_lines(&text),
+            &comments,
+        );
         self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().timestamp_millis();
@@ -10496,7 +10499,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn submission_preserves_literal_command_and_skill_indentation(cx: &mut gpui::TestAppContext) {
+    fn submission_preserves_markdown_and_cleans_trailing_blank_lines(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -10515,6 +10520,12 @@ mod tests {
                 "\u{a0}/review".into(),
                 format!("    {skill}"),
                 "Keep this hard break  ".into(),
+                "example text\n\n\n".into(),
+                "  example text  \r\n\r\n".into(),
+                "first  \nsecond\n\nlast\n\n".into(),
+                "```text\nvalue\n\n".into(),
+                "```text\nvalue\n\n```\n\n".into(),
+                "<pre>\nvalue\n\n".into(),
                 " \t\n ".into(),
             ] {
                 let (out, mut requests) = tokio::sync::mpsc::channel::<String>(64);
@@ -10538,6 +10549,16 @@ mod tests {
                         composer.queue_edit_host_device_id = Some("host".into());
                     }
                     composer.on_submit(cx);
+                    if editing_queue {
+                        assert_eq!(composer.input.read(cx).text(), raw);
+                    } else if !raw.trim().is_empty() {
+                        let state = composer.state.read(cx);
+                        let MessagePart::Text { text, .. } = &state.pending_echoes()[0].parts[0]
+                        else {
+                            panic!("submission must publish a text echo");
+                        };
+                        assert_eq!(text, composer_markdown::trim_trailing_blank_lines(&raw));
+                    }
                 });
                 cx.run_until_parked();
                 let mut submitted = None;
@@ -10562,7 +10583,10 @@ mod tests {
                     assert_eq!(discarded, editing_queue);
                 } else {
                     let submitted = submitted.expect("submission must reach the engine RPC");
-                    assert_eq!(submitted, raw);
+                    assert_eq!(
+                        submitted,
+                        composer_markdown::trim_trailing_blank_lines(&raw)
+                    );
                     assert!(zeron_proto::invocation::leading_command(&submitted).is_none());
                     assert!(zeron_proto::invocation::invocation_links(&submitted).is_empty());
                 }

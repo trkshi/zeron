@@ -1499,6 +1499,7 @@ impl Composer {
         if text.trim().is_empty() && self.staged().is_empty() && self.staged_appshots().is_empty() {
             self.finish_queue_edit("discard", None, cx);
         } else {
+            let text = crate::composer_markdown::trim_trailing_blank_lines(&text).to_owned();
             self.finish_queue_edit("commit", Some(text), cx);
         }
         true
