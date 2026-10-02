@@ -181,8 +181,8 @@ impl Shell {
         }
     }
 
-    /// Boot landing stays on the new-session canvas once chats have synced.
-    /// Manual conversation selections and deep links keep their targets.
+    /// Apply the startup preference once chats have synced. Manual selections
+    /// and deep links keep their targets; settings changes do not navigate.
     pub(super) fn boot_select_chat(&mut self, cx: &mut Context<Self>) {
         {
             let state = self.state.read(cx);
@@ -190,8 +190,21 @@ impl Shell {
                 return;
             }
         }
-        self.state.update(cx, |s, _| s.auto_selected = true);
-        self.focus_composer(cx);
+        if settings::current(cx).start_with_new_chat {
+            self.state.update(cx, |s, _| s.auto_selected = true);
+            self.focus_composer(cx);
+            return;
+        }
+        let first = self
+            .state
+            .read(cx)
+            .overview_chats(Utc::now())
+            .first()
+            .map(|(_, chat)| chat.id.clone());
+        if let Some(first) = first {
+            self.focus_composer(cx);
+            self.state.update(cx, |s, cx| s.select_chat(Some(first), cx));
+        }
     }
 
     /// Open a session from the sidebar: select it, the main area follows.

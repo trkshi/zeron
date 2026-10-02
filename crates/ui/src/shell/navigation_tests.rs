@@ -149,6 +149,78 @@ fn assert_surface(shell: &Entity<Shell>, cx: &mut VisualTestContext, surface: Ri
 }
 
 #[gpui::test]
+fn startup_landing_respects_the_preference_and_waits_for_chat_sync(cx: &mut TestAppContext) {
+    let (shell, cx) = setup(cx);
+    for start_with_new_chat in [true, false] {
+        shell.update(cx, |shell, cx| {
+            settings::update(SavePolicy::Immediate, cx, |settings| {
+                settings.start_with_new_chat = start_with_new_chat;
+            });
+            shell.state.update(cx, |state, _| {
+                state.selected_chat = None;
+                state.auto_selected = false;
+                state.chats_synced = false;
+            });
+            shell.boot_select_chat(cx);
+            assert!(shell.state.read(cx).selected_chat.is_none());
+            assert!(!shell.state.read(cx).auto_selected);
+
+            shell.state.update(cx, |state, _| state.chats_synced = true);
+            shell.boot_select_chat(cx);
+            let selected = shell.state.read(cx).selected_chat.clone();
+            assert_eq!(
+                selected.as_deref(),
+                if start_with_new_chat {
+                    None
+                } else {
+                    Some("parent")
+                }
+            );
+            assert!(shell.state.read(cx).auto_selected);
+
+            settings::update(SavePolicy::Immediate, cx, |settings| {
+                settings.start_with_new_chat = !start_with_new_chat;
+            });
+            shell.boot_select_chat(cx);
+            assert_eq!(shell.state.read(cx).selected_chat, selected);
+        });
+    }
+}
+
+#[gpui::test]
+fn startup_landing_preserves_explicit_selections_and_handles_an_empty_list(
+    cx: &mut TestAppContext,
+) {
+    let (shell, cx) = setup(cx);
+    for start_with_new_chat in [true, false] {
+        shell.update(cx, |shell, cx| {
+            settings::update(SavePolicy::Immediate, cx, |settings| {
+                settings.start_with_new_chat = start_with_new_chat;
+            });
+            for (selected, auto_selected) in [(Some("other"), false), (None, true)] {
+                shell.state.update(cx, |state, _| {
+                    state.selected_chat = selected.map(str::to_owned);
+                    state.auto_selected = auto_selected;
+                    state.chats_synced = true;
+                });
+                shell.boot_select_chat(cx);
+                assert_eq!(shell.state.read(cx).selected_chat.as_deref(), selected);
+                assert_eq!(shell.state.read(cx).auto_selected, auto_selected);
+            }
+        });
+    }
+    shell.update(cx, |shell, cx| {
+        shell.state.update(cx, |state, _| {
+            state.chats.clear();
+            state.selected_chat = None;
+            state.auto_selected = false;
+        });
+        shell.boot_select_chat(cx);
+        assert!(shell.state.read(cx).selected_chat.is_none());
+    });
+}
+
+#[gpui::test]
 fn repeated_keys_stay_in_read_only_pane_and_follow_reordering(cx: &mut TestAppContext) {
     let (shell, cx) = setup(cx);
     let tab = cx.debug_bounds("right-surface-tab-0").unwrap().center();

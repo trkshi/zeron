@@ -2794,8 +2794,8 @@ impl Shell {
                 self.schedule_save(cx);
             }
         }
-        // Boot landing: stay on the new-session canvas after chats sync;
-        // manual selections and deep links still take precedence.
+        // Apply the startup preference after chats sync; manual selections
+        // and deep links still take precedence.
         self.boot_select_chat(cx);
         // Heal a dangling sidebar filter (space deleted, possibly elsewhere):
         // fall back to "All" rather than filtering everything out.
@@ -4495,6 +4495,7 @@ impl Shell {
         self.settings.reduce_motion = current.reduce_motion;
         self.settings.pause_animations_in_background = current.pause_animations_in_background;
         self.settings.compact_model_picker = current.compact_model_picker;
+        self.settings.start_with_new_chat = current.start_with_new_chat;
         self.settings.profile_images_by_account = current.profile_images_by_account;
     }
 
@@ -14608,6 +14609,7 @@ mod exit_regressions {
                         settings.code_font_size = code_size;
                         settings.transcript_width = transcript_width;
                         settings.profile_images_by_account = profile_images.clone();
+                        settings.start_with_new_chat = open_links_in_zeron;
                         settings.skill_completion_by_harness.insert(
                             zeron_proto::HarnessId::ClaudeCode,
                             settings::SkillCompletionSettings {
@@ -14637,6 +14639,7 @@ mod exit_regressions {
                         assert_eq!(current.code_font_size, code_size);
                         assert_eq!(current.transcript_width, transcript_width);
                         assert_eq!(current.profile_images_by_account, profile_images);
+                        assert_eq!(current.start_with_new_chat, open_links_in_zeron);
                         assert_eq!(
                             current
                                 .skill_completion(zeron_proto::HarnessId::ClaudeCode)
@@ -14666,6 +14669,7 @@ mod exit_regressions {
                     assert_eq!(loaded.code_font_size, code_size);
                     assert_eq!(loaded.transcript_width, transcript_width);
                     assert_eq!(loaded.profile_images_by_account, profile_images);
+                    assert_eq!(loaded.start_with_new_chat, open_links_in_zeron);
                     assert_eq!(loaded.sidebar_width, 292.0);
                     assert_eq!(loaded.right_pane_width, 542.0);
                     assert_eq!(loaded.terminal_height, 302.0);

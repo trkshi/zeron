@@ -671,6 +671,38 @@ impl Render for ShortcutsPage {
                 })),
             );
         if self.general_page {
+            let start_with_new_chat = crate::settings::current(cx).start_with_new_chat;
+            let startup_row = widgets::card_row(&theme, false)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(widgets::row_title(&theme, "Start with a new chat")),
+                )
+                .child(
+                    widgets::toggle_switch(&theme, start_with_new_chat, "start-with-new-chat")
+                        .id("start-with-new-chat-toggle")
+                        .debug_selector(|| "start-with-new-chat-toggle".into())
+                        .tab_index(0)
+                        .role(gpui::Role::Switch)
+                        .aria_label("Start with a new chat")
+                        .aria_toggled(if start_with_new_chat {
+                            gpui::Toggled::True
+                        } else {
+                            gpui::Toggled::False
+                        })
+                        .focus_visible(|s| s.border_2().border_color(theme.accent))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::settings::update(
+                                crate::settings::SavePolicy::Immediate,
+                                cx,
+                                |settings| settings.start_with_new_chat = !start_with_new_chat,
+                            );
+                            cx.refresh_windows();
+                            cx.notify();
+                        })),
+                );
             let scrollbar = self.render_scrollbar(&theme, cx);
             return div()
                 .id("general-settings-page-host")
@@ -693,6 +725,7 @@ impl Render for ShortcutsPage {
                                     .child(
                                         widgets::section_card(&theme)
                                             .child(send_behavior_row)
+                                            .child(startup_row)
                                             .child(compact_mode_row)
                                             .child(compact_model_picker_row)
                                             .child(escape_behavior_row),
@@ -841,9 +874,11 @@ mod tests {
 
     #[gpui::test]
     fn conversation_controls_work_after_moving_out_of_shortcuts(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
             gpui_base::init(cx);
             cx.set_global(Theme::default());
+            crate::settings::init(crate::settings::UiSettings::default(), dir.path(), cx);
         });
         let (page, cx) = cx.add_window_view(|_, cx| {
             let state = cx.new(|_| AppState::new());
@@ -861,6 +896,13 @@ mod tests {
             page
         });
         cx.update(|window, cx| window.draw(cx).clear());
+        let startup = cx.debug_bounds("start-with-new-chat-toggle").unwrap();
+        cx.simulate_click(startup.center(), gpui::Modifiers::default());
+        cx.update(|window, cx| {
+            assert!(!crate::settings::current(cx).start_with_new_chat);
+            assert!(!crate::settings::UiSettings::load(dir.path()).start_with_new_chat);
+            window.draw(cx).clear();
+        });
         let send = cx.debug_bounds("composer-send-behavior").unwrap();
         cx.simulate_click(send.center(), gpui::Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear());
@@ -888,6 +930,7 @@ mod tests {
         });
         cx.update(|window, cx| window.draw(cx).clear());
         assert!(cx.debug_bounds("composer-send-behavior").is_none());
+        assert!(cx.debug_bounds("start-with-new-chat-toggle").is_none());
         assert!(
             cx.debug_bounds("escape-stops-active-agent-toggle")
                 .is_none()

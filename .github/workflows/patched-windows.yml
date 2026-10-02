@@ -51,7 +51,7 @@ jobs:
             "Repository: $env:GITHUB_REPOSITORY"
             "Source commit: $env:GITHUB_SHA"
             "Build: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
-            'Startup: new chat; manual selections and deep links remain supported'
+            'Startup: new chat by default; configurable in Settings > General'
             'Automatic desktop update downloads: disabled'
             'App name, account, and conversation storage: unchanged'
           ) | Set-Content -Encoding utf8NoBOM -LiteralPath (Join-Path $package 'PATCHED-BUILD.txt')

@@ -790,6 +790,8 @@ pub struct UiSettings {
     pub window_geometry: Option<WindowGeometry>,
     /// Submit using Enter or the platform modifier plus Enter.
     pub composer_send_behavior: ComposerSendBehavior,
+    /// Start on the blank canvas instead of the most recently active conversation.
+    pub start_with_new_chat: bool,
     /// Legacy global opt-in; per-harness preferences take precedence.
     pub skills_in_slash_menu: bool,
     pub skill_completion_by_harness:
@@ -1009,6 +1011,7 @@ impl Default for UiSettings {
             escape_stops_active_agent: false,
             settings_section: crate::shell::SettingsSection::default(),
             composer_send_behavior: ComposerSendBehavior::default(),
+            start_with_new_chat: true,
             skills_in_slash_menu: false,
             skill_completion_by_harness: Default::default(),
             compact_model_picker: true,
@@ -1858,6 +1861,19 @@ mod tests {
     }
 
     #[test]
+    fn new_chat_on_startup_is_default_and_opt_out_persists() {
+        let legacy: UiSettings = serde_json::from_str("{}").unwrap();
+        assert!(legacy.start_with_new_chat);
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = legacy;
+        settings.start_with_new_chat = false;
+        settings.save(dir.path()).unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert!(!loaded.start_with_new_chat);
+        assert_eq!(loaded, settings);
+    }
+
+    #[test]
     fn composer_send_behavior_is_opt_in_for_old_and_partial_settings() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -2563,6 +2579,7 @@ mod tests {
             escape_stops_active_agent: true,
             settings_section: crate::shell::SettingsSection::Shortcuts,
             composer_send_behavior: ComposerSendBehavior::ModEnter,
+            start_with_new_chat: false,
             skills_in_slash_menu: true,
             skill_completion_by_harness: Default::default(),
             compact_model_picker: true,

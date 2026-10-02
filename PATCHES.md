@@ -7,8 +7,9 @@ official Zeron release.
 
 ## Changes
 
-- Open the new-chat canvas after the chat list loads, rather than automatically
-  selecting the most recently active conversation. Sidebar selections,
+- Open the new-chat canvas by default after the chat list loads. Turn off
+  **Start with a new chat** in **Settings > General** to open the most recently
+  active conversation instead on the next startup. Sidebar selections,
   keyboard navigation, and conversation deep links still work normally.
 - Disable automatic desktop update downloads and installation on quit so an
   official binary cannot silently replace these patches. Update notifications
