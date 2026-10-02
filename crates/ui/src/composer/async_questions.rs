@@ -574,6 +574,7 @@ impl Render for AsyncQuestionPanel {
                     )
                     .child(
                         div()
+                            .id("async-question-options")
                             .role(Role::RadioGroup)
                             .flex()
                             .flex_col()
