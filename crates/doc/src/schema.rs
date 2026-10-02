@@ -864,6 +864,9 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(questions) = &doc_part.questions {
         map.insert("questions", loro_value_from_json(questions))?;
     }
+    if let Some(asynchronous) = doc_part.asynchronous {
+        map.insert("asynchronous", asynchronous)?;
+    }
     if let Some(resolved) = doc_part.resolved {
         map.insert("resolved", resolved)?;
     }
@@ -1322,8 +1325,19 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     if let Some(questions) = &doc_part.questions {
         map.insert("questions", loro_value_from_json(questions))?;
     }
+    if let Some(asynchronous) = doc_part.asynchronous {
+        map.insert("asynchronous", asynchronous)?;
+    }
     if let Some(resolved) = doc_part.resolved {
-        map.insert("resolved", resolved)?;
+        // An async answer may land while the streaming fold still says pending.
+        let host_resolved = doc_part.asynchronous == Some(true)
+            && matches!(
+                map.get("resolved"),
+                Some(loro::ValueOrContainer::Value(LoroValue::Bool(true)))
+            );
+        if resolved || !host_resolved {
+            map.insert("resolved", resolved)?;
+        }
     }
     if let Some(message) = &doc_part.message {
         map.insert("message", message.as_str())?;
@@ -1730,6 +1744,14 @@ mod tests {
             resolved: false,
         };
         writer.sync(std::slice::from_ref(&input)).unwrap();
+        assert!(matches!(
+            &doc.read_entries().unwrap()[0].parts[0],
+            MessagePart::Input {
+                asynchronous: true,
+                resolved: false,
+                ..
+            }
+        ));
         assert!(doc.resolve_input("async-request").unwrap());
         // The streaming fold still has the original unanswered part. Appending
         // more text must not overwrite the host's accepted-answer stamp.
@@ -1762,6 +1784,68 @@ mod tests {
             old,
             MessagePart::Input {
                 asynchronous: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pushed_async_questions_preserve_delivery_kind() {
+        let doc = SessionDoc::init("async-chat").unwrap();
+        let mut entry = user_entry("assistant", "");
+        entry.role = MessageRole::Assistant;
+        entry.parts = vec![MessagePart::Input {
+            id: "async-request".into(),
+            request_id: "async-request".into(),
+            questions: vec![],
+            asynchronous: true,
+            resolved: false,
+        }];
+        doc.push_message(&entry).unwrap();
+        assert_eq!(doc.read_entries().unwrap()[0].parts, entry.parts);
+    }
+
+    #[test]
+    fn async_question_refresh_preserves_delivery_kind_and_host_resolution() {
+        let doc = SessionDoc::init("async-chat").unwrap();
+        let mut writer = SegmentWriter::begin(&doc, "assistant", "host", 1).unwrap();
+        let mut input = MessagePart::Input {
+            id: "async-request".into(),
+            request_id: "async-request".into(),
+            questions: vec![],
+            asynchronous: false,
+            resolved: false,
+        };
+        writer.sync(std::slice::from_ref(&input)).unwrap();
+        if let MessagePart::Input { asynchronous, .. } = &mut input {
+            *asynchronous = true;
+        }
+        writer.sync(std::slice::from_ref(&input)).unwrap();
+        assert!(matches!(
+            &doc.read_entries().unwrap()[0].parts[0],
+            MessagePart::Input {
+                asynchronous: true,
+                resolved: false,
+                ..
+            }
+        ));
+        assert!(doc.resolve_input("async-request").unwrap());
+        if let MessagePart::Input { questions, .. } = &mut input {
+            *questions = serde_json::from_value(serde_json::json!([{
+                "id": "q1", "header": "Choice", "question": "Pick one",
+                "options": ["A", "B"], "multiSelect": false
+            }]))
+            .unwrap();
+        }
+        writer.sync(std::slice::from_ref(&input)).unwrap();
+        writer
+            .finish(std::slice::from_ref(&input), MessageStatus::Complete)
+            .unwrap();
+        assert!(matches!(
+            &doc.read_entries().unwrap()[0].parts[0],
+            MessagePart::Input {
+                asynchronous: true,
+                resolved: true,
                 ..
             }
         ));
