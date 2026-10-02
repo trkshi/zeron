@@ -29,7 +29,7 @@
 //!   (replay then live tail), `WriteTerminal {terminalId, data}`, `ResizeTerminal`,
 //!   `CloseTerminal`. M5 is single-user local: per-user owner checks land with
 //!   real multi-account auth in M6.
-//! - Agent accounts (§3.7): `ListAgentAccounts {forceUsage?}` →
+//! - Agent accounts (§3.7): `ListAgentAccounts {forceUsage?, usageHarness?}` →
 //!   `AgentAccountsSnapshot`, `ActivateAgentAccount`/`ForgetAgentAccount`
 //!   `{harness, accountId}` → snapshot, `StartAgentLogin {harness}` →
 //!   `{loginId, url, mode}`, `CompleteAgentLogin {loginId, code}` → snapshot,
@@ -433,6 +433,9 @@ struct ResizeTerminalParams {
 struct ListAgentAccountsParams {
     #[serde(default)]
     force_usage: Option<bool>,
+    /// When supplied, only this harness's active logins are probed.
+    #[serde(default)]
+    usage_harness: Option<HarnessId>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3308,7 +3311,7 @@ impl RpcService for EngineRpc {
                 let p: ListAgentAccountsParams = parse_params(params)?;
                 let snapshot = self
                     .agent_accounts
-                    .list(p.force_usage.unwrap_or(false))
+                    .list_with_usage_scope(p.force_usage.unwrap_or(false), p.usage_harness)
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&snapshot)

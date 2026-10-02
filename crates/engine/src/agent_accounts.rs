@@ -865,12 +865,31 @@ impl AgentAccounts {
     /// accounts concurrently — skipping any still inside a Retry-After /
     /// backoff window or probed in the last [`FORCED_MIN_INTERVAL`].
     pub async fn list(&self, force_usage: bool) -> Result<AgentAccountsSnapshot, EngineError> {
+        self.list_with_usage_scope(force_usage, None).await
+    }
+
+    /// Keep all account rows cached, but optionally probe only the active
+    /// logins of one harness. Footer polling must not refresh every saved login.
+    pub async fn list_with_usage_scope(
+        &self,
+        force_usage: bool,
+        usage_harness: Option<HarnessId>,
+    ) -> Result<AgentAccountsSnapshot, EngineError> {
         let _ops = self.inner.ops.lock().await;
-        self.list_locked(force_usage).await
+        self.list_locked_with_usage_scope(force_usage, usage_harness)
+            .await
     }
 
     /// Caller holds [`Inner::ops`].
     async fn list_locked(&self, force_usage: bool) -> Result<AgentAccountsSnapshot, EngineError> {
+        self.list_locked_with_usage_scope(force_usage, None).await
+    }
+
+    async fn list_locked_with_usage_scope(
+        &self,
+        force_usage: bool,
+        usage_harness: Option<HarnessId>,
+    ) -> Result<AgentAccountsSnapshot, EngineError> {
         let mut warnings: Vec<AgentAccountWarning> = Vec::new();
         // Per agent, the live logins' account keys — one for single-login
         // agents, one per model provider for OpenCode / Pi.
@@ -974,7 +993,7 @@ impl AgentAccounts {
                     })
                 })
                 .collect();
-            self.refresh_usage(&targets).await;
+            self.refresh_usage(&targets, usage_harness).await;
             // A probe can teach a slot who it is (Devin's key file names no
             // one): show that in this very list.
             for (harness, slots) in providers.iter_mut() {
@@ -2576,7 +2595,11 @@ impl AgentAccounts {
     /// usage cache (then disk). Accounts inside a backoff window, probed a
     /// moment ago, or already being probed by an overlapping list are left
     /// alone — they keep serving their last known usage.
-    async fn refresh_usage(&self, targets: &[(HarnessId, &Slot, bool)]) {
+    async fn refresh_usage(
+        &self,
+        targets: &[(HarnessId, &Slot, bool)],
+        usage_harness: Option<HarnessId>,
+    ) {
         let now = now_ms();
         let mut probes = Vec::new();
         let mut claimed = Vec::new();
@@ -2584,6 +2607,9 @@ impl AgentAccounts {
             let usage = lock(&self.inner.usage);
             let mut inflight = lock(&self.inner.inflight_probes);
             for &(harness, slot, active) in targets {
+                if usage_harness.is_some_and(|selected| selected != harness || !active) {
+                    continue;
+                }
                 let key = usage_key(harness, &slot.account_key);
                 let credentials = credentials_fingerprint(&slot.credentials);
                 if let Some(entry) = usage.get(&key)
@@ -2623,7 +2649,8 @@ impl AgentAccounts {
                 .or_default()
                 .record(result, credentials, now);
         }
-        // Drop entries for accounts that no longer have a slot (forgotten).
+        // Use the complete slot list here, not just the scoped probe subset:
+        // inactive accounts must retain their last good usage for the picker.
         let live: std::collections::HashSet<String> = targets
             .iter()
             .map(|(harness, slot, _)| usage_key(*harness, &slot.account_key))

@@ -6,6 +6,7 @@
 //! either shows up in the other.
 use std::time::{Duration, Instant};
 
+use futures::{FutureExt, StreamExt, channel::mpsc};
 use gpui::{
     Context, Entity, IntoElement, Render, SharedString, Subscription, Task, Window, div,
     prelude::*, px,
@@ -21,11 +22,56 @@ use crate::settings::accounts::{
 use crate::state::AppState;
 use crate::theme::Theme;
 
-/// Forced probes hit the provider; the engine throttles them too, but the
-/// ring re-probes on every hover, so don't even ask more often than this.
+/// The engine enforces the same per-account cooldown and provider backoff.
 const FORCE_MIN_INTERVAL: Duration = Duration::from_secs(30);
-/// Background re-probe while a composer is alive: usage moves as turns run.
-const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UsageRefresh {
+    Cached,
+    Active,
+    All,
+}
+
+fn refresh_delay(age: Option<Duration>, foreground: bool, pending: bool) -> Duration {
+    let interval = if pending {
+        FORCE_MIN_INTERVAL
+    } else if foreground {
+        ACTIVE_POLL_INTERVAL
+    } else {
+        BACKGROUND_POLL_INTERVAL
+    };
+    interval.saturating_sub(age.unwrap_or(interval))
+}
+
+fn usage_params(refresh: UsageRefresh, harness: Option<HarnessId>) -> serde_json::Value {
+    let mut params = serde_json::json!({ "forceUsage": refresh != UsageRefresh::Cached });
+    if refresh == UsageRefresh::Active
+        && let Some(harness) = harness
+    {
+        params["usageHarness"] = serde_json::json!(harness);
+    }
+    params
+}
+
+#[derive(Default)]
+struct CompletionTracker {
+    last: Option<(String, Option<String>)>,
+}
+
+impl CompletionTracker {
+    fn observe(&mut self, next: Option<(String, Option<String>)>) -> bool {
+        let completed = match (&self.last, &next) {
+            (Some(previous), Some(current)) => {
+                previous.0 == current.0 && previous.1 != current.1 && current.1.is_some()
+            }
+            _ => false,
+        };
+        self.last = next;
+        completed
+    }
+}
 
 /// The binding limit: the most-used window of the account. Pure.
 pub fn used_fraction(account: &AgentAccount) -> Option<f32> {
@@ -56,6 +102,10 @@ pub struct AccountUsage {
     /// Once any list has been asked for the current target.
     loaded: bool,
     last_forced: Option<Instant>,
+    pending_refresh: Option<UsageRefresh>,
+    window_active: bool,
+    completions: CompletionTracker,
+    poll_wake: mpsc::UnboundedSender<()>,
     error: Option<SharedString>,
     load_task: Option<Task<()>>,
     action_task: Option<Task<()>>,
@@ -63,32 +113,50 @@ pub struct AccountUsage {
     _poll: Task<()>,
     _cache: Subscription,
     _state: Subscription,
+    _activation: Option<Subscription>,
 }
 
 impl AccountUsage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let (poll_wake, mut wake_rx) = mpsc::unbounded();
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(POLL_INTERVAL).await;
-                if this
-                    .update(cx, |usage, cx| {
-                        if usage.harness.is_some() {
-                            usage.load(true, cx);
-                        }
-                    })
-                    .is_err()
-                {
+                let Ok(delay) = this.update(cx, |usage, cx| {
+                    if usage.harness.is_none() {
+                        return BACKGROUND_POLL_INTERVAL;
+                    }
+                    if usage.next_refresh_delay().is_zero() {
+                        let refresh = usage.pending_refresh.unwrap_or(UsageRefresh::Active);
+                        usage.load(refresh, cx);
+                    }
+                    usage.next_refresh_delay()
+                }) else {
                     break;
+                };
+                let timer = cx.background_executor().timer(delay).fuse();
+                let wake = wake_rx.next().fuse();
+                futures::pin_mut!(timer, wake);
+                futures::select! {
+                    _ = timer => {},
+                    next = wake => {
+                        if next.is_none() {
+                            break;
+                        }
+                    },
                 }
             }
         });
         Self {
-            _state: cx.observe(&state, |_, _, cx| cx.notify()),
+            _state: cx.observe(&state, |usage, _, cx| usage.state_changed(cx)),
             state,
             target: None,
             harness: None,
             loaded: false,
             last_forced: None,
+            pending_refresh: None,
+            window_active: false,
+            completions: CompletionTracker::default(),
+            poll_wake,
             error: None,
             load_task: None,
             action_task: None,
@@ -96,7 +164,33 @@ impl AccountUsage {
             _poll: poll,
             // Settings → Accounts writes the same cache.
             _cache: cx.observe_global::<AccountsSnapshotCache>(|_, cx| cx.notify()),
+            _activation: None,
         }
+    }
+
+    fn next_refresh_delay(&self) -> Duration {
+        refresh_delay(
+            self.last_forced.map(|at| at.elapsed()),
+            self.window_active,
+            self.pending_refresh.is_some(),
+        )
+    }
+
+    fn state_changed(&mut self, cx: &mut Context<Self>) {
+        let completion = {
+            let state = self.state.read(cx);
+            state.selected_chat.as_ref().and_then(|chat_id| {
+                state
+                    .session_for(chat_id)
+                    .map(|session| (chat_id.clone(), session.last_completed_turn.clone()))
+            })
+        };
+        // The completion marker also advances when a queued turn starts
+        // immediately, without an observable Working -> Idle transition.
+        if self.completions.observe(completion) && self.harness.is_some() {
+            self.load(UsageRefresh::Active, cx);
+        }
+        cx.notify();
     }
 
     /// Point at the session's harness and device; loads on first sight of a
@@ -108,16 +202,18 @@ impl AccountUsage {
         cx: &mut Context<Self>,
     ) {
         let harness = harness.filter(|h| signs_in(*h) && reports_usage(*h));
-        self.harness = harness;
-        if self.target != target {
+        if self.target != target || self.harness != harness {
             self.target = target;
+            self.harness = harness;
             self.loaded = false;
             self.last_forced = None;
+            self.pending_refresh = None;
             self.error = None;
+            let _ = self.poll_wake.unbounded_send(());
         }
         if harness.is_some() && !self.loaded {
             self.loaded = true;
-            self.load(true, cx);
+            self.load(UsageRefresh::Active, cx);
         }
     }
 
@@ -136,23 +232,37 @@ impl AccountUsage {
 
     /// Plain list first when nothing is cached (the engine's persisted usage
     /// paints at once), then the forced probe replaces it.
-    fn load(&mut self, force_usage: bool, cx: &mut Context<Self>) {
+    fn load(&mut self, refresh: UsageRefresh, cx: &mut Context<Self>) {
+        let refresh = if refresh != UsageRefresh::Cached
+            && self.pending_refresh == Some(UsageRefresh::All)
+        {
+            UsageRefresh::All
+        } else {
+            refresh
+        };
+        let force_usage = refresh != UsageRefresh::Cached;
         if force_usage {
             if self
                 .last_forced
                 .is_some_and(|at| at.elapsed() < FORCE_MIN_INTERVAL)
             {
+                // A turn finishing inside the cooldown still gets a refresh
+                // at its end, rather than waiting for the next periodic poll.
+                self.pending_refresh = Some(refresh);
+                let _ = self.poll_wake.unbounded_send(());
                 return;
             }
+            self.pending_refresh = None;
             self.last_forced = Some(Instant::now());
+            let _ = self.poll_wake.unbounded_send(());
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
         let key = self.target.clone();
         let paint_first = force_usage && self.snapshot(cx).is_none();
-        let plain = self.params(serde_json::json!({ "forceUsage": false }));
-        let params = self.params(serde_json::json!({ "forceUsage": force_usage }));
+        let plain = self.params(usage_params(UsageRefresh::Cached, self.harness));
+        let params = self.params(usage_params(refresh, self.harness));
         self.load_task = Some(cx.spawn(async move |this, cx| {
             let fetch = |params: serde_json::Value| {
                 let engine = engine.clone();
@@ -217,7 +327,7 @@ impl AccountUsage {
                             .0
                             .insert(key, snapshot);
                     }
-                    Ok(Err(_)) => usage.load(false, cx),
+                    Ok(Err(_)) => usage.load(UsageRefresh::Cached, cx),
                     Err(err) => {
                         if let Some(previous) = previous {
                             cx.default_global::<AccountsSnapshotCache>()
@@ -250,7 +360,7 @@ impl AccountUsage {
         }
         if card == FooterCard::Accounts {
             // Opening the card is the moment someone cares: re-probe.
-            self.load(true, cx);
+            self.load(UsageRefresh::All, cx);
         }
         self.popup.open(card);
         cx.notify();
@@ -411,7 +521,18 @@ impl FooterCard {
 /// The footer's ring cluster: account usage (accent arc, so the two read
 /// apart), then context occupancy. Each opens its popover on click.
 impl Render for AccountUsage {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self._activation.is_none() {
+            self.window_active = window.is_window_active();
+            let _ = self.poll_wake.unbounded_send(());
+            self._activation = Some(cx.observe_window_activation(
+                window,
+                |usage: &mut AccountUsage, window, _| {
+                    usage.window_active = window.is_window_active();
+                    let _ = usage.poll_wake.unbounded_send(());
+                },
+            ));
+        }
         let theme = Theme::of(cx).clone();
         let context = self.state.read(cx).context_usage;
         let account = self.fraction(cx).map(|fraction| {
@@ -461,6 +582,82 @@ impl Render for AccountUsage {
 mod tests {
     use super::*;
     use zeron_proto::AgentUsageWindow;
+
+    #[test]
+    fn polling_uses_foreground_and_background_intervals() {
+        assert_eq!(
+            refresh_delay(Some(Duration::ZERO), true, false),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            refresh_delay(Some(Duration::ZERO), false, false),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            refresh_delay(Some(Duration::from_secs(45)), true, false),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            refresh_delay(Some(Duration::from_secs(120)), false, false),
+            Duration::from_secs(180)
+        );
+        assert_eq!(
+            refresh_delay(Some(Duration::from_secs(120)), true, false),
+            Duration::ZERO
+        );
+        assert_eq!(refresh_delay(None, true, false), Duration::ZERO);
+    }
+
+    #[test]
+    fn completion_and_manual_refreshes_wait_only_for_the_cooldown() {
+        for foreground in [true, false] {
+            assert_eq!(
+                refresh_delay(Some(Duration::from_secs(10)), foreground, true),
+                Duration::from_secs(20)
+            );
+            assert_eq!(
+                refresh_delay(Some(Duration::from_secs(30)), foreground, true),
+                Duration::ZERO
+            );
+            assert_eq!(
+                refresh_delay(Some(Duration::from_secs(60)), foreground, true),
+                Duration::ZERO
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_refreshes_are_scoped_but_manual_and_cached_lists_are_not() {
+        assert_eq!(
+            usage_params(UsageRefresh::Active, Some(HarnessId::Codex)),
+            serde_json::json!({ "forceUsage": true, "usageHarness": "codex" })
+        );
+        assert_eq!(
+            usage_params(UsageRefresh::All, Some(HarnessId::Codex)),
+            serde_json::json!({ "forceUsage": true })
+        );
+        assert_eq!(
+            usage_params(UsageRefresh::Cached, Some(HarnessId::Codex)),
+            serde_json::json!({ "forceUsage": false })
+        );
+    }
+
+    #[test]
+    fn completion_markers_refresh_once_without_firing_on_chat_selection() {
+        let marker =
+            |chat: &str, turn: Option<&str>| Some((chat.to_owned(), turn.map(str::to_owned)));
+        let mut tracker = CompletionTracker::default();
+        assert!(!tracker.observe(marker("a", Some("old"))));
+        assert!(!tracker.observe(marker("a", Some("old"))));
+        assert!(tracker.observe(marker("a", Some("new"))));
+        assert!(!tracker.observe(marker("a", Some("new"))));
+        assert!(!tracker.observe(marker("b", Some("existing"))));
+        assert!(tracker.observe(marker("b", Some("completed"))));
+        assert!(!tracker.observe(None));
+        assert!(!tracker.observe(marker("a", Some("new"))));
+        assert!(!tracker.observe(marker("fresh", None)));
+        assert!(tracker.observe(marker("fresh", Some("first"))));
+    }
 
     fn account(harness: HarnessId, active: bool, used: &[f32]) -> AgentAccount {
         serde_json::from_value(serde_json::json!({

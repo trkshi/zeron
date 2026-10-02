@@ -32,6 +32,12 @@ official Zeron release.
   in normal mode, using the full stored turn duration, including tool work and
   waiting for input. Compact mode keeps its existing duration label; older
   turns without stored timing remain unchanged.
+- Refresh account usage every minute while the window is active and every
+  five minutes in the background. Completed turns also trigger a refresh,
+  deferred when necessary to honor the 30-second cooldown. Automatic refreshes
+  probe only the current harness's active accounts; opening the account picker
+  still refreshes all saved accounts. Remote scoped polling requires the
+  patched Ubuntu engine; provider backoff and last-good usage caches remain.
 - Keep the app name, version, installer identity, account handling, and
   conversation storage unchanged.
 

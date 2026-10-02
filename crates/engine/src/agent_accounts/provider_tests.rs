@@ -143,6 +143,112 @@ fn mocked(base: &str) -> ProbeEndpoints {
     }
 }
 
+#[tokio::test]
+async fn scoped_usage_refresh_preserves_other_accounts_and_full_refresh_behavior() {
+    let root = tempfile::tempdir().unwrap();
+    let server = MockServer::start(|_, path, _| {
+        assert_eq!(path, "/backend-api/wham/usage");
+        (
+            200,
+            serde_json::json!({
+                "plan_type": "plus",
+                "rate_limit": { "primary_window": {
+                    "used_percent": 10.0,
+                    "reset_at": 1_800_000_000,
+                    "limit_window_seconds": 18_000
+                }}
+            })
+            .to_string(),
+        )
+    })
+    .await;
+    let (accounts, config) = accounts_with(root.path(), mocked(&server.base));
+    let slot = |id: &str, harness| Slot {
+        id: id.into(),
+        harness,
+        account_key: id.into(),
+        profile: SlotProfile {
+            email: format!("{id}@example.invalid"),
+            display_name: None,
+            organization: None,
+            plan: None,
+            auth_kind: AgentAuthKind::ApiKey,
+        },
+        credentials: serde_json::json!({ "tokens": { "access_token": id } }),
+        claude_config: None,
+        saved_at: 0,
+        created_at: None,
+        store_key: None,
+    };
+    let active = slot("active", HarnessId::Codex);
+    let inactive = slot("inactive", HarnessId::Codex);
+    let other = slot("other", HarnessId::ClaudeCode);
+    let targets = [
+        (HarnessId::Codex, &active, true),
+        (HarnessId::Codex, &inactive, false),
+        (HarnessId::ClaudeCode, &other, true),
+    ];
+    let stale_at = now_ms() - 60_000;
+    for &(harness, slot, _) in &targets {
+        let mut entry = UsageEntry::default();
+        entry.record(
+            Ok(UsageSnapshot {
+                windows: vec![AgentUsageWindow {
+                    label: "Session".into(),
+                    used_fraction: 0.4,
+                    resets_at: None,
+                }],
+                plan_label: None,
+            }),
+            credentials_fingerprint(&slot.credentials),
+            stale_at,
+        );
+        lock(&accounts.inner.usage).insert(usage_key(harness, &slot.account_key), entry);
+    }
+
+    accounts
+        .refresh_usage(&targets, Some(HarnessId::Codex))
+        .await;
+    assert_eq!(server.hits("GET /backend-api/wham/usage"), 1);
+    let active_key = usage_key(HarnessId::Codex, &active.account_key);
+    let inactive_key = usage_key(HarnessId::Codex, &inactive.account_key);
+    let other_key = usage_key(HarnessId::ClaudeCode, &other.account_key);
+    {
+        let cache = lock(&accounts.inner.usage);
+        assert_eq!(cache.len(), 3);
+        assert_eq!(
+            cache[&active_key].usage.as_ref().unwrap().windows[0].used_fraction,
+            0.1
+        );
+        for key in [&inactive_key, &other_key] {
+            assert_eq!(cache[key].fetched_at, Some(stale_at));
+            assert_eq!(cache[key].checked_at, stale_at);
+            assert_eq!(
+                cache[key].usage.as_ref().unwrap().windows[0].used_fraction,
+                0.4
+            );
+        }
+    }
+    let persisted: UsageCacheFile =
+        serde_json::from_slice(&std::fs::read(config.usage_cache_file()).unwrap()).unwrap();
+    assert!(persisted.entries.contains_key(&inactive_key));
+    assert!(persisted.entries.contains_key(&other_key));
+
+    // The account picker still probes saved logins on an unscoped refresh.
+    lock(&accounts.inner.usage)
+        .get_mut(&active_key)
+        .unwrap()
+        .checked_at = stale_at;
+    accounts.refresh_usage(&targets, None).await;
+    assert_eq!(server.hits("GET /backend-api/wham/usage"), 3);
+    assert!(
+        lock(&accounts.inner.usage)[&inactive_key]
+            .fetched_at
+            .unwrap()
+            > stale_at
+    );
+}
+
 fn rows(snapshot: &AgentAccountsSnapshot, harness: HarnessId) -> Vec<AgentAccount> {
     snapshot
         .accounts
