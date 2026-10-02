@@ -23,10 +23,11 @@ official Zeron release.
   spaces on nonblank lines, internal paragraph breaks, and meaningful code or
   raw-HTML whitespace. Failed sends still restore the original draft.
 - Show structured asynchronous Codex questions in a separate panel with choices
-  and custom answers, without replacing the normal chat draft. Questions stay
-  answerable after the turn finishes; delivery errors preserve answers for
-  retry. Remote chats require the patched engine on both devices. Installing
-  this Windows build alone does not update the Ubuntu host.
+  and custom answers, without replacing the normal chat draft. The panel uses
+  the composer's theme-aware frosted-glass material. Questions stay answerable
+  after the turn finishes; delivery errors preserve answers for retry. Remote
+  chats require the patched engine on both devices. Installing this Windows
+  build alone does not update the Ubuntu host.
 - Keep the app name, version, installer identity, account handling, and
   conversation storage unchanged.
 

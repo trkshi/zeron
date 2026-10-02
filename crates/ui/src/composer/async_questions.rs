@@ -17,6 +17,8 @@ use crate::theme::Theme;
 
 type RequestKey = (String, String);
 
+const PANEL_RADIUS: f32 = 8.0;
+
 fn pending_requests(entries: &[SessionMessageEntry]) -> Vec<(String, Vec<UserInputQuestion>)> {
     let mut seen = HashSet::new();
     entries
@@ -528,16 +530,18 @@ impl Render for AsyncQuestionPanel {
                     )
             })
             .collect();
-        div()
+        let panel = div()
             .id("async-question-panel")
+            .occlude()
             .w_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .rounded(px(8.0))
+            .rounded(px(PANEL_RADIUS))
             .border_1()
             .border_color(theme.border)
-            .bg(theme.surface)
+            .bg(theme.composer_surface_bg())
+            .when(!theme.is_frost(), |el| el.shadow_lg())
             .child(
                 div()
                     .id("async-question-body")
@@ -684,8 +688,8 @@ impl Render for AsyncQuestionPanel {
                                     ))
                             }),
                     ),
-            )
-            .into_any_element()
+            );
+        crate::frost::frosted(PANEL_RADIUS, crate::frost::MENU_BLUR, panel).into_any_element()
     }
 }
 
