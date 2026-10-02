@@ -91,6 +91,8 @@ struct DocPartJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resolved: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    asynchronous: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     message: Option<String>,
     /// Fork seam (`kind: "fork"`, additive): the chat the history above was
     /// copied from, and its title at the time.
@@ -199,11 +201,13 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             id: _,
             request_id,
             questions,
+            asynchronous,
             resolved,
         } => DocPartJson {
             id: request_id.clone(),
             kind: "input".into(),
             questions: Some(serde_json::to_value(questions)?),
+            asynchronous: (*asynchronous).then_some(true),
             resolved: Some(*resolved),
             ..Default::default()
         },
@@ -265,6 +269,7 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
                 .and_then(|q| serde_json::from_value(q).ok())
                 .unwrap_or_default(),
             resolved: p.resolved.unwrap_or(false),
+            asynchronous: p.asynchronous.unwrap_or(false),
         },
         "error" => MessagePart::Error {
             id: p.id,
@@ -1693,6 +1698,7 @@ mod tests {
                 id: "r1".into(),
                 request_id: "r1".into(),
                 questions: vec![],
+                asynchronous: false,
                 resolved: false,
             }],
             created_at: 1,
@@ -1709,6 +1715,55 @@ mod tests {
         assert!(matches!(
             &entries[0].parts[0],
             MessagePart::Input { resolved: true, .. }
+        ));
+    }
+
+    #[test]
+    fn async_question_snapshot_preserves_delivery_kind_and_resolution() {
+        let doc = SessionDoc::init("async-chat").unwrap();
+        let mut writer = SegmentWriter::begin(&doc, "assistant", "host", 1).unwrap();
+        let input = MessagePart::Input {
+            id: "async-request".into(),
+            request_id: "async-request".into(),
+            questions: vec![],
+            asynchronous: true,
+            resolved: false,
+        };
+        writer.sync(std::slice::from_ref(&input)).unwrap();
+        assert!(doc.resolve_input("async-request").unwrap());
+        // The streaming fold still has the original unanswered part. Appending
+        // more text must not overwrite the host's accepted-answer stamp.
+        writer
+            .sync(&[
+                input,
+                MessagePart::Text {
+                    id: "t1".into(),
+                    text: "More work".into(),
+                },
+            ])
+            .unwrap();
+        let snapshot = doc.export_snapshot().unwrap();
+        let restored = LoroDoc::new();
+        restored.import(&snapshot).unwrap();
+        let entries = SessionDoc::from_doc(restored).read_entries().unwrap();
+        assert!(matches!(
+            &entries[0].parts[0],
+            MessagePart::Input {
+                asynchronous: true,
+                resolved: true,
+                ..
+            }
+        ));
+        let old = serde_json::from_value::<MessagePart>(serde_json::json!({
+            "kind":"input", "id":"old", "requestId":"old", "questions":[], "resolved":false
+        }))
+        .unwrap();
+        assert!(matches!(
+            old,
+            MessagePart::Input {
+                asynchronous: false,
+                ..
+            }
         ));
     }
 

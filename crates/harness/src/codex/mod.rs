@@ -1193,6 +1193,7 @@ async fn run_session(session: Session) {
     // Deltas seen per agent-message item, so a model that never streams
     // (item/completed only) still emits its text exactly once.
     let mut streamed_text: HashSet<String> = HashSet::new();
+    let mut completed_messages = VecDeque::new();
     let mut reasoning_streams: HashMap<String, ReasoningStream> = HashMap::new();
     // Token usage is held until the turn ends, emitted just before Done.
     let mut pending_usage: Option<AgentEvent> = None;
@@ -1243,7 +1244,11 @@ async fn run_session(session: Session) {
                     "turn/started" => router.note_started(turn_id(&params)),
 
                     "item/agentMessage/delta" => {
-                        streamed_text.insert(item_id(&params));
+                        let id = item_id(&params);
+                        if completed_messages.contains(&id) {
+                            continue;
+                        }
+                        streamed_text.insert(id);
                         if let Some(text) = delta_text(&params)
                             && !send(&event_tx, AgentEvent::TextDelta { text }).await
                         {
@@ -1283,6 +1288,9 @@ async fn run_session(session: Session) {
                             if phase == Phase::Completed {
                                 // Fallback for non-streamed messages only.
                                 let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+                                if !normalize::remember(&mut completed_messages, id.to_owned()) {
+                                    continue;
+                                }
                                 let text = item.get("text").and_then(Value::as_str).unwrap_or("");
                                 if !streamed_text.contains(id)
                                     && !text.is_empty()
@@ -1304,6 +1312,11 @@ async fn run_session(session: Session) {
                                     },
                                 )
                                 .await
+                                {
+                                    break 'main;
+                                }
+                                if let Some(event) = normalize::async_input_event(&thread_id, item)
+                                    && !send(&event_tx, event).await
                                 {
                                     break 'main;
                                 }

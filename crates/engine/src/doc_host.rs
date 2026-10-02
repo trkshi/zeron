@@ -559,6 +559,8 @@ pub struct ChatDocHandle {
     drain_lock: tokio::sync::Mutex<()>,
     /// Serialize prompt commands while still allowing interrupt/input controls.
     command_drain_lock: tokio::sync::Mutex<()>,
+    /// Different devices may answer the same nonblocking question at once.
+    async_input_lock: tokio::sync::Mutex<()>,
     /// Queue rows held as explicit steers for a turn-boundary agent. They
     /// lead ordinary queued rows, in the order they were steered.
     steered_rows: Mutex<Vec<String>>,
@@ -1516,6 +1518,7 @@ impl DocHost {
             queue_tx,
             drain_lock: tokio::sync::Mutex::new(()),
             command_drain_lock: tokio::sync::Mutex::new(()),
+            async_input_lock: tokio::sync::Mutex::new(()),
             steered_rows: Mutex::new(Vec::new()),
             queue_paused: AtomicBool::new(recovered_queue_pending),
             mirror_dirty: AtomicBool::new(true),
@@ -5290,6 +5293,66 @@ impl DocHost {
                 if sessions.respond_input(chat_id, request_id, answers.clone())? {
                     return Ok((SessionCommandStatus::Applied, None));
                 }
+                let is_async = handle.doc.read_entries()?.iter().any(|entry| {
+                    entry.parts.iter().any(|part| {
+                        matches!(part, MessagePart::Input {
+                            request_id: id, asynchronous: true, ..
+                        } if id == request_id)
+                    })
+                });
+                if is_async {
+                    let _guard = handle.async_input_lock.lock().await;
+                    // Re-read after locking: a competing answer may have landed.
+                    let questions = handle.doc.read_entries()?.iter().find_map(|entry| {
+                        entry.parts.iter().find_map(|part| match part {
+                            MessagePart::Input {
+                                request_id: id,
+                                questions,
+                                asynchronous: true,
+                                resolved: false,
+                                ..
+                            } if id == request_id => Some(questions.clone()),
+                            _ => None,
+                        })
+                    });
+                    let Some(questions) = questions else {
+                        return Ok((
+                            SessionCommandStatus::Rejected,
+                            Some("question already answered".into()),
+                        ));
+                    };
+                    if !valid_async_answers(&questions, answers) {
+                        return Ok((
+                            SessionCommandStatus::Rejected,
+                            Some("answer every question before submitting".into()),
+                        ));
+                    }
+                    if !sessions.live_run_steerable(chat_id)
+                        && sessions.last_request(chat_id).is_none()
+                        && self.request_from_chat_row(chat_id, "").is_none()
+                    {
+                        return Ok((
+                            SessionCommandStatus::Rejected,
+                            Some("no live run and no prior run config".into()),
+                        ));
+                    }
+                    let prompt = respond_input_prompt(&questions, answers);
+                    let outcome = self
+                        .deliver_prompt(
+                            sessions,
+                            handle,
+                            &prompt,
+                            Some(format!("async-answer-{request_id}")),
+                            entry.issued_at,
+                        )
+                        .await?;
+                    // Never retire the question merely because a command queued.
+                    if outcome.0 == SessionCommandStatus::Applied {
+                        handle.doc.resolve_input(request_id)?;
+                        handle.publish_messages();
+                    }
+                    return Ok(outcome);
+                }
                 // No live resolver. Only a request id the doc shows as an
                 // OPEN question on a SETTLED entry gets the orphan fallback:
                 // a mismatched or already-resolved id is a stale/buggy answer
@@ -5306,6 +5369,7 @@ impl DocHost {
                                 MessagePart::Input {
                                     request_id: rid,
                                     questions,
+                                    asynchronous: false,
                                     resolved: false,
                                     ..
                                 } if rid == request_id => Some(questions.clone()),
@@ -5764,6 +5828,24 @@ pub fn respond_input_prompt(
         }
     }
     lines.join("\n")
+}
+
+fn valid_async_answers(questions: &[UserInputQuestion], answers: &[UserInputAnswer]) -> bool {
+    !questions.is_empty()
+        && answers.len() == questions.len()
+        && questions.iter().all(|question| {
+            let matching: Vec<_> = answers
+                .iter()
+                .filter(|answer| answer.question_id == question.id)
+                .collect();
+            matching.len() == 1
+                && !matching[0].labels.is_empty()
+                && (question.multi_select || matching[0].labels.len() == 1)
+                && matching[0]
+                    .labels
+                    .iter()
+                    .all(|label| !label.trim().is_empty())
+        })
 }
 
 /// Percent-encode one URL path segment of a sidecar part id. PART_RE's

@@ -1,7 +1,8 @@
 //! The composer: a hand-rolled multiline text input (adapted from gpui's
 //! `examples/input.rs`), the compact↔expanded flip, the Send/Queue/Stop morph,
 //! optimistic send with failure recovery, per-chat drafts, and the question
-//! wizard that replaces the composer while a run awaits input.
+//! wizard that replaces the composer while a run awaits input. Nonblocking
+//! questions use a separate panel above the normal editor.
 //!
 //! Pure decision logic (flip, auto-grow math, button morph, wizard reducer,
 //! pending-input detection) lives in free functions/structs with unit tests;
@@ -40,6 +41,8 @@ use crate::pickers::Pickers;
 use crate::settings::{ComposerSendBehavior, platform_combo};
 use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
+
+mod async_questions;
 
 // ---------------------------------------------------------------------------
 // Constants + pure decision logic
@@ -622,6 +625,7 @@ pub fn pending_input_request(
                 MessagePart::Input {
                     request_id,
                     questions,
+                    asynchronous: false,
                     resolved: false,
                     ..
                 } => Some((request_id.clone(), questions.clone())),
@@ -5241,6 +5245,8 @@ fn slash_error_message(err: &RpcError, skill: bool) -> SharedString {
 pub struct Composer {
     pub(crate) state: Entity<AppState>,
     pub(crate) input: Entity<ComposerInput>,
+    async_questions: Entity<async_questions::AsyncQuestionPanel>,
+    _async_questions_observe: Subscription,
     /// Draft displaced while a queued message occupies the composer.
     pub(crate) queue_edit_draft: Option<(String, Vec<StagedAttachment>, Vec<CapturedAppshot>)>,
     /// Composer actions row plus the new-session floating target tab
@@ -5460,6 +5466,9 @@ impl Composer {
         });
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
         let account_usage = cx.new(|cx| crate::account_usage::AccountUsage::new(state.clone(), cx));
+        let async_questions =
+            cx.new(|cx| async_questions::AsyncQuestionPanel::new(state.clone(), cx));
+        let async_questions_observe = cx.observe(&async_questions, |_, _, cx| cx.notify());
         // The footer toolbar (checkout kind + ref picker) is rendered INLINE
         // by the composer from picker state — a pickers-side notify (refs
         // loaded, popover toggled, pick made) must repaint the composer too.
@@ -5526,6 +5535,8 @@ impl Composer {
         let mut composer = Self {
             state,
             input,
+            async_questions,
+            _async_questions_observe: async_questions_observe,
             queue_edit_draft: None,
             pickers,
             drafts: HashMap::new(),
@@ -9126,6 +9137,10 @@ impl Render for Composer {
                         .child(div().min_w_0().truncate().child(notice)),
                 ))
             });
+
+        let container = container.when(self.async_questions.read(cx).is_visible(), |el| {
+            el.child(self.async_questions.clone())
+        });
 
         if wizard_active {
             let wizard = self.render_wizard(cx);
@@ -13892,6 +13907,7 @@ mod tests {
                     id: "input".into(),
                     request_id: id.into(),
                     questions: vec![q],
+                    asynchronous: false,
                     resolved,
                 }],
                 created_at: 0,
@@ -13954,6 +13970,7 @@ mod tests {
             id: "in-r1".into(),
             request_id: "r1".into(),
             questions: vec![question("q", &["a"], false)],
+            asynchronous: false,
             resolved: false,
         };
         let entry = |status: Option<MessageStatus>, parts: Vec<MessagePart>| SessionMessageEntry {
@@ -14010,6 +14027,7 @@ mod tests {
             id: "in-r1".into(),
             request_id: "r1".into(),
             questions: vec![],
+            asynchronous: false,
             resolved: true,
         };
         let t = vec![entry(

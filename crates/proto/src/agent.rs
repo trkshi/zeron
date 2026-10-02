@@ -561,6 +561,16 @@ pub enum AgentEvent {
     InputResolved {
         request_id: String,
     },
+    /// A question delivered without blocking the agent's current turn.
+    #[serde(rename_all = "camelCase")]
+    AsyncInputRequested {
+        request_id: String,
+        questions: Vec<UserInputQuestion>,
+    },
+    #[serde(rename_all = "camelCase")]
+    AsyncInputResolved {
+        request_id: String,
+    },
     /// A confirmed new assignment. When tagged as Subagent, this reopens the
     /// same child transcript even if the provider does not echo the user text.
     #[serde(rename_all = "camelCase")]

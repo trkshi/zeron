@@ -25,6 +25,9 @@ use zeron_sync::DocsStore;
 const CHAT: &str = "chat-e2e";
 const VIEWER: &str = "viewer-device";
 
+#[path = "support/async_questions.rs"]
+mod async_questions;
+
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
         mcp: None,

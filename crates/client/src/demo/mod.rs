@@ -737,6 +737,7 @@ impl DemoHost {
                         id: request_id.clone(),
                         request_id,
                         questions,
+                        asynchronous: false,
                         resolved: false,
                     });
                     sync(&parts, &mut written, &mut index);

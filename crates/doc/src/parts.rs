@@ -197,6 +197,9 @@ pub enum MessagePart {
         id: String,
         request_id: String,
         questions: Vec<UserInputQuestion>,
+        /// Async questions remain answerable after their turn ends.
+        #[serde(default)]
+        asynchronous: bool,
         #[serde(default)]
         resolved: bool,
     },
@@ -399,6 +402,10 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         AgentEvent::InputRequested {
             request_id,
             questions,
+        }
+        | AgentEvent::AsyncInputRequested {
+            request_id,
+            questions,
         } => {
             let id = format!("in-{request_id}");
             if !out.iter().any(|p| p.id() == id) {
@@ -406,11 +413,13 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                     id,
                     request_id: request_id.clone(),
                     questions: questions.clone(),
+                    asynchronous: matches!(event, AgentEvent::AsyncInputRequested { .. }),
                     resolved: false,
                 });
             }
         }
-        AgentEvent::InputResolved { request_id } => {
+        AgentEvent::InputResolved { request_id }
+        | AgentEvent::AsyncInputResolved { request_id } => {
             for p in out.iter_mut() {
                 if let MessagePart::Input {
                     request_id: rid,
@@ -704,6 +713,51 @@ mod tests {
 
     fn text_delta(s: &str) -> AgentEvent {
         AgentEvent::TextDelta { text: s.into() }
+    }
+
+    #[test]
+    fn async_input_fold_deduplicates_and_resolves_without_blocking() {
+        let mut parts = Vec::new();
+        let event = AgentEvent::AsyncInputRequested {
+            request_id: "async-1".into(),
+            questions: vec![],
+        };
+        fold_event_into_parts(&mut parts, &event);
+        fold_event_into_parts(&mut parts, &event);
+        assert_eq!(parts.len(), 1);
+        assert!(matches!(
+            &parts[0],
+            MessagePart::Input {
+                asynchronous: true,
+                resolved: false,
+                ..
+            }
+        ));
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::AsyncInputResolved {
+                request_id: "async-1".into(),
+            },
+        );
+        fold_event_into_parts(&mut parts, &event);
+        assert!(matches!(
+            &parts[0],
+            MessagePart::Input { resolved: true, .. }
+        ));
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::InputRequested {
+                request_id: "blocking-1".into(),
+                questions: vec![],
+            },
+        );
+        assert!(matches!(
+            &parts[1],
+            MessagePart::Input {
+                asynchronous: false,
+                ..
+            }
+        ));
     }
 
     #[test]

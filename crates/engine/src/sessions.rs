@@ -2046,6 +2046,7 @@ async fn drive_run(
     let mut last_subagent_activity: Option<tokio::time::Instant> = None;
 
     let mut final_completed_turn = None;
+    let mut seen_async_inputs = std::collections::HashSet::new();
     let final_status = loop {
         let event: AgentEvent = if let Some(event) = prepared_events.pop_front() {
             event
@@ -2192,7 +2193,7 @@ async fn drive_run(
                         MessagePart::Tool { id, resolved: false, .. } => {
                             id != zeron_proto::LIVE_PLAN_TOOL_ID
                         }
-                        MessagePart::Input { resolved: false, .. } => true,
+                        MessagePart::Input { resolved: false, asynchronous: false, .. } => true,
                         _ => false,
                     }) =>
                 {
@@ -2451,6 +2452,57 @@ async fn drive_run(
                 tracing::warn!(%chat_id, error = %err, "context usage write failed");
             }
             continue;
+        }
+        if let AgentEvent::AsyncInputRequested { request_id, .. } = &event {
+            if !seen_async_inputs.insert(request_id.clone()) {
+                continue;
+            }
+            // Replayed provider items must not reopen an answered question.
+            let entries = match doc_ref.read_entries() {
+                Ok(entries) => entries,
+                Err(err) => {
+                    seen_async_inputs.remove(request_id);
+                    tracing::warn!(chat = %chat_id, error = %err, "async question dedupe read failed");
+                    continue;
+                }
+            };
+            let exists = entries.iter().any(|entry| {
+                entry.parts.iter().any(|part| {
+                    matches!(part, MessagePart::Input { request_id: id, .. } if id == request_id)
+                })
+            });
+            if exists {
+                continue;
+            }
+            if idle_since.is_some() {
+                // A late completed-item notification carries a real question,
+                // but it must not unpark the finished turn into Working.
+                let mut parts = Vec::new();
+                fold_event_into_parts(&mut parts, &event);
+                if let Err(err) = doc_ref.push_message(&SessionMessageEntry {
+                    id: format!("async-question-{request_id}"),
+                    role: MessageRole::Assistant,
+                    parts,
+                    created_at: now_ms(),
+                    device_id: device_id.clone(),
+                    status: Some(MessageStatus::Complete),
+                    continuation_of: None,
+                    duration_ms: None,
+                }) {
+                    tracing::warn!(chat = %chat_id, error = %err, "late async question write failed");
+                }
+                inner.publish(&chat_id, &event);
+                continue;
+            }
+        }
+        if let AgentEvent::AsyncInputResolved { request_id } = &event {
+            if let Err(err) = doc_ref.resolve_input(request_id) {
+                tracing::warn!(chat = %chat_id, error = %err, "async question resolve failed");
+            }
+            if idle_since.is_some() {
+                inner.publish(&chat_id, &event);
+                continue;
+            }
         }
         // PARKED: a steer boundary, a terminal Done, or SELF-CONTINUED OUTPUT
         // re-opens the session; everything else stays gated. The ACP child
@@ -2737,12 +2789,15 @@ async fn drive_run(
                 DoneStatus::Interrupted => MessageStatus::Aborted,
                 DoneStatus::Completed | DoneStatus::Errored => MessageStatus::Complete,
             };
-            // No dangling chips: a run that ends for ANY reason (completed,
-            // errored, interrupted) terminally resolves its input parts — an
-            // unresolved question must not outlive the run that asked it
-            // (its resolver died with the run; an answer could never land).
+            // Blocking resolvers die with their turn. Async questions instead
+            // stay open: their answers use steering or a resumed turn.
             for part in folded.iter_mut() {
-                if let MessagePart::Input { resolved, .. } = part {
+                if let MessagePart::Input {
+                    resolved,
+                    asynchronous: false,
+                    ..
+                } = part
+                {
                     *resolved = true;
                 }
             }

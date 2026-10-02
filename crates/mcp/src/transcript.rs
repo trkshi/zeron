@@ -135,6 +135,7 @@ fn render_one(entry: &SessionMessageEntry, options: RenderOptions) -> RenderedMe
             MessagePart::Input {
                 request_id,
                 questions,
+                asynchronous,
                 resolved,
                 ..
             } => {
@@ -142,6 +143,7 @@ fn render_one(entry: &SessionMessageEntry, options: RenderOptions) -> RenderedMe
                     pending_input = Some(json!({
                         "requestId": request_id,
                         "questions": questions,
+                        "asynchronous": asynchronous,
                     }));
                 }
             }
@@ -280,6 +282,7 @@ mod tests {
                         id: "i".into(),
                         request_id: "req-1".into(),
                         questions: vec![],
+                        asynchronous: false,
                         resolved: false,
                     },
                 ],

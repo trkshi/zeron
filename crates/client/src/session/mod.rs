@@ -683,6 +683,7 @@ fn open_input(entries: &[Arc<Entry>]) -> Option<InputRequest> {
                 request_id,
                 questions,
                 resolved: false,
+                asynchronous: false,
                 ..
             } = part
                 && !questions.is_empty()

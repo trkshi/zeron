@@ -343,6 +343,7 @@ fn picker(host: &str, now: i64) -> Vec<SessionMessageEntry> {
                 MessagePart::Input {
                     id: "req-1".into(),
                     request_id: "req-1".into(),
+                    asynchronous: false,
                     questions: vec![
                         UserInputQuestion {
                             id: "q1".into(),

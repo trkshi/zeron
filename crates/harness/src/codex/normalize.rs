@@ -6,7 +6,7 @@
 //! types) are accepted, and unknown item types map to nothing.
 
 use serde_json::Value;
-use zeron_proto::{AgentEvent, DoneStatus, TodoItem, ToolCall};
+use zeron_proto::{AgentEvent, DoneStatus, TodoItem, ToolCall, UserInputQuestion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -99,6 +99,45 @@ impl ReasoningStream {
 
 pub(crate) fn item_id(params: &Value) -> String {
     str_field(params, &["itemId", "item_id"])
+}
+
+/// Use app-server metadata, never Markdown bullets, to recognize async questions.
+pub(crate) fn async_input_event(thread_id: &str, item: &Value) -> Option<AgentEvent> {
+    if item.get("delivery")?.as_str()? != "async" {
+        return None;
+    }
+    let id = item.get("id")?.as_str()?.trim();
+    if thread_id.is_empty() || id.is_empty() {
+        return None;
+    }
+    #[derive(serde::Deserialize)]
+    struct Question {
+        title: String,
+        #[serde(default)]
+        options: Option<Vec<String>>,
+    }
+    let questions: Vec<Question> = serde_json::from_value(item.get("questions")?.clone()).ok()?;
+    if questions.is_empty() || questions.iter().any(|q| q.title.trim().is_empty()) {
+        return None;
+    }
+    let request_id = format!("codex-async-{thread_id}:{id}");
+    let questions = questions
+        .into_iter()
+        .enumerate()
+        .map(|(index, q)| UserInputQuestion {
+            id: format!("{request_id}:q{}", index + 1),
+            header: "Question".into(),
+            question: q.title,
+            options: q.options.unwrap_or_default(),
+            multi_select: false,
+            prefill: None,
+            multiline: false,
+        })
+        .collect();
+    Some(AgentEvent::AsyncInputRequested {
+        request_id,
+        questions,
+    })
 }
 
 /// `params.turn.id` on the turn/* lifecycle notifications.
@@ -479,7 +518,7 @@ pub(super) struct ChildStream {
     settled: bool,
 }
 
-fn remember(ids: &mut std::collections::VecDeque<String>, id: String) -> bool {
+pub(crate) fn remember(ids: &mut std::collections::VecDeque<String>, id: String) -> bool {
     if id.is_empty() {
         return true;
     }
@@ -554,6 +593,9 @@ impl ChildStream {
                 events.push(AgentEvent::TextDelta {
                     text: "\n\n".into(),
                 });
+                if let Some(event) = async_input_event(child, item) {
+                    events.push(event);
+                }
                 return events;
             }
             return map_item(phase, item);
@@ -707,6 +749,63 @@ pub(crate) fn route_child_notification(method: &str) -> ChildRoute {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn async_questions_use_structured_metadata_and_stable_ids() {
+        let item = json!({"type":"agentMessage", "id":"call_1", "delivery":"async",
+        "text":"Choose a capture method:\n- This bullet is not an option",
+        "questions":[
+            {"title":"Capture method?", "options":["Screenshots", "Streaming"]},
+            {"title":"Any constraints?", "options":null}
+        ]});
+        let event = async_input_event("thread-1", &item).unwrap();
+        let AgentEvent::AsyncInputRequested {
+            request_id,
+            questions,
+        } = &event
+        else {
+            panic!("{event:?}");
+        };
+        assert_eq!(request_id, "codex-async-thread-1:call_1");
+        assert_eq!(questions[0].id, "codex-async-thread-1:call_1:q1");
+        assert_eq!(questions[0].question, "Capture method?");
+        assert_eq!(questions[0].options, ["Screenshots", "Streaming"]);
+        assert!(questions[1].options.is_empty());
+        assert_eq!(async_input_event("thread-1", &item), Some(event.clone()));
+        assert_ne!(async_input_event("thread-2", &item), Some(event));
+        for invalid in [
+            json!({"id":"i", "text":"Question?\n- A\n- B"}),
+            json!({"id":"i", "questions":[{"title":"Q?"}]}),
+            json!({"id":"i", "delivery":"async", "questions":[]}),
+            json!({"id":"i", "delivery":"async", "questions":[{"title":" "}]}),
+            json!({"id":"i", "delivery":"async", "questions":[{"title":"Q?", "options":[1]}]}),
+            json!({"delivery":"async", "questions":[{"title":"Q?"}]}),
+        ] {
+            assert!(async_input_event("thread-1", &invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn completed_child_questions_are_nonblocking_and_deduplicated() {
+        let mut child = ChildStream::default();
+        let params = json!({"item":{"type":"agentMessage", "id":"call_1", "text":"Pick one",
+            "delivery":"async", "questions":[{"title":"Which?", "options":["A", "B"]}]}});
+        assert!(child.map("child-1", "item/started", &params).is_empty());
+        let events = child.map("child-1", "item/completed", &params);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, AgentEvent::AsyncInputRequested { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::InputRequested { .. }))
+        );
+        assert!(child.map("child-1", "item/completed", &params).is_empty());
+    }
 
     #[test]
     fn reasoning_parts_preserve_chunking_and_existing_paragraph_breaks() {
