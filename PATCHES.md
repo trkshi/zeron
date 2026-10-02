@@ -13,8 +13,12 @@ official Zeron release.
 - Disable automatic desktop update downloads and installation on quit so an
   official binary cannot silently replace these patches. Update notifications
   are unchanged; install future patched builds through this workflow.
-- Keep the app name, version, installer identity, account handling, and data
-  storage unchanged. The profile avatar is unchanged.
+- Choose, change, or remove a profile image through the account menu. The
+  native picker selects a file on this computer; Zeron saves a small square
+  copy in its local data directory and remembers it separately for each
+  account. Images stay on this device and are not uploaded or synced.
+- Keep the app name, version, installer identity, account handling, and
+  conversation storage unchanged.
 
 ## Build and Download
 

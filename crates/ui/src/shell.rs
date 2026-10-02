@@ -70,6 +70,7 @@ mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
 mod project_icon;
+mod profile_image;
 mod side_chats;
 mod sidebar_pins;
 mod sidebar_sections;
@@ -1938,6 +1939,7 @@ pub struct Shell {
     harness_update_geometry: [Option<WidthTween>; 2],
     harness_update_scroll: settings::widgets::PageScroll,
     user_menu: popover::Popup<()>,
+    profile_image_task: Option<Task<()>>,
     /// Inline sidebar error strip (mutation failures); click dismisses.
     sidebar_notice: Option<SharedString>,
     /// Repaints the update strip and dialog as the app-level update
@@ -2350,6 +2352,7 @@ impl Shell {
             harness_update_geometry: [None; 2],
             harness_update_scroll: settings::widgets::PageScroll::default(),
             user_menu: popover::Popup::default(),
+            profile_image_task: None,
             sidebar_notice: None,
             _app_update_observation: crate::app_update::AppUpdate::global(cx)
                 .map(|update| cx.observe(&update, |_, _, cx| cx.notify())),
@@ -4492,6 +4495,7 @@ impl Shell {
         self.settings.reduce_motion = current.reduce_motion;
         self.settings.pause_animations_in_background = current.pause_animations_in_background;
         self.settings.compact_model_picker = current.compact_model_picker;
+        self.settings.profile_images_by_account = current.profile_images_by_account;
     }
 
     fn retry_engine(&mut self, cx: &mut Context<Self>) {
@@ -8547,6 +8551,19 @@ impl Shell {
         let theme = &theme.for_popup();
         let open = self.user_menu.is_open();
         let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
+        let profile_key = self.profile_image_key(cx);
+        let avatar_path = profile_key
+            .as_deref()
+            .and_then(|key| settings::profile_image::path(key, cx));
+        let has_profile_image = avatar_path.is_some();
+        let choosing_image = self.profile_image_task.is_some();
+        let image_picker_label = if choosing_image {
+            "Choosing image..."
+        } else if has_profile_image {
+            "Change profile image"
+        } else {
+            "Choose profile image"
+        };
         // The profile pill hugs avatar + name (shrinking so long names fade
         // out); the gap between it and the settings button is not interactive.
         let initial: SharedString = user_line
@@ -8556,6 +8573,23 @@ impl Shell {
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_else(|| "?".into())
             .into();
+        let avatar_initial = move || {
+            div()
+                .w_full()
+                .text_center()
+                .child(initial.clone())
+                .into_any_element()
+        };
+        let avatar_content = match avatar_path {
+            Some(path) => gpui::img(path)
+                .size_full()
+                .rounded_full()
+                .object_fit(gpui::ObjectFit::Cover)
+                .with_loading(avatar_initial.clone())
+                .with_fallback(avatar_initial)
+                .into_any_element(),
+            None => avatar_initial(),
+        };
         let mut trigger = div()
             .id("user-menu")
             .debug_selector(|| "user-menu".into())
@@ -8610,11 +8644,12 @@ impl Shell {
                 cx.notify();
             }))
             .child(
-                // Avatar: white circle, initial in near-black (zeron user-menu.tsx).
+                // The initial also remains visible while a saved photo loads or is missing.
                 div()
                     .size(px(SIDEBAR_FOOTER_AVATAR_SIZE))
                     .flex_none()
                     .rounded_full()
+                    .overflow_hidden()
                     .bg(theme.text)
                     .flex()
                     .items_center()
@@ -8624,7 +8659,7 @@ impl Shell {
                     .line_height(px(SIDEBAR_FOOTER_AVATAR_SIZE))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.bg)
-                    .child(div().w_full().text_center().child(initial)),
+                    .child(avatar_content),
             )
             .child(sidebar_faded_label(
                 "user-menu-label".into(),
@@ -8651,6 +8686,50 @@ impl Shell {
                         .truncate()
                         .child(menu_identity),
                 )
+                .when(profile_key.is_some(), |menu| {
+                    menu.child(
+                        popover::menu_row(theme, false, "user-menu-profile-image")
+                            .id("user-menu-profile-image")
+                            .role(gpui::Role::Button)
+                            .aria_label(image_picker_label)
+                            .when(choosing_image, |row| row.opacity(0.6).cursor_default())
+                            .when(!choosing_image, |row| {
+                                row.tab_index(0)
+                                    .focus_visible(|s| s.border_2().border_color(theme.accent))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.choose_profile_image(cx);
+                                    }))
+                            })
+                            .child(
+                                icon(icons::FILE_IMAGE)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from(image_picker_label)),
+                    )
+                    .when(has_profile_image, |menu| {
+                        menu.child(
+                            popover::menu_row(theme, false, "user-menu-remove-profile-image")
+                                .id("user-menu-remove-profile-image")
+                                .role(gpui::Role::Button)
+                                .aria_label("Remove profile image")
+                                .when(choosing_image, |row| row.opacity(0.6).cursor_default())
+                                .when(!choosing_image, |row| {
+                                    row.tab_index(0)
+                                        .focus_visible(|s| s.border_2().border_color(theme.accent))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.remove_profile_image(cx);
+                                        }))
+                                })
+                                .child(
+                                    icon(icons::TRASH_BIN_MINIMALISTIC)
+                                        .size(px(16.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Remove profile image")),
+                        )
+                    })
+                })
                 .when_some(action, |menu, action| {
                     let row = match action {
                         AccountMenuAction::EnableSync => {
@@ -14495,6 +14574,14 @@ mod exit_regressions {
             let terminal_size = 15.0 + index as f32;
             let code_size = 11.0 + index as f32;
             let transcript_width = 736.0 + 16.0 * index as f32;
+            let profile_images = if open_links_in_zeron {
+                std::collections::HashMap::from([(
+                    "local".to_string(),
+                    dir.path().join(format!("profile-images/profile-image-{index}.png")),
+                )])
+            } else {
+                std::collections::HashMap::new()
+            };
             let geometry = Some(settings::WindowGeometry {
                 display_uuid: Some(uuid::Uuid::from_u128(7)),
                 x: 80.0 + index as f32,
@@ -14520,6 +14607,7 @@ mod exit_regressions {
                         settings.code_font_family = code_family.clone();
                         settings.code_font_size = code_size;
                         settings.transcript_width = transcript_width;
+                        settings.profile_images_by_account = profile_images.clone();
                         settings.skill_completion_by_harness.insert(
                             zeron_proto::HarnessId::ClaudeCode,
                             settings::SkillCompletionSettings {
@@ -14548,6 +14636,7 @@ mod exit_regressions {
                         assert_eq!(current.code_font_family, code_family);
                         assert_eq!(current.code_font_size, code_size);
                         assert_eq!(current.transcript_width, transcript_width);
+                        assert_eq!(current.profile_images_by_account, profile_images);
                         assert_eq!(
                             current
                                 .skill_completion(zeron_proto::HarnessId::ClaudeCode)
@@ -14576,6 +14665,7 @@ mod exit_regressions {
                     assert_eq!(loaded.code_font_family, code_family);
                     assert_eq!(loaded.code_font_size, code_size);
                     assert_eq!(loaded.transcript_width, transcript_width);
+                    assert_eq!(loaded.profile_images_by_account, profile_images);
                     assert_eq!(loaded.sidebar_width, 292.0);
                     assert_eq!(loaded.right_pane_width, 542.0);
                     assert_eq!(loaded.terminal_height, 302.0);

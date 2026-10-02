@@ -24,6 +24,7 @@ pub mod devices;
 pub mod files;
 pub mod harnesses;
 pub mod notifications;
+pub(crate) mod profile_image;
 pub mod shortcuts;
 pub mod thread_naming;
 pub mod wallpaper;
@@ -838,6 +839,9 @@ pub struct UiSettings {
     /// Device-local pins for local profiles; synced profiles use registry pins.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sidebar_pinned_session_ids_by_profile: HashMap<String, Vec<String>>,
+    /// Managed profile images, isolated by account and stored only on this device.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub profile_images_by_account: HashMap<String, PathBuf>,
     /// Legacy: per-space tab order, from when tabs were the selected space's
     /// non-archived sessions. Kept for file compatibility; no longer read.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -986,6 +990,7 @@ impl Default for UiSettings {
             space_filter: None,
             sidebar_pinned_session_ids_by_profile: HashMap::new(),
             sidebar_sections_by_profile: HashMap::new(),
+            profile_images_by_account: HashMap::new(),
             tab_order: std::collections::HashMap::new(),
             space_order: Vec::new(),
             sound_enabled: true,
@@ -2530,6 +2535,10 @@ mod tests {
                     vec!["synced-1".to_string()],
                 ),
             ]),
+            profile_images_by_account: HashMap::from([(
+                "user:user-1".to_string(),
+                dir.path().join("profile-images/profile-image-1.png"),
+            )]),
             tab_order: std::collections::HashMap::from([(
                 "space-1".to_string(),
                 vec!["b".to_string(), "a".to_string()],
