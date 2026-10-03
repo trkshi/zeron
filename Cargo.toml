@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/voice",
     "crates/theme",
     "crates/proto",
     "crates/preview",
@@ -21,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.101"
+version = "0.2.102"
 edition = "2024"
 license = "MIT"
 publish = false

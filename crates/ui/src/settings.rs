@@ -332,6 +332,8 @@ impl SettingsStore {
 }
 
 pub fn init(settings: UiSettings, data_dir: impl Into<PathBuf>, cx: &mut App) {
+    let data_dir = data_dir.into();
+    crate::dictation::init(data_dir.clone(), cx);
     cx.set_global(SettingsStore {
         current: settings,
         data_dir: data_dir.into(),
@@ -359,7 +361,7 @@ pub fn compact_model_picker(cx: &App) -> bool {
 /// the new-thread canvas background. A unique file name avoids stale image
 /// caches when the background is replaced.
 pub fn install_new_thread_composer_background(source: &Path, cx: &mut App) -> Result<(), String> {
-    let staged = crate::attachments::stage_file(source)?;
+    let staged = crate::attachments::stage_file_verbatim(source)?;
     // Do not persist the candidate or retire the old managed file until the
     // renderer's decoder has accepted the exact bytes we are about to save.
     let image = crate::new_thread_background_image::decode(staged.bytes()).map_err(|_| {
@@ -786,6 +788,11 @@ pub const SKILL_COMPLETION_HARNESSES: [(zeron_proto::HarnessId, &str); 9] = [
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct UiSettings {
+    pub dictation_enabled: bool,
+    /// Dictation microphone as a `zeron_voice::InputDevice` id; `None`
+    /// follows the system default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictation_input: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_geometry: Option<WindowGeometry>,
     /// Submit using Enter or the platform modifier plus Enter.
@@ -973,6 +980,8 @@ pub struct UiSettings {
 impl Default for UiSettings {
     fn default() -> Self {
         Self {
+            dictation_enabled: false,
+            dictation_input: None,
             window_geometry: None,
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
@@ -1085,6 +1094,7 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 /// rather than panicking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutId {
+    ToggleDictation,
     CaptureAppshot,
     RandomWallpaper,
     SaveFile,
@@ -1103,7 +1113,8 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 14 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 15 + JUMP_SLOTS] = [
+        ShortcutId::ToggleDictation,
         ShortcutId::CaptureAppshot,
         ShortcutId::RandomWallpaper,
         ShortcutId::SaveFile,
@@ -1136,6 +1147,7 @@ impl ShortcutId {
     /// Row label (zeron lib/shortcuts.ts `SHORTCUT_DEFINITIONS`, verbatim).
     pub fn label(self) -> &'static str {
         match self {
+            ShortcutId::ToggleDictation => "Hold to dictate",
             ShortcutId::RandomWallpaper => "Random wallpaper",
             ShortcutId::CaptureAppshot => "Capture Appshot",
             ShortcutId::SaveFile => "Save file",
@@ -1163,6 +1175,7 @@ impl ShortcutId {
     /// this guards against only exists off macOS).
     pub fn default_combo_on(self, mac: bool) -> &'static str {
         match self {
+            ShortcutId::ToggleDictation => "mod-d",
             ShortcutId::RandomWallpaper => "mod-u",
             ShortcutId::CaptureAppshot if mac => "ctrl-alt-space",
             ShortcutId::CaptureAppshot => "mod-alt-space",
@@ -1211,6 +1224,7 @@ impl ShortcutId {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KeymapConfig {
+    pub toggle_dictation: String,
     #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), serde(skip))]
     pub capture_appshot: String,
     pub random_wallpaper: String,
@@ -1277,6 +1291,7 @@ pub fn sidebar_pin_profile_key(
 impl Default for KeymapConfig {
     fn default() -> Self {
         Self {
+            toggle_dictation: ShortcutId::ToggleDictation.default_combo().into(),
             capture_appshot: ShortcutId::CaptureAppshot.default_combo().into(),
             random_wallpaper: ShortcutId::RandomWallpaper.default_combo().into(),
             save_file: ShortcutId::SaveFile.default_combo().into(),
@@ -1299,6 +1314,7 @@ impl Default for KeymapConfig {
 impl KeymapConfig {
     pub fn get(&self, id: ShortcutId) -> &str {
         match id {
+            ShortcutId::ToggleDictation => &self.toggle_dictation,
             ShortcutId::CaptureAppshot => &self.capture_appshot,
             ShortcutId::RandomWallpaper => &self.random_wallpaper,
             ShortcutId::SaveFile => &self.save_file,
@@ -1323,6 +1339,7 @@ impl KeymapConfig {
 
     pub fn set(&mut self, id: ShortcutId, combo: String) {
         match id {
+            ShortcutId::ToggleDictation => self.toggle_dictation = combo,
             ShortcutId::CaptureAppshot => self.capture_appshot = combo,
             ShortcutId::RandomWallpaper => self.random_wallpaper = combo,
             ShortcutId::SaveFile => self.save_file = combo,
@@ -1587,6 +1604,106 @@ impl UiSettings {
                 crate::sound::Sound::Request => self.sound_input_enabled,
                 crate::sound::Sound::Attention => self.sound_attention_enabled,
             }
+    }
+
+    /// Three-way merge for a view that keeps a working copy of the settings:
+    /// fields `edited` changed since `base` win, every other field keeps
+    /// `current`. A stale copy therefore never reverts a choice another
+    /// surface saved meanwhile. The destructure is exhaustive, so a new field
+    /// does not compile until it is merged here too.
+    pub fn merge_changes(base: &Self, edited: &Self, mut current: Self) -> Self {
+        macro_rules! merge {
+            ($($field:ident),* $(,)?) => {{
+                let Self { $($field),* } = edited;
+                $(if *$field != base.$field {
+                    current.$field = $field.clone();
+                })*
+            }};
+        }
+        merge!(
+            dictation_enabled,
+            dictation_input,
+            window_geometry,
+            composer_send_behavior,
+            start_with_new_chat,
+            skills_in_slash_menu,
+            skill_completion_by_harness,
+            compact_model_picker,
+            sidebar_width,
+            sidebar_collapsed,
+            sidebar_grouped,
+            sidebar_organization,
+            sidebar_sort,
+            sidebar_show_project_label,
+            sidebar_compact,
+            sidebar_show_project_icon,
+            sidebar_show_harness,
+            sidebar_show_branch,
+            sidebar_show_pull_request,
+            github_star_banner_dismissed,
+            last_space_id,
+            last_project_action_by_space_id,
+            open_tabs,
+            space_filter,
+            sidebar_sections_by_profile,
+            sidebar_pinned_session_ids_by_profile,
+            profile_images_by_account,
+            tab_order,
+            space_order,
+            sound_enabled,
+            sound_completion_enabled,
+            sound_input_enabled,
+            sound_attention_enabled,
+            notifications_enabled,
+            notifications_background_only,
+            files_panel_width,
+            agent_update_notifications,
+            right_pane_width,
+            right_pane_open,
+            terminal_height,
+            terminal_open,
+            keymap,
+            appshots_enabled,
+            appshot_sound_enabled,
+            appshot_destination,
+            escape_stops_active_agent,
+            settings_section,
+            appearance,
+            git_history_columns,
+            git_history_column_widths,
+            git_history_column_order,
+            git_history_author_display,
+            ui_font_family,
+            ui_font_size,
+            terminal_font_family,
+            terminal_font_size,
+            code_font_family,
+            code_font_size,
+            theme_selection,
+            diff_split,
+            diff_wrap,
+            code_fences_fit_content,
+            transcript_width,
+            open_web_links_in_zeron,
+            transcript_compact_mode,
+            files_autosave_enabled,
+            files_autosave_delay_ms,
+            files_word_wrap,
+            files_show_all,
+            accent,
+            surface,
+            new_thread_composer_background,
+            wallpaper_folder,
+            wallpaper_source,
+            wallpaper_history,
+            wallpaper_theme_colors,
+            wallpaper_color,
+            new_thread_background_effect,
+            reduce_motion,
+            pause_animations_in_background,
+            legacy_accent_color,
+        );
+        current
     }
 
     /// Clamp widths into their legal ranges (also heals NaN to defaults).
@@ -1874,6 +1991,52 @@ mod tests {
     }
 
     #[test]
+    fn settings_merge_preserves_personal_preferences_changed_elsewhere() {
+        let base = UiSettings::default();
+        let edited = UiSettings {
+            sidebar_width: 300.0,
+            ..base.clone()
+        };
+        let images = HashMap::from([(
+            "local".to_string(),
+            PathBuf::from("profile-images/avatar.png"),
+        )]);
+        let current = UiSettings {
+            start_with_new_chat: false,
+            profile_images_by_account: images.clone(),
+            ..base.clone()
+        };
+        let merged = UiSettings::merge_changes(&base, &edited, current);
+        assert_eq!(merged.sidebar_width, 300.0);
+        assert!(!merged.start_with_new_chat);
+        assert_eq!(merged.profile_images_by_account, images);
+    }
+
+    #[test]
+    fn settings_merge_keeps_personal_edits_and_unrelated_provider_preferences() {
+        let base = UiSettings {
+            profile_images_by_account: HashMap::from([(
+                "local".to_string(),
+                PathBuf::from("profile-images/avatar.png"),
+            )]),
+            ..UiSettings::default()
+        };
+        let edited = UiSettings {
+            start_with_new_chat: false,
+            profile_images_by_account: HashMap::new(),
+            ..base.clone()
+        };
+        let current = UiSettings {
+            dictation_enabled: true,
+            ..base.clone()
+        };
+        let merged = UiSettings::merge_changes(&base, &edited, current);
+        assert!(!merged.start_with_new_chat);
+        assert!(merged.profile_images_by_account.is_empty());
+        assert!(merged.dictation_enabled);
+    }
+
+    #[test]
     fn composer_send_behavior_is_opt_in_for_old_and_partial_settings() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -1914,6 +2077,7 @@ mod tests {
             height: 800.0,
         };
         let settings = UiSettings {
+            dictation_enabled: false,
             window_geometry: Some(geometry),
             ..Default::default()
         };
@@ -2520,6 +2684,8 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let settings = UiSettings {
+            dictation_enabled: false,
+            dictation_input: Some("coreaudio:usb-mic".into()),
             window_geometry: None,
             sidebar_width: 300.0,
             sidebar_collapsed: true,
