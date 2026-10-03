@@ -38,6 +38,13 @@ Zeron release.
   format and prefix on its existing duration label. Omit the completion time
   when it cannot be derived from stored timing; older turns without a stored
   duration remain unchanged.
+- Notify once when a new asynchronous question request arrives in the open
+  conversation, even while Zeron is minimized or in the background. Use the
+  existing **Input required** sound preference and desktop notification
+  settings; replayed history, repeated updates, and answering a request do
+  not alert again. Windows uses the question chime because upstream's Windows
+  desktop-toast handler is not implemented. This is a UI-only change; the
+  Ubuntu engine does not need an update.
 - Retain upstream's `Shift+Backspace` fix: holding Shift while pressing
   Backspace still deletes backward or removes the selected text in the
   composer and search inputs.

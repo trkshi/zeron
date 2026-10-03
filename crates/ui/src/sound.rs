@@ -11,6 +11,7 @@
 //! - failures are logged and swallowed — a missing player must never bother
 //!   the session flow.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,7 +32,7 @@ static SOUND_ATTENTION: &[u8] = include_bytes!("../assets/sounds/attention.wav")
 pub enum Sound {
     /// An agent turn completed successfully.
     Done,
-    /// The agent is waiting on a question (→ AwaitingInput).
+    /// The agent requested user input, synchronously or asynchronously.
     Request,
     /// A run failed or the durable connection state degraded.
     Attention,
@@ -308,10 +309,70 @@ fn run_checked(program: &str, args: &[&str], path: &Path) -> Result<(), String> 
 // Notification decision (shared by sound and desktop banners)
 // ---------------------------------------------------------------------------
 
+use zeron_doc::{MessagePart, MessageRole, SessionMessageEntry};
 use zeron_proto::{
     Session,
     view::{Indicator, effective_indicator},
 };
+
+/// Async questions do not change run status. Track their durable ids instead,
+/// seeding each chat's first complete replay silently like session baselines.
+#[derive(Debug, Default)]
+pub(crate) struct AsyncQuestionNotifications {
+    seen: HashMap<String, HashSet<String>>,
+    last_checked: Option<(String, u64)>,
+}
+
+impl AsyncQuestionNotifications {
+    /// Consume arrivals even when notification output is disabled, so enabling
+    /// sounds or banners later never replays an already observed question.
+    pub(crate) fn observe(
+        &mut self,
+        chat_id: &str,
+        revision: u64,
+        entries: &[SessionMessageEntry],
+    ) -> usize {
+        if self
+            .last_checked
+            .as_ref()
+            .is_some_and(|(chat, last)| chat == chat_id && *last == revision)
+        {
+            return 0;
+        }
+        self.last_checked = Some((chat_id.to_owned(), revision));
+        let initialized = self.seen.contains_key(chat_id);
+        let seen = self.seen.entry(chat_id.to_owned()).or_default();
+        let mut pending = HashMap::new();
+        for part in entries
+            .iter()
+            .filter(|entry| entry.role == MessageRole::Assistant)
+            .flat_map(|entry| &entry.parts)
+        {
+            if let MessagePart::Input {
+                request_id,
+                questions,
+                asynchronous: true,
+                resolved,
+                ..
+            } = part
+                && (*resolved || !questions.is_empty())
+            {
+                // A resolved copy wins over a stale unresolved duplicate.
+                pending
+                    .entry(request_id.as_str())
+                    .and_modify(|unanswered: &mut bool| *unanswered &= !*resolved)
+                    .or_insert(!*resolved);
+            }
+        }
+        let mut arrivals = 0;
+        for (request_id, unanswered) in pending {
+            if seen.insert(request_id.to_owned()) && initialized && unanswered {
+                arrivals += 1;
+            }
+        }
+        arrivals
+    }
+}
 
 /// Notification baseline is separate from the visual activity indicator:
 /// going idle can mean cancellation, expiry, or an internal handoff.
@@ -431,6 +492,98 @@ impl AttentionSoundGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn question_entry(request: &str, asynchronous: bool, resolved: bool) -> SessionMessageEntry {
+        SessionMessageEntry {
+            id: format!("assistant-{request}"),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Input {
+                id: request.into(),
+                request_id: request.into(),
+                asynchronous,
+                resolved,
+                questions: serde_json::from_value(serde_json::json!([
+                    {"id":"q1", "header":"Choice", "question":"Which color?", "options":["Green", "Blue"]},
+                    {"id":"q2", "header":"Reply", "question":"Any comments?", "options":[]}
+                ]))
+                .unwrap(),
+            }],
+            created_at: 1,
+            device_id: "host".into(),
+            status: Some(zeron_doc::MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn async_question_history_is_silent_and_new_requests_alert_once() {
+        let mut notifications = AsyncQuestionNotifications::default();
+        let old = question_entry("old", true, false);
+        assert_eq!(notifications.observe("chat", 0, &[old.clone()]), 0);
+        let new = question_entry("new", true, false);
+        let entries = [old, new.clone(), new.clone()];
+        assert_eq!(notifications.observe("chat", 1, &entries), 1);
+        assert_eq!(notifications.observe("chat", 1, &entries), 0);
+        assert_eq!(notifications.observe("chat", 2, &entries), 0);
+        assert_eq!(
+            notifications.observe("chat", 3, &[question_entry("new", true, true)]),
+            0
+        );
+        assert_eq!(notifications.observe("chat", 4, &[]), 0);
+        assert_eq!(notifications.observe("chat", 5, &[new]), 0);
+        assert_eq!(
+            notifications.observe("chat", 6, &[question_entry("later", true, false)]),
+            1
+        );
+    }
+
+    #[test]
+    fn async_question_ids_are_scoped_to_chats_and_survive_navigation() {
+        let mut notifications = AsyncQuestionNotifications::default();
+        let request = question_entry("same-id", true, false);
+        assert_eq!(notifications.observe("a", 0, &[]), 0);
+        assert_eq!(notifications.observe("a", 1, &[request.clone()]), 1);
+        assert_eq!(notifications.observe("b", 2, &[]), 0);
+        assert_eq!(notifications.observe("b", 3, &[request.clone()]), 1);
+        assert_eq!(notifications.observe("a", 4, &[request.clone()]), 0);
+        assert_eq!(notifications.observe("b", 5, &[request]), 0);
+    }
+
+    #[test]
+    fn blocking_user_and_resolved_questions_do_not_trigger_async_alerts() {
+        let mut notifications = AsyncQuestionNotifications::default();
+        assert_eq!(notifications.observe("chat", 0, &[]), 0);
+        let mut user = question_entry("user", true, false);
+        user.role = MessageRole::User;
+        let entries = [
+            user,
+            question_entry("blocking", false, false),
+            question_entry("resolved", true, true),
+            question_entry("duplicate", true, false),
+            question_entry("duplicate", true, true),
+        ];
+        assert_eq!(notifications.observe("chat", 1, &entries), 0);
+        assert_eq!(
+            notifications.observe("chat", 2, &[question_entry("resolved", true, false)]),
+            0
+        );
+    }
+
+    #[test]
+    fn incomplete_questions_alert_only_after_their_questions_arrive() {
+        let mut notifications = AsyncQuestionNotifications::default();
+        assert_eq!(notifications.observe("chat", 0, &[]), 0);
+        let mut incomplete = question_entry("request", true, false);
+        if let MessagePart::Input { questions, .. } = &mut incomplete.parts[0] {
+            questions.clear();
+        }
+        assert_eq!(notifications.observe("chat", 1, &[incomplete]), 0);
+        let complete = question_entry("request", true, false);
+        // Delivery is consumed independently of settings, including while muted.
+        assert_eq!(notifications.observe("chat", 2, &[complete.clone()]), 1);
+        assert_eq!(notifications.observe("chat", 3, &[complete]), 0);
+    }
 
     fn baseline(indicator: Indicator, turn: Option<&str>) -> SessionNotificationState {
         SessionNotificationState {

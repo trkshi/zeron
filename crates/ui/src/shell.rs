@@ -2004,6 +2004,8 @@ pub struct Shell {
     /// Last seen session status per chat — the chime trigger compares against
     /// it (a row's FIRST appearance never chimes, so boot stays silent).
     sound_prev: std::collections::HashMap<String, crate::sound::SessionNotificationState>,
+    /// Separate from run status: asynchronous questions leave the agent working.
+    async_question_notifications: crate::sound::AsyncQuestionNotifications,
     /// Startup-aware durable connectivity notification baseline.
     connectivity_notifications: crate::sound::ConnectivityNotificationState,
     /// Persistent across AppState observer callbacks so simultaneous session
@@ -2429,6 +2431,7 @@ impl Shell {
             sidebar_pin_write_notice: None,
             space_boot_applied: false,
             sound_prev: std::collections::HashMap::new(),
+            async_question_notifications: Default::default(),
             connectivity_notifications: Default::default(),
             attention_sound_gate: Default::default(),
             harness_update_seen: std::collections::HashSet::new(),
@@ -2562,6 +2565,34 @@ impl Shell {
     }
 
     // ---- splash ----
+
+    fn notify_session_event(
+        &mut self,
+        chat_id: &str,
+        title: Option<&str>,
+        sound: crate::sound::Sound,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings.session_sound_enabled(sound) {
+            let should_play = sound != crate::sound::Sound::Attention
+                || self
+                    .attention_sound_gate
+                    .should_play(std::time::Instant::now());
+            if should_play {
+                crate::sound::play(sound);
+            }
+        }
+        if self.settings.notifications_enabled
+            && !(self.settings.notifications_background_only && cx.active_window().is_some())
+        {
+            let body = match sound {
+                crate::sound::Sound::Done => "Run finished",
+                crate::sound::Sound::Request => "Waiting on your input",
+                crate::sound::Sound::Attention => "Run failed",
+            };
+            crate::notify::post(title.unwrap_or("New session"), body, Some(chat_id));
+        }
+    }
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
         self.prune_file_explorers(cx);
@@ -2723,26 +2754,37 @@ impl Shell {
                     && let Some(prev) = prev
                     && let Some(sound) = status.sound_since(&prev, send_pending)
                 {
-                    if self.settings.session_sound_enabled(sound) {
-                        let should_play = sound != crate::sound::Sound::Attention
-                            || self
-                                .attention_sound_gate
-                                .should_play(std::time::Instant::now());
-                        if should_play {
-                            crate::sound::play(sound);
-                        }
-                    }
-                    if self.settings.notifications_enabled
-                        && !(self.settings.notifications_background_only && app_focused)
-                    {
-                        let title = title.unwrap_or_else(|| "New session".into());
-                        let body = match sound {
-                            crate::sound::Sound::Done => "Run finished",
-                            crate::sound::Sound::Request => "Waiting on your input",
-                            crate::sound::Sound::Attention => "Run failed",
-                        };
-                        crate::notify::post(&title, body, Some(&chat_id));
-                    }
+                    self.notify_session_event(&chat_id, title.as_deref(), sound, cx);
+                }
+            }
+            // The open conversation keeps streaming while the app is in the
+            // background. Ignore provisional history tails; seed old requests
+            // silently on its first complete replay, then alert once per id.
+            let async_questions = {
+                let state = state.read(cx);
+                if state.transcript_replayed
+                    && let Some(chat) = state
+                        .selected_chat_row()
+                        .filter(|chat| chat.parent_chat_id.is_none())
+                {
+                    let count = self.async_question_notifications.observe(
+                        &chat.id,
+                        state.transcript_revision,
+                        &state.transcript,
+                    );
+                    Some((chat.id.clone(), chat.title.clone(), count))
+                } else {
+                    None
+                }
+            };
+            if let Some((chat_id, title, count)) = async_questions {
+                for _ in 0..count {
+                    self.notify_session_event(
+                        &chat_id,
+                        title.as_deref(),
+                        crate::sound::Sound::Request,
+                        cx,
+                    );
                 }
             }
             if let Some(sound) = self.connectivity_notifications.update(
