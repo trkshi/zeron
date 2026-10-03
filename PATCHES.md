@@ -41,6 +41,13 @@ Zeron release.
 - Retain upstream's `Shift+Backspace` fix: holding Shift while pressing
   Backspace still deletes backward or removes the selected text in the
   composer and search inputs.
+- Open the selected session's existing delete confirmation with
+  `Ctrl+Shift+Backspace` on Windows/Linux (`Cmd+Shift+Backspace` on macOS).
+  Rebind **Delete session** in **Settings > Shortcuts**. The shortcut never
+  deletes immediately; press Escape or choose Cancel to dismiss. It does
+  nothing on the new-chat canvas, in Settings, or beneath an open overlay.
+  Keep normal `Ctrl+Backspace` word deletion unchanged, and preserve existing
+  custom shortcuts when upgrading.
 - Refresh account usage every minute while the window is active and every
   five minutes in the background. Completed turns also trigger a refresh,
   deferred when necessary to honor the 30-second cooldown. Automatic refreshes

@@ -111,7 +111,8 @@ actions!(
         OpenSettings,
         NextSession,
         PrevSession,
-        ArchiveSession
+        ArchiveSession,
+        DeleteSession
     ]
 );
 
@@ -504,6 +505,18 @@ pub fn apply_keymap(
             None,
         ),
     ]);
+    // An upgrade may leave this action unbound to preserve an existing
+    // customization on its default chord.
+    if !keymap.delete_session.is_empty() {
+        cx.bind_keys([KeyBinding::new(
+            &valid_or_default(
+                &keymap.delete_session,
+                ShortcutId::DeleteSession.default_combo(),
+            ),
+            DeleteSession,
+            None,
+        )]);
+    }
     crate::browser::bind_keys(cx, keymap);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
@@ -5461,6 +5474,23 @@ impl Shell {
         self.archive_chat(chat_id, cx);
     }
 
+    /// Open confirmation for the selected main session, never delete directly.
+    fn confirm_delete_selected_chat(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.route, Route::Chat) || self.navigation_overlay_open(cx) {
+            return;
+        }
+        let Some(chat_id) = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .map(|chat| chat.id.clone())
+        else {
+            return;
+        };
+        self.delete_confirm = Some(chat_id);
+        cx.notify();
+    }
+
     pub(super) fn set_chat_archived(
         &mut self,
         chat_id: String,
@@ -9519,12 +9549,17 @@ impl Shell {
     /// Resolve shell-owned Escape surfaces in capture phase, before focused
     /// descendants such as an integrated terminal can consume the key.
     fn capture_escape_surface(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.sync_flow.has_visible_overlay() {
+            return true;
+        }
+        if self.delete_confirm.take().is_some() {
+            cx.notify();
+            return true;
+        }
         // Modals and context menus sit above the rest of the shell. Preserve
         // their existing behavior: only surfaces that already have a Cancel
         // path close here; the others remain explicit blockers.
-        if self.sync_flow.has_visible_overlay()
-            || self.delete_confirm.is_some()
-            || self.delete_space_confirm.is_some()
+        if self.delete_space_confirm.is_some()
             || self.chat_menu.get().is_some()
             || self.space_menu.get().is_some()
             || self.user_menu.get().is_some()
@@ -12793,6 +12828,9 @@ impl Render for Shell {
                 if matches!(this.route, Route::Chat) && !this.overlay_owns_keyboard(cx) {
                     this.archive_selected_chat(cx)
                 }
+            }))
+            .on_action(cx.listener(|this, _: &DeleteSession, _, cx| {
+                this.confirm_delete_selected_chat(cx)
             }))
             // A jump routes back to chat itself, so Settings is not a dead
             // spot — the same call a click on that sidebar row makes. But an

@@ -26,11 +26,15 @@ impl Render for NavigationHost {
                 .flex_col()
                 .track_focus(&shell.shortcut_focus)
                 .child(div().track_focus(&shell.unfocused))
+                .capture_key_down(cx.listener(Shell::on_key_down_capture))
                 .on_action(cx.listener(|shell, _: &NextSession, window, cx| {
                     shell.cycle_navigation(true, window, cx);
                 }))
                 .on_action(cx.listener(|shell, _: &PrevSession, window, cx| {
                     shell.cycle_navigation(false, window, cx);
+                }))
+                .on_action(cx.listener(|shell, _: &DeleteSession, _, cx| {
+                    shell.confirm_delete_selected_chat(cx);
                 }))
                 .child(div().h(px(40.)).child(shell.render_right_tab_strip(cx)))
                 .child(
@@ -145,6 +149,110 @@ fn assert_surface(shell: &Entity<Shell>, cx: &mut VisualTestContext, surface: Ri
             Some("parent")
         );
         assert!(shell.navigation_focus.in_right(window, cx));
+    });
+}
+
+#[gpui::test]
+fn delete_shortcut_opens_confirmation_once_and_escape_cancels(cx: &mut TestAppContext) {
+    let (shell, cx) = setup(cx);
+    let input = shell.read_with(cx, |shell, cx| shell.composer.read(cx).input.clone());
+    input.update(cx, |input, cx| input.set_text("keep this draft", cx));
+    for right in [false, true] {
+        cx.update(|window, cx| {
+            let shell = shell.read(cx);
+            let focus = if right {
+                shell.navigation_focus.right.clone()
+            } else {
+                shell.composer.focus_handle(cx)
+            };
+            window.focus(&focus, cx);
+        });
+        for _ in 0..2 {
+            cx.simulate_keystrokes(&platform_combo(ShortcutId::DeleteSession.default_combo()));
+            shell.read_with(cx, |shell, cx| {
+                assert_eq!(shell.delete_confirm.as_deref(), Some("parent"));
+                assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("parent"));
+                assert_eq!(shell.state.read(cx).chats.len(), 2);
+            });
+            input.read_with(cx, |input, _| assert_eq!(input.text(), "keep this draft"));
+        }
+        cx.simulate_keystrokes("escape");
+        shell.read_with(cx, |shell, _| assert!(shell.delete_confirm.is_none()));
+    }
+
+    cx.update(|window, cx| {
+        let focus = shell.read(cx).composer.focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    cx.simulate_keystrokes("shift-backspace");
+    input.read_with(cx, |input, _| assert_eq!(input.text(), "keep this draf"));
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "alt-backspace"
+    } else {
+        "ctrl-backspace"
+    });
+    input.read_with(cx, |input, _| assert_eq!(input.text(), "keep this "));
+    shell.read_with(cx, |shell, _| assert!(shell.delete_confirm.is_none()));
+}
+
+#[gpui::test]
+fn delete_shortcut_respects_rebinding_and_unbound_settings(cx: &mut TestAppContext) {
+    let (shell, cx) = setup(cx);
+    for combo in ["mod-alt-backspace", ""] {
+        let mut keymap = KeymapConfig::default();
+        keymap.set(ShortcutId::DeleteSession, combo.into());
+        cx.update(|window, cx| {
+            apply_keymap(cx, &keymap, ComposerSendBehavior::default());
+            shell.update(cx, |shell, cx| {
+                shell.delete_confirm = None;
+                window.focus(&shell.composer.focus_handle(cx), cx);
+            });
+        });
+        cx.simulate_keystrokes(&platform_combo(ShortcutId::DeleteSession.default_combo()));
+        shell.read_with(cx, |shell, _| assert!(shell.delete_confirm.is_none()));
+        if !combo.is_empty() {
+            cx.simulate_keystrokes(&platform_combo(combo));
+            shell.read_with(cx, |shell, _| {
+                assert_eq!(shell.delete_confirm.as_deref(), Some("parent"));
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn delete_shortcut_ignores_missing_sessions_settings_and_overlays(cx: &mut TestAppContext) {
+    let (shell, cx) = setup(cx);
+    shell.update(cx, |shell, cx| {
+        for (selected, route) in [
+            (None, Route::Chat),
+            (Some("missing"), Route::Chat),
+            (Some("parent"), Route::Settings(SettingsSection::Shortcuts)),
+        ] {
+            shell.state.update(cx, |state, _| {
+                state.selected_chat = selected.map(str::to_owned);
+            });
+            shell.route = route;
+            shell.confirm_delete_selected_chat(cx);
+            assert!(shell.delete_confirm.is_none());
+        }
+        shell.route = Route::Chat;
+        shell.sync_flow = SyncFlow::SignOutConfirm;
+        shell.confirm_delete_selected_chat(cx);
+        assert!(shell.delete_confirm.is_none());
+        shell.sync_flow = SyncFlow::Idle;
+        shell.delete_confirm = Some("other".into());
+        shell.confirm_delete_selected_chat(cx);
+        assert_eq!(shell.delete_confirm.as_deref(), Some("other"));
+        shell.delete_confirm = None;
+    });
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell
+                .composer
+                .update(cx, |composer, cx| composer.open_model_menu(window, cx));
+            shell.confirm_delete_selected_chat(cx);
+            assert!(shell.delete_confirm.is_none());
+        });
     });
 }
 

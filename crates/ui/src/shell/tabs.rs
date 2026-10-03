@@ -105,7 +105,7 @@ impl Shell {
         }
     }
 
-    fn navigation_overlay_open(&self, cx: &App) -> bool {
+    pub(super) fn navigation_overlay_open(&self, cx: &App) -> bool {
         self.overlay_owns_keyboard(cx)
             || self.sync_flow.has_visible_overlay()
             || self.delete_confirm.is_some()

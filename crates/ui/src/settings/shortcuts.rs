@@ -707,7 +707,8 @@ fn group(id: ShortcutId) -> &'static str {
         | ShortcutId::NewSession
         | ShortcutId::NextSession
         | ShortcutId::PrevSession
-        | ShortcutId::ArchiveSession => "Sessions",
+        | ShortcutId::ArchiveSession
+        | ShortcutId::DeleteSession => "Sessions",
         ShortcutId::JumpSession(_) => "Jump to session",
     }
 }
