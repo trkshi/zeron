@@ -51,8 +51,10 @@ Zeron release.
 - Open the selected session's existing delete confirmation with
   `Ctrl+Shift+Backspace` on Windows/Linux (`Cmd+Shift+Backspace` on macOS).
   Rebind **Delete session** in **Settings > Shortcuts**. The shortcut never
-  deletes immediately; press Escape or choose Cancel to dismiss. It does
-  nothing on the new-chat canvas, in Settings, or beneath an open overlay.
+  deletes immediately; press Enter or choose Delete to confirm, or press
+  Escape or choose Cancel to dismiss. Holding Enter does not send the draft
+  underneath the dialog. The shortcut does nothing on the new-chat canvas,
+  in Settings, or beneath an open overlay.
   Keep normal `Ctrl+Backspace` word deletion unchanged, and preserve existing
   custom shortcuts when upgrading.
 - Refresh account usage every minute while the window is active and every

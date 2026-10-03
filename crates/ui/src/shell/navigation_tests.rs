@@ -20,6 +20,7 @@ impl Render for NavigationHost {
             });
             let main = shell.render_main(window, 400., 400., cx);
             let right = shell.render_right_pane(window, cx);
+            let delete_dialog = shell.render_delete_confirmation(window.viewport_size(), window, cx);
             div()
                 .size_full()
                 .flex()
@@ -27,6 +28,7 @@ impl Render for NavigationHost {
                 .track_focus(&shell.shortcut_focus)
                 .child(div().track_focus(&shell.unfocused))
                 .capture_key_down(cx.listener(Shell::on_key_down_capture))
+                .on_key_up(cx.listener(Shell::on_delete_confirmation_key_up))
                 .on_action(cx.listener(|shell, _: &NextSession, window, cx| {
                     shell.cycle_navigation(true, window, cx);
                 }))
@@ -52,6 +54,7 @@ impl Render for NavigationHost {
                         )
                         .when(shell.right_pane_open(cx), |el| el.child(right)),
                 )
+                .when_some(delete_dialog, |el, dialog| el.child(dialog))
         })
     }
 }
@@ -217,6 +220,83 @@ fn delete_shortcut_respects_rebinding_and_unbound_settings(cx: &mut TestAppConte
             });
         }
     }
+}
+
+#[gpui::test]
+fn enter_confirms_the_rendered_delete_dialog_and_modified_enter_does_not(
+    cx: &mut TestAppContext,
+) {
+    let (shell, cx) = setup(cx);
+    cx.update(|window, cx| {
+        let focus = shell.read(cx).composer.focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    cx.simulate_keystrokes(&platform_combo(ShortcutId::DeleteSession.default_combo()));
+    cx.update(|window, cx| {
+        window.draw(cx).clear();
+        assert!(shell.read(cx).delete_confirm_focus.is_focused(window));
+    });
+    for combo in ["mod-enter", "shift-enter", "alt-enter"] {
+        cx.simulate_keystrokes(&platform_combo(combo));
+        shell.read_with(cx, |shell, cx| {
+            assert_eq!(shell.delete_confirm.as_deref(), Some("parent"));
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("parent"));
+        });
+    }
+    cx.simulate_keystrokes("enter");
+    shell.read_with(cx, |shell, cx| {
+        assert!(shell.delete_confirm.is_none());
+        assert!(shell.state.read(cx).selected_chat.is_none());
+    });
+}
+
+#[gpui::test]
+fn confirming_enter_repeats_do_not_edit_or_submit_the_draft_underneath(
+    cx: &mut TestAppContext,
+) {
+    let (shell, cx) = setup(cx);
+    let input = shell.read_with(cx, |shell, cx| shell.composer.read(cx).input.clone());
+    input.update(cx, |input, cx| input.set_text("keep this draft", cx));
+    cx.update(|window, cx| {
+        apply_keymap(cx, &KeymapConfig::default(), ComposerSendBehavior::ModEnter);
+        shell.update(cx, |shell, cx| {
+            shell.delete_confirm = Some("other".into());
+            cx.notify();
+        });
+        window.draw(cx).clear();
+    });
+    for is_held in [false, true, false] {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: Keystroke::parse("enter").unwrap(),
+                    is_held,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+        });
+        shell.read_with(cx, |shell, cx| {
+            assert!(shell.delete_confirm.is_none());
+            assert!(shell.delete_confirm_enter_down);
+            assert_eq!(shell.state.read(cx).selected_chat.as_deref(), Some("parent"));
+        });
+        input.read_with(cx, |input, _| assert_eq!(input.text(), "keep this draft"));
+    }
+    cx.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                keystroke: Keystroke::parse("enter").unwrap(),
+            }),
+            cx,
+        );
+        assert!(!shell.read(cx).delete_confirm_enter_down);
+        assert!(shell.read(cx).delete_confirm_keys.is_none());
+        let focus = shell.read(cx).composer.focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    cx.simulate_keystrokes("enter");
+    input.read_with(cx, |input, _| assert_eq!(input.text(), "keep this draft\n"));
 }
 
 #[gpui::test]

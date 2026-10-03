@@ -1947,6 +1947,10 @@ pub struct Shell {
     chat_rename: Option<ChatRename>,
     /// Chat id awaiting delete confirmation.
     delete_confirm: Option<String>,
+    delete_confirm_focus: FocusHandle,
+    delete_confirm_keys: Option<Subscription>,
+    /// Keep Enter repeats away from the composer until the confirming key is released.
+    delete_confirm_enter_down: bool,
     /// Global confirmation/error dialog for the Changes-pane trash action. The
     /// RPC task is retained separately so rerenders do not cancel it.
     discard_working_tree: Option<DiscardWorkingTreeFlow>,
@@ -2398,6 +2402,9 @@ impl Shell {
             chat_menu: popover::Popup::default(),
             chat_rename: None,
             delete_confirm: None,
+            delete_confirm_focus: cx.focus_handle(),
+            delete_confirm_keys: None,
+            delete_confirm_enter_down: false,
             discard_working_tree: None,
             discard_working_tree_task: None,
             space_menu: popover::Popup::default(),
@@ -5639,6 +5646,12 @@ impl Shell {
             cx,
         );
         cx.notify();
+    }
+
+    fn confirm_delete_chat(&mut self, cx: &mut Context<Self>) {
+        if let Some(chat_id) = self.delete_confirm.clone() {
+            self.delete_chat(chat_id, cx);
+        }
     }
 
     fn confirm_discard_working_tree(&mut self, cx: &mut Context<Self>) {
@@ -9749,6 +9762,102 @@ impl Shell {
         }
     }
 
+    fn on_delete_confirmation_key_up(
+        &mut self,
+        event: &gpui::KeyUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key == "enter" && self.delete_confirm_keys.is_some() {
+            self.delete_confirm_enter_down = false;
+            if self.delete_confirm.is_none() {
+                self.delete_confirm_keys = None;
+            }
+            cx.stop_propagation();
+        }
+    }
+
+    fn render_delete_confirmation(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let Some(chat_id) = self.delete_confirm.clone() else {
+            if !self.delete_confirm_enter_down {
+                self.delete_confirm_keys = None;
+            }
+            return None;
+        };
+        if self.delete_confirm_keys.is_none() {
+            let owner = window.window_handle();
+            let shell = cx.entity().downgrade();
+            // Bindings dispatch before Div key listeners. Intercept Enter so
+            // no composer action or user rebound shortcut can run underneath.
+            self.delete_confirm_keys = Some(cx.intercept_keystrokes(move |event, window, cx| {
+                if window.window_handle() != owner || event.keystroke.key != "enter" {
+                    return;
+                }
+                let _ = shell.update(cx, |this, cx| {
+                    if this.delete_confirm.is_some() {
+                        if !event.keystroke.modifiers.modified()
+                            && !this.delete_confirm_enter_down
+                            && !this.sync_flow.has_visible_overlay()
+                        {
+                            this.delete_confirm_enter_down = true;
+                            this.confirm_delete_chat(cx);
+                        }
+                        cx.stop_propagation();
+                    } else if this.delete_confirm_enter_down {
+                        cx.stop_propagation();
+                    }
+                });
+            }));
+            window.focus(&self.delete_confirm_focus, cx);
+        }
+        let theme = Theme::of(cx).for_popup();
+        let title = transcript::single_line(
+            &self
+                .state
+                .read(cx)
+                .chats
+                .iter()
+                .find(|c| c.id == chat_id)
+                .and_then(|c| c.title.clone())
+                .unwrap_or_else(|| "New session".into()),
+        );
+        let card = popover::dialog_card(&theme)
+            .track_focus(&self.delete_confirm_focus)
+            .child(popover::dialog_title(&theme, "Delete session?"))
+            .child(div().mt(px(6.0)).child(popover::dialog_body(
+                &theme,
+                format!("\u{201C}{title}\u{201D} will be permanently deleted. This can\u{2019}t be undone."),
+            )))
+            .child(
+                div()
+                    .mt(px(16.0))
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        popover::btn_ghost(&theme, "Cancel", "delete-chat-cancel")
+                            .id("delete-chat-cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.delete_confirm = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        popover::btn_danger(&theme, "Delete")
+                            .id("delete-chat-confirm")
+                            .on_click(cx.listener(|this, _, _, cx| this.confirm_delete_chat(cx))),
+                    ),
+            )
+            .into_any_element();
+        Some(popover::modal("delete-chat-dialog", viewport, card))
+    }
+
     fn render_overlays(
         &mut self,
         viewport: gpui::Size<Pixels>,
@@ -10022,48 +10131,8 @@ impl Shell {
             overlays.push(overlay);
         }
 
-        if let Some(chat_id) = self.delete_confirm.clone() {
-            let title = transcript::single_line(
-                &self
-                    .state
-                    .read(cx)
-                    .chats
-                    .iter()
-                    .find(|c| c.id == chat_id)
-                    .and_then(|c| c.title.clone())
-                    .unwrap_or_else(|| "New session".into()),
-            );
-            let card = popover::dialog_card(&theme)
-                .child(popover::dialog_title(&theme, "Delete session?"))
-                .child(div().mt(px(6.0)).child(popover::dialog_body(
-                    &theme,
-                    format!("\u{201C}{title}\u{201D} will be permanently deleted. This can\u{2019}t be undone."),
-                )))
-                .child(
-                    div()
-                        .mt(px(16.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .gap(px(8.0))
-                        .child(
-                            popover::btn_ghost(&theme, "Cancel", "delete-chat-cancel")
-                                .id("delete-chat-cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.delete_confirm = None;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            popover::btn_danger(&theme, "Delete")
-                                .id("delete-chat-confirm")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.delete_chat(chat_id.clone(), cx)
-                                })),
-                        ),
-                )
-                .into_any_element();
-            overlays.push(popover::modal("delete-chat-dialog", viewport, card));
+        if let Some(overlay) = self.render_delete_confirmation(viewport, window, cx) {
+            overlays.push(overlay);
         }
 
         if let Some(flow) = self.discard_working_tree.clone() {
@@ -12802,6 +12871,7 @@ impl Render for Shell {
             )
             .capture_key_down(cx.listener(Self::on_key_down_capture))
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_key_up(cx.listener(Self::on_delete_confirmation_key_up))
             .on_drag_move(cx.listener(Self::on_sidebar_drag))
             .on_drag_move(cx.listener(Self::on_right_pane_drag))
             .on_drag_move(cx.listener(Self::on_files_panel_drag))
