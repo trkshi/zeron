@@ -29,10 +29,18 @@ Zeron release.
   after the turn finishes; delivery errors preserve answers for retry. Remote
   chats require the patched engine on both devices. Installing this Windows
   build alone does not update the Ubuntu host.
-- Show a persistent **Worked for** footer beneath completed assistant replies
+- Show a persistent turn-duration footer beneath completed assistant replies
   in normal mode, using the full stored turn duration, including tool work and
-  waiting for input. Compact mode keeps its existing duration label; older
-  turns without stored timing remain unchanged.
+  waiting for input. Include the local completion time, for example
+  `Baked for 19s · done 9:07 PM`. Vary the prefix between **Baked**, **Cooked**,
+  **Worked**, **Brewed**, **Crafted**, and **Simmered**, with a stable choice per
+  turn that stays the same when reopening the chat. Compact mode uses the same
+  format and prefix on its existing duration label. Omit the completion time
+  when it cannot be derived from stored timing; older turns without a stored
+  duration remain unchanged.
+- Retain upstream's `Shift+Backspace` fix: holding Shift while pressing
+  Backspace still deletes backward or removes the selected text in the
+  composer and search inputs.
 - Refresh account usage every minute while the window is active and every
   five minutes in the background. Completed turns also trigger a refresh,
   deferred when necessary to honor the 30-second cooldown. Automatic refreshes

@@ -1048,6 +1048,8 @@ pub enum RowKind {
         auto_open: bool,
         /// Compact-mode settled duration for this turn, in seconds.
         worked_secs: Option<i64>,
+        /// Stored completion time for the compact-mode duration label.
+        completed_at: Option<i64>,
         /// Compact-mode work header. Expanded content is sibling rows tagged
         /// [`Row::compact_fold`], not chips.
         compact_shell: bool,
@@ -1055,6 +1057,7 @@ pub enum RowKind {
     /// Stored wall-clock duration, shown once after a completed assistant turn.
     TurnDuration {
         seconds: i64,
+        completed_at: Option<i64>,
     },
     InputChip {
         /// First question's header (chat-view.tsx `InputChip`: the resolved
@@ -1404,6 +1407,7 @@ pub fn rows_for_entry(
                     tools: Arc::new(tools),
                     auto_open,
                     worked_secs: None,
+                    completed_at: None,
                     compact_shell: false,
                 },
                 entry_id: entry.id.clone().into(),
@@ -1693,22 +1697,38 @@ pub fn rows_for_entry(
                 row.copy_text = None;
                 row.compact_fold = Some(work_id.clone());
             }
+            let worked_secs = (!streaming)
+                .then(|| {
+                    entry
+                        .duration_ms
+                        .filter(|&ms| ms > 0)
+                        .map(|ms| (ms / 1000).max(1))
+                })
+                .flatten();
+            let completed_at = turn_completed_at(entry);
+            let duration_version = worked_secs
+                .map(|secs| {
+                    fnv1a(
+                        turn_duration_label(
+                            fnv1a(entry.id.as_bytes()),
+                            secs,
+                            completed_at,
+                            &chrono::Local,
+                        )
+                        .as_bytes(),
+                    )
+                })
+                .unwrap_or(0);
             let header = Row {
                 id: work_id,
-                version: tool_fingerprint(&tools, false),
+                version: tool_fingerprint(&tools, false) ^ duration_version,
                 turn_start: false,
                 kind: RowKind::ToolGroup {
                     summary: tool_group_summary(&tools).into(),
                     tools: Arc::new(tools),
                     auto_open: false,
-                    worked_secs: (!streaming)
-                        .then(|| {
-                            entry
-                                .duration_ms
-                                .filter(|&ms| ms > 0)
-                                .map(|ms| (ms / 1000).max(1))
-                        })
-                        .flatten(),
+                    worked_secs,
+                    completed_at,
                     compact_shell: true,
                 },
                 entry_id: entry.id.clone().into(),
@@ -1738,11 +1758,23 @@ pub fn rows_for_entry(
         && let Some(ms) = entry.duration_ms.filter(|&ms| ms > 0)
     {
         let seconds = (ms / 1000).max(1);
+        let completed_at = turn_completed_at(entry);
         rows.push(Row {
             id: format!("{}#duration", entry.id).into(),
-            version: seconds as u64,
+            version: fnv1a(
+                turn_duration_label(
+                    fnv1a(entry.id.as_bytes()),
+                    seconds,
+                    completed_at,
+                    &chrono::Local,
+                )
+                .as_bytes(),
+            ),
             turn_start: false,
-            kind: RowKind::TurnDuration { seconds },
+            kind: RowKind::TurnDuration {
+                seconds,
+                completed_at,
+            },
             entry_id: entry_id.clone(),
             timestamp: None,
             copy_text: None,
@@ -2283,11 +2315,42 @@ pub fn format_elapsed(secs: i64) -> String {
     }
 }
 
-fn worked_for_label(secs: i64) -> String {
-    format!("Worked for {}", format_elapsed(secs))
+// SegmentWriter stores durationMs as finish time minus createdAt.
+fn turn_completed_at(entry: &SessionMessageEntry) -> Option<i64> {
+    if entry.status != Some(MessageStatus::Complete) || entry.created_at <= 0 {
+        return None;
+    }
+    entry
+        .created_at
+        .checked_add(entry.duration_ms.filter(|&ms| ms > 0)?)
 }
 
-/// Compact-mode header: the live tool summary crossfades into "Worked for".
+const TURN_DURATION_PREFIXES: [&str; 6] = [
+    "Baked", "Cooked", "Worked", "Brewed", "Crafted", "Simmered",
+];
+
+// Seed from the entry id so the word stays the same across renders and modes.
+fn turn_duration_label<Tz: chrono::TimeZone>(
+    seed: u64,
+    secs: i64,
+    completed_at: Option<i64>,
+    tz: &Tz,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let prefix = TURN_DURATION_PREFIXES[(seed % TURN_DURATION_PREFIXES.len() as u64) as usize];
+    let duration = format!("{prefix} for {}", format_elapsed(secs));
+    match completed_at.and_then(chrono::DateTime::from_timestamp_millis) {
+        Some(utc) => format!(
+            "{duration} · done {}",
+            utc.with_timezone(tz).format("%-I:%M %p")
+        ),
+        None => duration,
+    }
+}
+
+/// Compact-mode header: the live tool summary crossfades into the duration.
 /// `t` is 0 = summary, 1 = duration.
 fn compact_work_title(
     summary: SharedString,
@@ -3202,13 +3265,13 @@ pub struct Transcript {
     /// Compact mode as last applied to this instance's row split. Render
     /// polls the setting each frame; a flip rebuilds every row.
     compact_mode: bool,
-    /// Compact work-group entry ids that were live this session — the
-    /// "Worked for" subtitle fades in only for those, not historical rows.
+    /// Compact work-group entry ids that were live this session: the duration
+    /// subtitle fades in only for those, not historical rows.
     compact_live_entries: HashSet<SharedString>,
     /// Last live elapsed (seconds) per assistant entry, used if `duration_ms`
     /// has not landed on the doc yet when the turn settles.
     compact_last_elapsed: HashMap<String, i64>,
-    /// When a compact work group first settled this session, so "Worked for"
+    /// When a compact work group first settled this session, so its duration
     /// can fade in without replaying on later paints.
     compact_worked_fade_at: HashMap<SharedString, Instant>,
     /// Natural heights of compact-fold body rows, written by each row's
@@ -5156,12 +5219,25 @@ impl Transcript {
         if let Some(secs) = self.compact_worked_secs_for(entry) {
             for row in &mut rows {
                 if let RowKind::ToolGroup {
+                    tools,
                     worked_secs,
+                    completed_at,
                     compact_shell: true,
                     ..
                 } = &mut row.kind
                 {
                     *worked_secs = Some(secs);
+                    row.version = tool_fingerprint(tools, false)
+                        ^ fnv1a(
+                            turn_duration_label(
+                                fnv1a(entry.id.as_bytes()),
+                                secs,
+                                *completed_at,
+                                &chrono::Local,
+                            )
+                            .as_bytes(),
+                        )
+                        ^ if row.timestamp.is_some() { 1 << 62 } else { 0 };
                 }
             }
         }
@@ -6856,23 +6932,35 @@ impl Transcript {
                 auto_open,
                 summary,
                 worked_secs,
+                completed_at,
                 compact_shell,
             } => self.render_tool_group(
                 &row.id,
+                &row.entry_id,
                 tools,
                 summary,
                 *auto_open,
                 *worked_secs,
+                *completed_at,
                 *compact_shell,
                 &theme,
                 cx,
             ),
-            RowKind::TurnDuration { seconds } => div()
+            RowKind::TurnDuration {
+                seconds,
+                completed_at,
+            } => div()
                 .w_full()
+                .min_w_0()
                 .text_size(crate::typography::ui_rems(12.0))
                 .line_height(crate::typography::ui_rems(18.0))
                 .text_color(theme.text_muted)
-                .child(SharedString::from(worked_for_label(*seconds)))
+                .child(SharedString::from(turn_duration_label(
+                    fnv1a(row.entry_id.as_bytes()),
+                    *seconds,
+                    *completed_at,
+                    &chrono::Local,
+                )))
                 .into_any_element(),
             RowKind::InputChip { header, resolved } => {
                 input_chip(header.clone(), *resolved, &theme)
@@ -7243,10 +7331,12 @@ impl Transcript {
     fn render_tool_group(
         &mut self,
         row_id: &SharedString,
+        entry_id: &SharedString,
         tools: &Arc<Vec<ToolItem>>,
         summary: &SharedString,
         auto_open: bool,
         worked_secs: Option<i64>,
+        completed_at: Option<i64>,
         compact_shell: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
@@ -7559,6 +7649,14 @@ impl Transcript {
             tool_disclosure_progress(open, fold, now)
         };
 
+        let worked_label = worked_secs.map(|secs| {
+            SharedString::from(turn_duration_label(
+                fnv1a(entry_id.as_bytes()),
+                secs,
+                completed_at,
+                &chrono::Local,
+            ))
+        });
         let toggle_id = row_id.clone();
         // A quiet summary sits above the activity rail; its chevron occupies
         // the same gutter as the rounded task-tree elbows below it.
@@ -7581,6 +7679,9 @@ impl Transcript {
             // summary's "· N failed" count.
             .text_color(theme.text_muted)
             .hover(|s| s.text_color(theme.text))
+            .when_some(worked_label.clone(), |header, label| {
+                header.tooltip(crate::settings::widgets::text_tooltip(label))
+            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
                 this.toggle_fold(toggle_id.clone(), viewport_height, effective_auto_open, cx);
@@ -7608,14 +7709,15 @@ impl Transcript {
             .child(
                 div()
                     .min_w_0()
+                    .when(worked_label.is_some(), |title| title.flex_1().truncate())
                     .h(px(TOOL_LABEL_LINE_HEIGHT))
                     .flex()
                     .items_center()
                     .overflow_hidden()
-                    .child(match worked_secs {
-                        Some(secs) => compact_work_title(
+                    .child(match worked_label {
+                        Some(label) => compact_work_title(
                             summary.clone(),
-                            SharedString::from(worked_for_label(secs)),
+                            label,
                             worked_fade_t,
                             shimmer_phase,
                             theme,
@@ -9025,6 +9127,7 @@ fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u64 {
         Some(MessageStatus::Aborted) => 3,
     });
     acc.push(pending as u8);
+    acc.extend_from_slice(&entry.created_at.to_le_bytes());
     acc.extend_from_slice(&entry.duration_ms.unwrap_or(0).to_le_bytes());
     for part in &entry.parts {
         acc.extend_from_slice(part.id().as_bytes());
@@ -9436,9 +9539,11 @@ mod tests {
             assert!(!auto_open);
             let _ = this.render_tool_group(
                 &row.id,
+                &row.entry_id,
                 tools,
                 summary,
                 *auto_open,
+                None,
                 None,
                 false,
                 &Theme::dark(),
@@ -10046,9 +10151,11 @@ mod tests {
                 };
                 let _ = this.render_tool_group(
                     &row.id,
+                    &row.entry_id,
                     tools,
                     summary,
                     *auto_open,
+                    None,
                     None,
                     false,
                     &Theme::dark(),
@@ -10086,9 +10193,11 @@ mod tests {
                 assert!(*auto_open);
                 let _ = this.render_tool_group(
                     &row.id,
+                    &row.entry_id,
                     tools,
                     summary,
                     *auto_open,
+                    None,
                     None,
                     false,
                     &Theme::dark(),
@@ -11165,7 +11274,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_mode_appends_worked_for_below_plain_replies() {
+    fn normal_mode_appends_turn_duration_and_completion_below_plain_replies() {
         let mut entry = assistant(
             "a1",
             MessageStatus::Complete,
@@ -11173,8 +11282,8 @@ mod tests {
         );
         entry.created_at = 42;
         for (ms, seconds, label) in [
-            (138_000, 138, "Worked for 2m 18s"),
-            (999, 1, "Worked for 1s"),
+            (138_000, 138, "Baked for 2m 18s · done 12:02 AM"),
+            (999, 1, "Baked for 1s · done 12:00 AM"),
         ] {
             entry.duration_ms = Some(ms);
             let rows = rows_for_entry(&entry, false, false, &mut parse);
@@ -11182,8 +11291,19 @@ mod tests {
             assert!(matches!(rows[0].kind, RowKind::Markdown { .. }));
             assert!(rows[0].turn_start);
             let footer = rows.last().unwrap();
-            assert!(matches!(footer.kind, RowKind::TurnDuration { seconds: s } if s == seconds));
-            assert_eq!(worked_for_label(seconds), label);
+            let RowKind::TurnDuration {
+                seconds: actual_seconds,
+                completed_at,
+            } = &footer.kind
+            else {
+                panic!("expected a duration footer");
+            };
+            assert_eq!(*actual_seconds, seconds);
+            assert_eq!(*completed_at, Some(entry.created_at + ms));
+            assert_eq!(
+                turn_duration_label(0, seconds, *completed_at, &chrono::Utc),
+                label
+            );
             assert_eq!(footer.id.as_ref(), "a1#duration");
             assert_eq!(footer.entry_id.as_ref(), "a1");
             assert!(!footer.turn_start);
@@ -11218,7 +11338,10 @@ mod tests {
             1
         );
         let footer = rows.last().unwrap();
-        assert!(matches!(footer.kind, RowKind::TurnDuration { seconds: 138 }));
+        assert!(matches!(
+            footer.kind,
+            RowKind::TurnDuration { seconds: 138, .. }
+        ));
         assert_eq!(
             footer.copy_text.as_deref(),
             Some("Found the files.\n\nFirst paragraph.\n\nSecond paragraph.")
@@ -11301,12 +11424,80 @@ mod tests {
     }
 
     #[test]
-    fn compact_mode_carries_worked_for_duration_on_the_work_group() {
+    fn duration_versions_completion_minute_without_changing_displayed_seconds() {
+        let mut entry = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![tool_part("t0", "ls"), text_part("r0", "All done.")],
+        );
+        entry.created_at = chrono::DateTime::parse_from_rfc3339("2026-10-03T13:06:40.500Z")
+            .unwrap()
+            .timestamp_millis();
+        for compact in [false, true] {
+            entry.duration_ms = Some(19_000);
+            let original = rows_for_entry(&entry, false, compact, &mut parse);
+            entry.duration_ms = Some(19_499);
+            let same_label = rows_for_entry(&entry, false, compact, &mut parse);
+            assert!(diff_rows(&original, &same_label).is_none());
+
+            entry.duration_ms = Some(19_500);
+            let next_minute = rows_for_entry(&entry, false, compact, &mut parse);
+            let ix = if compact { 0 } else { original.len() - 1 };
+            assert_eq!(original[ix].id, next_minute[ix].id);
+            assert_ne!(original[ix].version, next_minute[ix].version);
+            assert_eq!(diff_rows(&original, &next_minute), Some((ix..ix + 1, 1)));
+
+            let fingerprint = entry_fingerprint(&entry, false);
+            entry.created_at += 60_000;
+            let later_completion = rows_for_entry(&entry, false, compact, &mut parse);
+            assert_ne!(entry_fingerprint(&entry, false), fingerprint);
+            assert_ne!(next_minute[ix].version, later_completion[ix].version);
+        }
+    }
+
+    #[test]
+    fn normal_and_compact_duration_labels_use_the_same_turn_seed() {
+        for id in ["a1", "a2"] {
+            let mut entry = assistant(
+                id,
+                MessageStatus::Complete,
+                vec![tool_part("t0", "ls"), text_part("r0", "All done.")],
+            );
+            entry.created_at = 42;
+            entry.duration_ms = Some(19_000);
+            let label = turn_duration_label(
+                fnv1a(entry.id.as_bytes()),
+                19,
+                turn_completed_at(&entry),
+                &chrono::Local,
+            );
+            let label_version = fnv1a(label.as_bytes());
+            let normal = rows_for_entry(&entry, false, false, &mut parse);
+            assert_eq!(normal.last().unwrap().version, label_version ^ (1 << 62));
+            let reopened = rows_for_entry(&entry, false, false, &mut parse);
+            assert!(diff_rows(&normal, &reopened).is_none());
+
+            let compact = rows_for_entry(&entry, false, true, &mut parse);
+            let RowKind::ToolGroup { tools, .. } = &compact[0].kind else {
+                panic!("expected a compact work group");
+            };
+            assert_eq!(
+                compact[0].version,
+                tool_fingerprint(tools, false) ^ label_version
+            );
+        }
+    }
+
+    #[test]
+    fn compact_mode_carries_duration_and_completion_on_the_work_group() {
         let mut entry = assistant(
             "a1",
             MessageStatus::Complete,
             vec![tool_part("t0", "ls"), text_part("r0", "done")],
         );
+        entry.created_at = chrono::DateTime::parse_from_rfc3339("2026-10-03T13:01:50Z")
+            .unwrap()
+            .timestamp_millis();
         entry.duration_ms = Some(310_000);
         let rows = rows_for_entry(&entry, false, true, &mut parse);
         assert!(
@@ -11314,12 +11505,22 @@ mod tests {
                 .all(|row| !matches!(row.kind, RowKind::TurnDuration { .. })),
             "compact mode keeps one duration on its existing header, even when expanded"
         );
-        let RowKind::ToolGroup { worked_secs, .. } = &rows[0].kind else {
+        let RowKind::ToolGroup {
+            worked_secs,
+            completed_at,
+            ..
+        } = &rows[0].kind
+        else {
             panic!("expected a tool group");
         };
         assert_eq!(*worked_secs, Some(310));
-        assert_eq!(worked_for_label(310), "Worked for 5m 10s");
-        assert_eq!(worked_for_label(95), "Worked for 1m 35s");
+        assert_eq!(*completed_at, Some(entry.created_at + 310_000));
+        let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        assert_eq!(
+            turn_duration_label(0, 310, *completed_at, &tz),
+            "Baked for 5m 10s · done 9:07 PM"
+        );
+        assert_eq!(turn_duration_label(0, 95, None, &tz), "Baked for 1m 35s");
 
         let mut plain = assistant(
             "a2",
@@ -14844,6 +15045,86 @@ mod tests {
             (183_845, "2d 3h"),
         ] {
             assert_eq!(format_elapsed(secs), expected, "elapsed seconds: {secs}");
+        }
+    }
+
+    #[test]
+    fn turn_duration_prefixes_vary_between_turns_but_stay_stable_within_a_turn() {
+        for (seed, prefix) in TURN_DURATION_PREFIXES.iter().enumerate() {
+            let seed = seed as u64;
+            assert_eq!(
+                turn_duration_label(seed, 19, None, &chrono::Utc),
+                format!("{prefix} for 19s")
+            );
+            assert_eq!(
+                turn_duration_label(seed, 138, None, &chrono::Utc),
+                format!("{prefix} for 2m 18s")
+            );
+        }
+        let seed = fnv1a(b"a1");
+        let label = turn_duration_label(seed, 19, None, &chrono::Utc);
+        assert_eq!(
+            label,
+            turn_duration_label(fnv1a(b"a1"), 19, None, &chrono::Utc)
+        );
+        assert_ne!(
+            label,
+            turn_duration_label(fnv1a(b"a2"), 19, None, &chrono::Utc)
+        );
+    }
+
+    #[test]
+    fn turn_duration_label_formats_completion_in_the_requested_timezone() {
+        let tz = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        for (finish, expected) in [
+            ("2026-10-03T13:07:00Z", "Baked for 19s · done 9:07 PM"),
+            ("2026-10-03T16:00:09Z", "Baked for 19s · done 12:00 AM"),
+            ("2026-10-03T04:00:00Z", "Baked for 19s · done 12:00 PM"),
+        ] {
+            let completed_at = chrono::DateTime::parse_from_rfc3339(finish)
+                .unwrap()
+                .timestamp_millis();
+            assert_eq!(turn_duration_label(0, 19, Some(completed_at), &tz), expected);
+        }
+        let completed_at = chrono::DateTime::parse_from_rfc3339("2026-10-03T13:07:00Z")
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(
+            turn_duration_label(0, 19, Some(completed_at), &chrono::Utc),
+            "Baked for 19s · done 1:07 PM"
+        );
+    }
+
+    #[test]
+    fn turn_completion_omits_unknown_or_invalid_timing() {
+        let mut entry = assistant("a1", MessageStatus::Complete, vec![]);
+        entry.created_at = 42;
+        entry.duration_ms = Some(999);
+        assert_eq!(turn_completed_at(&entry), Some(1_041));
+
+        for duration in [None, Some(0), Some(-1)] {
+            entry.duration_ms = duration;
+            assert_eq!(turn_completed_at(&entry), None);
+        }
+        entry.duration_ms = Some(999);
+        for created_at in [0, -1, i64::MAX] {
+            entry.created_at = created_at;
+            assert_eq!(turn_completed_at(&entry), None);
+        }
+        entry.created_at = 42;
+        for status in [
+            None,
+            Some(MessageStatus::Streaming),
+            Some(MessageStatus::Aborted),
+        ] {
+            entry.status = status;
+            assert_eq!(turn_completed_at(&entry), None);
+        }
+        for completed_at in [None, Some(i64::MAX)] {
+            assert_eq!(
+                turn_duration_label(0, 19, completed_at, &chrono::Utc),
+                "Baked for 19s"
+            );
         }
     }
 
