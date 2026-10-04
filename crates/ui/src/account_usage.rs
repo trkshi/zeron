@@ -609,9 +609,9 @@ impl Render for AccountUsage {
         };
         let account = self.fraction(cx).map(|fraction| {
             let level = usage_level(fraction);
-            let chip = crate::context_usage::icon_chip(
+            let chip = crate::context_usage::ring_chip(
                 "account-usage",
-                crate::icons::CALENDAR,
+                fraction,
                 usage_color(level, &theme),
                 match level {
                     UsageLevel::Normal => theme.text_muted,
@@ -623,6 +623,7 @@ impl Render for AccountUsage {
                     format!("{}%", (fraction * 100.0).round() as u32)
                 },
                 self.popup.get() == Some(&FooterCard::Accounts),
+                &theme,
             )
             .aria_label(format!(
                 "Account usage, {}%",
@@ -690,9 +691,9 @@ impl Render for AccountUsage {
             .flex()
             .items_center()
             .gap(px(4.0))
+            .children(tokens)
             .children(account)
             .children(context)
-            .children(tokens)
     }
 }
 

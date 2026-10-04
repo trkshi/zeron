@@ -44,8 +44,10 @@ Zeron release.
   format and prefix on its existing duration label. Omit the completion time
   when it cannot be derived from stored timing; older turns without a stored
   duration remain unchanged.
-- Show calendar, context, and speedometer icons in the composer footer. The
-  speed chip opens a themed token-usage popover with input, output, total,
+- Order the composer footer as TPS, account usage, then context usage. Keep
+  the original separate account/context progress rings and percentages,
+  including their warning colors and individual popovers. The TPS speedometer
+  chip opens a themed token-usage popover with input, output, total,
   cached input, cache-hit rate, cache writes, reasoning, Average TPS, and
   provider-reported USD cost where available. Average TPS is output tokens
   divided by the entire turn's wall-clock duration, including startup, tools,
