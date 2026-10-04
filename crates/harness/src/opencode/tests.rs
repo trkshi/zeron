@@ -527,6 +527,127 @@ async fn late_native_command_failure_does_not_poison_the_queued_turn() {
 }
 
 #[tokio::test]
+async fn v1_turn_usage_deduplicates_requests_and_rejects_retired_turn_reports() {
+    async fn usage_before_done(wire: &mut TurnWire) -> zeron_proto::TokenUsage {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut usage = None;
+            loop {
+                match wire.events.recv().await.unwrap().unwrap() {
+                    AgentEvent::TurnUsage { usage: report } => {
+                        usage = Some(report);
+                    }
+                    AgentEvent::Done { status, .. } => {
+                        assert_eq!(status, DoneStatus::Completed);
+                        return usage.expect("usage must precede Done");
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    let mut wire = TurnWire::start_config(
+        false,
+        false,
+        true,
+        None,
+        "1.18.31",
+        json!({"keepSteering": true}),
+        false,
+    )
+    .await;
+    wire.request("/prompt_async").await;
+    wire.status("busy");
+    let report = |id: &str, tokens: Value, cost: f64| {
+        json!({"type": "message.updated", "properties": {"info": {
+            "sessionID": "fixture", "id": id, "role": "assistant",
+            "time": {"completed": 1}, "tokens": tokens, "cost": cost,
+        }}})
+    };
+    let first = report(
+        "first",
+        json!({"input": 10, "output": 20, "reasoning": 5,
+               "cache": {"read": 30, "write": 40}}),
+        0.01,
+    );
+    wire.bus.send(first.clone()).unwrap();
+    let live = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match wire.events.recv().await.unwrap().unwrap() {
+                AgentEvent::TurnUsage { usage } => break usage,
+                AgentEvent::Done { .. } => panic!("live usage must arrive before idle/Done"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(live.output_tokens, Some(25));
+    wire.bus.send(first.clone()).unwrap();
+    wire.bus
+        .send(report(
+            "second",
+            json!({"input": 3, "output": 7, "reasoning": 2,
+                   "cache": {"read": 4, "write": 5}}),
+            0.02,
+        ))
+        .unwrap();
+    let mut unrelated = first.clone();
+    unrelated["properties"]["info"]["sessionID"] = json!("child");
+    wire.bus.send(unrelated).unwrap();
+    let mut user = first.clone();
+    user["properties"]["info"]["id"] = json!("user");
+    user["properties"]["info"]["role"] = json!("user");
+    wire.bus.send(user).unwrap();
+    wire.status("idle");
+    wire.idle();
+    let usage = usage_before_done(&mut wire).await;
+    assert_eq!(usage.input_tokens, Some(92));
+    assert_eq!(usage.output_tokens, Some(34));
+    assert_eq!(usage.total_tokens, Some(126));
+    assert_eq!(usage.cached_input_tokens, Some(34));
+    assert_eq!(usage.cache_write_input_tokens, Some(45));
+    assert_eq!(usage.reasoning_output_tokens, Some(7));
+    assert!((usage.cost_usd.unwrap() - 0.03).abs() < 1e-12);
+
+    wire.steering
+        .as_ref()
+        .unwrap()
+        .send(crate::SteerMessage {
+            prompt: "next turn".into(),
+            message_id: Some("next".into()),
+        })
+        .await
+        .unwrap();
+    wire.request("/prompt_async").await;
+    wire.status("busy");
+    // Metadata from an earlier assistant must not become this turn's usage.
+    wire.bus.send(first).unwrap();
+    wire.bus
+        .send(report(
+            "current",
+            json!({"input": 1, "output": 2, "reasoning": 0,
+                   "cache": {"read": 0, "write": 0}}),
+            0.03,
+        ))
+        .unwrap();
+    wire.status("idle");
+    wire.idle();
+    let usage = usage_before_done(&mut wire).await;
+    assert_eq!(usage.input_tokens, Some(1));
+    assert_eq!(usage.output_tokens, Some(2));
+    assert_eq!(usage.total_tokens, Some(3));
+    assert_eq!(usage.cost_usd, Some(0.03));
+    drop(wire.steering.take());
+    tokio::time::timeout(Duration::from_secs(5), &mut wire.run)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn v2_wire_streams_text_and_settles_on_execution_success() {
     let mut wire = TurnWire::start_proto(false, true).await;
     wire.request("/api/model").await;
@@ -629,11 +750,12 @@ async fn v2_wire_streams_text_and_settles_on_execution_success() {
         json!({"sessionID": "fixture"}),
     );
 
-    let (status, text, usage, context_usage) =
+    let (status, text, usage, context_usage, turn_usage) =
         tokio::time::timeout(Duration::from_secs(5), async {
             let mut text = String::new();
             let mut usage = None;
             let mut context_usage = Vec::new();
+            let mut turn_usage = None;
             loop {
                 match wire.events.recv().await.unwrap().unwrap() {
                     AgentEvent::TextDelta { text: delta } => text.push_str(&delta),
@@ -646,8 +768,11 @@ async fn v2_wire_streams_text_and_settles_on_execution_success() {
                     AgentEvent::ContextUsage { tokens, window } => {
                         context_usage.push((tokens, window));
                     }
+                    AgentEvent::TurnUsage { usage } => {
+                        turn_usage = Some(usage);
+                    }
                     AgentEvent::Done { status, .. } => {
-                        return (status, text, usage, context_usage);
+                        return (status, text, usage, context_usage, turn_usage);
                     }
                     _ => {}
                 }
@@ -658,6 +783,18 @@ async fn v2_wire_streams_text_and_settles_on_execution_success() {
     assert_eq!(status, DoneStatus::Completed);
     assert_eq!(text, "PONG");
     assert_eq!(usage, Some((4, 1)));
+    assert_eq!(
+        turn_usage,
+        Some(zeron_proto::TokenUsage {
+            input_tokens: Some(39),
+            output_tokens: Some(6),
+            total_tokens: Some(45),
+            cached_input_tokens: Some(5),
+            cache_write_input_tokens: Some(0),
+            reasoning_output_tokens: Some(0),
+            cost_usd: Some(0.0),
+        })
+    );
     assert_eq!(
         context_usage,
         vec![
@@ -1520,7 +1657,8 @@ fn v2_frames_normalize_to_v1_payloads() {
     assert_eq!(
         out,
         vec![json!({"type":"message.updated","properties":{
-            "info":{"sessionID":"ses_1","id":"usage","role":"assistant",
+            "info":{"sessionID":"ses_1","id":"msg_a","role":"assistant",
+                    "finish":"stop","cost":0,
                     "tokens":{"input":10,"output":2,"reasoning":0,
                               "cache":{"read":0,"write":0}}}}})]
     );
@@ -1557,7 +1695,8 @@ fn v2_frames_normalize_to_v1_payloads() {
     assert_eq!(
         out,
         vec![json!({"type":"message.updated","properties":{
-            "info":{"sessionID":"ses_2","id":"usage","role":"assistant",
+            "info":{"sessionID":"ses_2","id":"msg_b","role":"assistant",
+                    "finish":"stop","cost":0,
                     "tokens":{"input":1,"output":2},
                     "providerID":"opencode","modelID":"long-context"}}})]
     );
@@ -2415,7 +2554,9 @@ async fn abort_ignores_late_bus_text_and_usage() {
     let mut dones = 0;
     while let Some(event) = wire.events.recv().await {
         match event.unwrap() {
-            AgentEvent::TextDelta { .. } | AgentEvent::Usage { .. } => {
+            AgentEvent::TextDelta { .. }
+            | AgentEvent::Usage { .. }
+            | AgentEvent::TurnUsage { .. } => {
                 panic!("late content after abort")
             }
             AgentEvent::Done { status, .. } => {

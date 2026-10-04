@@ -609,8 +609,9 @@ pub enum AgentEvent {
         input_tokens: u64,
         output_tokens: u64,
     },
-    /// Whole-turn usage snapshot, not a delta or the latest model request.
-    /// The engine persists the final snapshot alongside the turn's duration.
+    /// Cumulative usage reported so far in this turn, never a delta or just
+    /// the latest request. Streaming snapshots are provisional; the final
+    /// snapshot replaces them alongside the completed turn's duration.
     TurnUsage {
         usage: TokenUsage,
     },

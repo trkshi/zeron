@@ -68,6 +68,9 @@ use zeron_proto::{
 use crate::process::{Child, Command, Stdio};
 use crate::{Harness, HarnessError, RunControls, shutdown_child};
 
+mod usage;
+use usage::TurnUsageTracker;
+
 /// opencode loads plugins and MCP config before the server answers; cold
 /// plugin-heavy starts can take minutes. Shared by chat startup and model
 /// discovery (same boot either way).
@@ -1409,6 +1412,7 @@ struct TurnState {
     /// Aborted to deliver a steer immediately: its idle/interrupted frame is
     /// a steer boundary, not the end of the run.
     preempted: bool,
+    usage: TurnUsageTracker,
 }
 
 /// A detached native-command HTTP request failed. `generation` binds the
@@ -1462,6 +1466,7 @@ impl TurnState {
             stall_deadline: stall.map(|d| tokio::time::Instant::now() + d),
             open_tools: Default::default(),
             preempted: false,
+            usage: TurnUsageTracker::default(),
         }
     }
 
@@ -1749,6 +1754,15 @@ async fn run_session(session: Session) {
                 continue $label;
             }
             turn.active = false;
+            let final_usage = if interrupt_requested { None } else { turn.usage.total() };
+            // Incomplete/aborted turns must clear their provisional rate.
+            if let Some(usage) = final_usage.or_else(|| {
+                turn.usage.has_reports().then_some(zeron_proto::TokenUsage::default())
+            })
+                && !send(&event_tx, AgentEvent::TurnUsage { usage }).await
+            {
+                break $label;
+            }
             if let Some(usage) = pending_usage.take()
                 && !interrupt_requested
                 && !send(&event_tx, usage).await
@@ -2806,18 +2820,54 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             let info = props.get("info").unwrap_or(&Value::Null);
             let (Some(session), Some(message), Some(role)) = (
                 info.get("sessionID").and_then(Value::as_str),
-                info.get("id").and_then(Value::as_str),
+                info.get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty()),
                 info.get("role").and_then(Value::as_str),
             ) else {
+                if turn.active
+                    && info.get("sessionID").and_then(Value::as_str) == Some(session_id)
+                    && info.get("role").and_then(Value::as_str) == Some("assistant")
+                {
+                    let had_report = turn.usage.reported().is_some();
+                    turn.usage.invalidate();
+                    if had_report
+                        && !send(
+                            event_tx,
+                            AgentEvent::TurnUsage {
+                                usage: zeron_proto::TokenUsage::default(),
+                            },
+                        )
+                        .await
+                    {
+                        return BusOutcome::ConsumerGone;
+                    }
+                }
                 return BusOutcome::Continue;
             };
             if session == session_id {
+                let new_message = !main_feed.assistant_messages.contains_key(message);
                 main_feed
                     .assistant_messages
                     .entry(message.to_owned())
                     .or_insert(role == "assistant");
-                // Token usage rides the assistant message; the last one
-                // before idle wins, emitted right before Done.
+                // Only new messages belong to this active turn. A known ID
+                // from a retired turn may still receive late metadata updates.
+                if turn.active && role == "assistant" {
+                    let previous = turn.usage.reported();
+                    if new_message {
+                        turn.usage.register(message);
+                    }
+                    turn.usage.observe(info);
+                    if let Some(usage) = turn.usage.reported()
+                        && Some(usage) != previous
+                        && !send(event_tx, AgentEvent::TurnUsage { usage }).await
+                    {
+                        return BusOutcome::ConsumerGone;
+                    }
+                }
+                // Context remains per-request; the legacy probe also keeps
+                // the latest request, separate from full-turn billing above.
                 if role == "assistant"
                     && let Some(tokens) = info.get("tokens")
                 {
@@ -3902,10 +3952,15 @@ fn normalize_v2_frame_with_session_models(
             // advertised context limit resolves.
             let mut info = json!({
                 "sessionID": session(),
-                "id": "usage",
+                "id": message(),
                 "role": "assistant",
                 "tokens": tokens,
             });
+            for key in ["finish", "cost"] {
+                if let Some(value) = data.get(key) {
+                    info[key] = value.clone();
+                }
+            }
             if let Some(model) = data
                 .get("sessionID")
                 .and_then(Value::as_str)

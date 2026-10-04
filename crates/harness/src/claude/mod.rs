@@ -34,6 +34,7 @@
 pub mod catalog;
 mod discovery;
 mod normalize;
+mod usage;
 mod wire;
 
 use std::path::PathBuf;
@@ -825,6 +826,7 @@ async fn run_session(session: Session) {
                             // A confirmed steer supersedes the held result; it must
                             // not finish the new turn during a quiet tool.
                             held_done = None;
+                            norm.reset_turn_usage();
                             for _ in 0..=at {
                                 pending_steers.pop_front();
                                 let (prev, next) = norm.rotate_for_steer();

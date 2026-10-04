@@ -54,13 +54,12 @@ pub struct SessionMessageEntry {
     pub status: Option<MessageStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation_of: Option<String>,
-    /// Wall-clock length of this assistant turn, stamped when the segment
-    /// finishes. Absent on user rows, live streams, and docs written before
-    /// the field existed.
+    /// Wall-clock length of this assistant turn. Streaming usage reports
+    /// carry an elapsed snapshot; finishing stamps the final duration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
-    /// Final whole-turn billing counts. Boxed so user rows and older history
-    /// without a breakdown stay lightweight.
+    /// Cumulative reported billing counts, provisional while streaming.
+    /// Boxed so user rows and older history stay lightweight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<Box<zeron_proto::TokenUsage>>,
 }
@@ -1233,6 +1232,15 @@ impl<'a> SegmentWriter<'a> {
 
     /// Diff `folded` (the full folded segment so far) into the doc.
     pub fn sync(&mut self, folded: &[MessagePart]) -> Result<(), DocError> {
+        self.sync_with_usage(folded, None)
+    }
+
+    /// Coalesce reported usage and elapsed time with the streaming parts.
+    pub fn sync_with_usage(
+        &mut self,
+        folded: &[MessagePart],
+        usage: Option<&zeron_proto::TokenUsage>,
+    ) -> Result<(), DocError> {
         let parts = self.parts_list()?;
         let mut dirty = false;
 
@@ -1293,6 +1301,28 @@ impl<'a> SegmentWriter<'a> {
             }
         }
 
+        if let Some(usage) = usage {
+            let map = self.entry_map()?;
+            let encoded = serde_json::to_string(usage)?;
+            let unchanged = matches!(
+                map.get("tokenUsage"),
+                Some(loro::ValueOrContainer::Value(LoroValue::String(previous)))
+                    if previous.as_str() == encoded
+            );
+            // Do not turn each text append into a full transcript upsert just
+            // to tick elapsed time. The UI advances this snapshot locally.
+            if !unchanged {
+                map.insert("tokenUsage", encoded)?;
+                if self.created_at > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as i64)
+                        .unwrap_or(self.created_at);
+                    map.insert("durationMs", now.saturating_sub(self.created_at).max(0))?;
+                }
+                dirty = true;
+            }
+        }
         if dirty {
             self.doc.doc.commit();
         }
@@ -1305,8 +1335,7 @@ impl<'a> SegmentWriter<'a> {
         self.finish_with_usage(folded, status, None)
     }
 
-    /// Commit usage atomically with the duration and terminal status, so a
-    /// synced viewer never divides one turn's tokens by another's elapsed time.
+    /// Replace provisional usage atomically with the final duration/status.
     pub fn finish_with_usage(
         mut self,
         folded: &[MessagePart],
@@ -1325,6 +1354,8 @@ impl<'a> SegmentWriter<'a> {
         }
         if let Some(usage) = usage {
             map.insert("tokenUsage", serde_json::to_string(usage)?)?;
+        } else {
+            map.delete("tokenUsage")?;
         }
         self.doc.doc.commit();
         Ok(())
@@ -1960,6 +1991,58 @@ mod tests {
             restored.read_entries().unwrap(),
             doc.read_entries().unwrap()
         );
+    }
+
+    #[test]
+    fn streaming_usage_replaces_snapshots_without_finishing_the_turn() {
+        let doc = SessionDoc::init("live-usage-chat").unwrap();
+        let mut writer = SegmentWriter::begin(&doc, "turn", "host", 1).unwrap();
+        let mut usage = zeron_proto::TokenUsage {
+            output_tokens: Some(100),
+            ..Default::default()
+        };
+        writer.sync_with_usage(&[], Some(&usage)).unwrap();
+        let first = doc.read_entries().unwrap();
+        assert_eq!(first[0].status, Some(MessageStatus::Streaming));
+        assert_eq!(first[0].token_usage.as_deref(), Some(&usage));
+        assert!(first[0].duration_ms.unwrap() > 0);
+        writer.sync_with_usage(&[], Some(&usage)).unwrap();
+        assert_eq!(
+            doc.read_entries().unwrap(),
+            first,
+            "duplicate reports must not tick metadata"
+        );
+        usage.output_tokens = Some(200);
+        writer.sync_with_usage(&[], Some(&usage)).unwrap();
+        let replica = LoroDoc::new();
+        replica.import(&doc.export_snapshot().unwrap()).unwrap();
+        let synced = SessionDoc::from_doc(replica).read_entries().unwrap();
+        assert_eq!(synced[0].token_usage.as_deref(), Some(&usage));
+        assert_eq!(synced[0].status, Some(MessageStatus::Streaming));
+        usage.output_tokens = Some(250);
+        writer
+            .finish_with_usage(&[], MessageStatus::Complete, Some(&usage))
+            .unwrap();
+        let final_entries = doc.read_entries().unwrap();
+        assert_eq!(final_entries[0].token_usage.as_deref(), Some(&usage));
+        assert_eq!(final_entries[0].status, Some(MessageStatus::Complete));
+    }
+
+    #[test]
+    fn finishing_without_usage_removes_the_provisional_snapshot() {
+        let doc = SessionDoc::init("unknown-final-usage").unwrap();
+        let mut writer = SegmentWriter::begin(&doc, "turn", "host", 1).unwrap();
+        writer
+            .sync_with_usage(
+                &[],
+                Some(&zeron_proto::TokenUsage {
+                    output_tokens: Some(100),
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        writer.finish(&[], MessageStatus::Aborted).unwrap();
+        assert_eq!(doc.read_entries().unwrap()[0].token_usage, None);
     }
 
     #[test]

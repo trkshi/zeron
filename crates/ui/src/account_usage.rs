@@ -116,6 +116,8 @@ pub struct AccountUsage {
     chat_id: Option<String>,
     compact: bool,
     icons_only: bool,
+    tps_clock: crate::token_usage::LiveTurnClock,
+    tps_tick: Option<Task<()>>,
     _poll: Task<()>,
     _cache: Subscription,
     _state: Subscription,
@@ -172,6 +174,8 @@ impl AccountUsage {
             chat_id: None,
             compact: false,
             icons_only: false,
+            tps_clock: crate::token_usage::LiveTurnClock::default(),
+            tps_tick: None,
             _poll: poll,
             // Settings → Accounts writes the same cache.
             _cache: cx.observe_global::<AccountsSnapshotCache>(|_, cx| cx.notify()),
@@ -581,9 +585,10 @@ impl Render for AccountUsage {
             let _ = self.poll_wake.unbounded_send(());
             self._activation = Some(cx.observe_window_activation(
                 window,
-                |usage: &mut AccountUsage, window, _| {
+                |usage: &mut AccountUsage, window, cx| {
                     usage.window_active = window.is_window_active();
                     let _ = usage.poll_wake.unbounded_send(());
+                    cx.notify();
                 },
             ));
         }
@@ -591,22 +596,47 @@ impl Render for AccountUsage {
         if self.chat_id != chat_id {
             self.dismiss(window, cx);
             self.chat_id = chat_id;
+            self.tps_clock = crate::token_usage::LiveTurnClock::default();
         }
         let theme = Theme::of(cx).clone();
         let (context, stats) = {
             let state = self.state.read(cx);
-            let measuring = state.selected_chat.as_deref().is_some_and(|chat| {
+            let working = state.selected_chat.as_deref().is_some_and(|chat| {
                 matches!(
                     state.indicator_for(chat, chrono::Utc::now()),
                     zeron_proto::view::Indicator::Working
                         | zeron_proto::view::Indicator::AwaitingInput
                 )
             });
+            let host_updated_ms = state
+                .selected_chat
+                .as_deref()
+                .and_then(|chat| state.session_for(chat))
+                .map(|session| session.updated_at.timestamp_millis());
             (
                 state.context_usage,
-                crate::token_usage::TokenStats::from_transcript(&state.transcript, measuring),
+                crate::token_usage::TokenStats::from_transcript(&state.transcript, working)
+                    .with_elapsed(self.tps_clock.elapsed_ms(
+                        &state.transcript,
+                        host_updated_ms,
+                        Instant::now(),
+                    )),
             )
         };
+        if stats.is_live() && self.window_active {
+            if self.tps_tick.is_none() {
+                self.tps_tick = Some(cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(Duration::from_secs(1)).await;
+                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
+                    }
+                }));
+            }
+        } else {
+            self.tps_tick = None;
+        }
         let account = self.fraction(cx).map(|fraction| {
             let level = usage_level(fraction);
             let chip = crate::context_usage::ring_chip(
@@ -676,9 +706,10 @@ impl Render for AccountUsage {
                 self.popup.get() == Some(&FooterCard::Tokens),
             )
             .when(!self.icons_only, |chip| chip.min_w(px(96.0)))
-            .aria_label(format!("Token usage, {label}"))
+            .aria_label(format!("Token usage, {}: {label}", stats.rate_description()))
             .tooltip(crate::settings::widgets::text_tooltip(format!(
-                "Thread token totals; TPS: {label} (full-turn average)"
+                "Thread token totals; {}: {label} (includes tools and waiting)",
+                stats.rate_description()
             )));
             self.trigger(
                 chip,

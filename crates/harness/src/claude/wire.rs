@@ -64,6 +64,10 @@ pub(crate) struct StreamEventBody {
     pub kind: String,
     #[serde(default)]
     pub delta: Delta,
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub message: Option<MessageBody>,
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub usage: Option<UsageBody>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -92,6 +96,8 @@ pub(crate) struct MessageFrame {
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct MessageBody {
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub id: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -162,7 +168,7 @@ pub(crate) struct ResultFrame {
     pub session_id: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct UsageBody {
     #[serde(default, deserialize_with = "optional_metric")]
     pub input_tokens: Option<u64>,
@@ -176,10 +182,32 @@ pub(crate) struct UsageBody {
     pub output_tokens_details: Option<OutputTokenDetails>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct OutputTokenDetails {
     #[serde(default, deserialize_with = "optional_metric")]
     pub thinking_tokens: Option<u64>,
+}
+
+impl UsageBody {
+    pub fn token_usage(&self) -> zeron_proto::TokenUsage {
+        // Anthropic excludes cache reads/writes from input, but already
+        // includes thinking in output. Missing components stay unknown.
+        zeron_proto::TokenUsage {
+            input_tokens: self.input_tokens.and_then(|input| {
+                input
+                    .checked_add(self.cache_read_input_tokens?)?
+                    .checked_add(self.cache_creation_input_tokens?)
+            }),
+            output_tokens: self.output_tokens,
+            cached_input_tokens: self.cache_read_input_tokens,
+            cache_write_input_tokens: self.cache_creation_input_tokens,
+            reasoning_output_tokens: self
+                .output_tokens_details
+                .as_ref()
+                .and_then(|details| details.thinking_tokens),
+            ..Default::default()
+        }
+    }
 }
 
 // Optional telemetry must never prevent a valid result from ending its turn.

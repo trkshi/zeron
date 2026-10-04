@@ -1,6 +1,8 @@
-//! Recorded thread totals and last-turn TPS come from the persisted transcript.
+//! Reported thread totals and live turn-average TPS come from the transcript.
+use std::time::Instant;
+
 use gpui::{SharedString, div, prelude::*, px};
-use zeron_doc::{MessagePart, MessageRole, SessionMessageEntry};
+use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
 use zeron_proto::TokenUsage;
 
 use crate::{context_usage::with_separators, popover, theme::Theme};
@@ -11,17 +13,17 @@ pub(crate) struct TokenStats {
     cache_hit_rate: Option<f64>,
     turn_usage: Option<TokenUsage>,
     duration_ms: Option<i64>,
-    measuring: bool,
+    live: bool,
+    previous: bool,
 }
 
 impl TokenStats {
-    pub fn from_transcript(entries: &[SessionMessageEntry], measuring: bool) -> Self {
+    pub fn from_transcript(entries: &[SessionMessageEntry], working: bool) -> Self {
         let mut stats = Self {
             thread_usage: thread_usage(entries),
-            measuring,
             ..Default::default()
         };
-        // Partial counts can still be displayed, but cannot establish a rate.
+        // A cache-hit rate needs complete reported input/cache counts.
         if entries
             .iter()
             .filter(|entry| entry.role == MessageRole::Assistant)
@@ -35,40 +37,148 @@ impl TokenStats {
         {
             stats.cache_hit_rate = stats.thread_usage.cache_hit_rate();
         }
-        if measuring {
-            return stats;
-        }
-        // Late asynchronous questions are standalone assistant entries, not
-        // new measured turns. Do not let one hide the completed turn's stats.
-        if let Some(entry) = entries.iter().rev().find(|entry| {
-            let standalone_question = entry.duration_ms.is_none()
-                && entry.token_usage.is_none()
-                && !entry.parts.is_empty()
-                && entry.parts.iter().all(|part| {
-                    matches!(
-                        part,
-                        MessagePart::Input {
-                            asynchronous: true,
-                            ..
-                        }
-                    )
-                });
-            entry.role == MessageRole::Assistant && !standalone_question
-        }) {
+        let latest = entries.iter().rev().find(|entry| is_turn(entry));
+        let live = latest.filter(|entry| {
+            working
+                && entry.status == Some(MessageStatus::Streaming)
+                && entry.duration_ms.is_some_and(|ms| ms > 0)
+                && entry
+                    .token_usage
+                    .as_deref()
+                    .and_then(|usage| usage.output_tokens)
+                    .is_some_and(|output| output > 0)
+        });
+        stats.live = live.is_some();
+        // Keep the last completed rate until this turn reports real output.
+        let entry = live.or_else(|| {
+            if working {
+                entries
+                    .iter()
+                    .rev()
+                    .find(|entry| is_turn(entry) && entry.status != Some(MessageStatus::Streaming))
+            } else {
+                latest
+            }
+        });
+        if let Some(entry) = entry {
             stats.turn_usage = entry.token_usage.as_deref().copied();
             stats.duration_ms = entry.duration_ms;
         }
+        stats.previous = working && !stats.live;
         stats
     }
 
-    pub fn label(self) -> String {
-        if self.measuring {
-            return "Measuring".into();
+    pub fn with_elapsed(mut self, elapsed_ms: Option<i64>) -> Self {
+        if self.live {
+            self.duration_ms = elapsed_ms.or(self.duration_ms);
         }
+        self
+    }
+
+    pub fn is_live(self) -> bool {
+        self.live
+    }
+
+    pub fn rate_description(self) -> &'static str {
+        if self.live {
+            "Live average TPS"
+        } else if self.previous {
+            "Average TPS (previous turn)"
+        } else {
+            "Average TPS (last turn)"
+        }
+    }
+
+    pub fn label(self) -> String {
         self.turn_usage
             .and_then(|usage| usage.average_tps(self.duration_ms))
             .map(|tps| format!("{tps:.1} tok/s"))
             .unwrap_or_else(|| "- tok/s".into())
+    }
+}
+
+// Late asynchronous questions are not new measured turns.
+fn is_turn(entry: &SessionMessageEntry) -> bool {
+    let standalone_question = entry.duration_ms.is_none()
+        && entry.token_usage.is_none()
+        && !entry.parts.is_empty()
+        && entry.parts.iter().all(|part| {
+            matches!(
+                part,
+                MessagePart::Input {
+                    asynchronous: true,
+                    ..
+                }
+            )
+        });
+    entry.role == MessageRole::Assistant && !standalone_question
+}
+
+/// Advance the host's elapsed snapshot locally, independent of Windows/host
+/// clock skew. This repaint clock never probes the provider for usage.
+#[derive(Default)]
+pub(crate) struct LiveTurnClock {
+    reading: Option<LiveReading>,
+}
+
+struct LiveReading {
+    entry_id: String,
+    source_ms: i64,
+    elapsed_ms: i64,
+    at: Instant,
+}
+
+impl LiveTurnClock {
+    pub fn elapsed_ms(
+        &mut self,
+        entries: &[SessionMessageEntry],
+        host_updated_ms: Option<i64>,
+        now: Instant,
+    ) -> Option<i64> {
+        let entry = entries.iter().rev().find(|entry| is_turn(entry));
+        let snapshot = entry.filter(|entry| entry.status == Some(MessageStatus::Streaming));
+        let Some((entry, mut duration)) =
+            snapshot.and_then(|entry| Some((entry, entry.duration_ms.filter(|ms| *ms > 0)?)))
+        else {
+            self.reading = None;
+            return None;
+        };
+        // A reopened chat may already be deep into a quiet tool. Its host
+        // heartbeat is newer than the last token report and shares its clock.
+        if entry.created_at > 0
+            && let Some(host_updated_ms) = host_updated_ms
+        {
+            duration = duration.max(host_updated_ms.saturating_sub(entry.created_at));
+        }
+        if !self
+            .reading
+            .as_ref()
+            .is_some_and(|reading| reading.entry_id == entry.id && reading.source_ms == duration)
+        {
+            let previous = self
+                .reading
+                .as_ref()
+                .filter(|reading| reading.entry_id == entry.id)
+                .map(|reading| {
+                    let since = now.saturating_duration_since(reading.at).as_millis();
+                    reading
+                        .elapsed_ms
+                        .saturating_add(since.min(i64::MAX as u128) as i64)
+                });
+            self.reading = Some(LiveReading {
+                entry_id: entry.id.clone(),
+                source_ms: duration,
+                elapsed_ms: previous.map_or(duration, |previous| previous.max(duration)),
+                at: now,
+            });
+        }
+        let reading = self.reading.as_ref()?;
+        let since = now.saturating_duration_since(reading.at).as_millis();
+        Some(
+            reading
+                .elapsed_ms
+                .saturating_add(since.min(i64::MAX as u128) as i64),
+        )
     }
 }
 
@@ -134,16 +244,12 @@ fn rows(stats: TokenStats) -> [(&'static str, String); 9] {
             count(usage.reasoning_output_tokens),
         ),
         (
-            "Average TPS (last turn)",
-            if stats.measuring {
-                "Measuring".into()
-            } else {
-                stats
-                    .turn_usage
-                    .and_then(|usage| usage.average_tps(stats.duration_ms))
-                    .map(|tps| format!("{tps:.1} tok/s"))
-                    .unwrap_or_else(|| "Not reported".into())
-            },
+            stats.rate_description(),
+            stats
+                .turn_usage
+                .and_then(|usage| usage.average_tps(stats.duration_ms))
+                .map(|tps| format!("{tps:.1} tok/s"))
+                .unwrap_or_else(|| "Not reported".into()),
         ),
         (
             "Reported cost",
@@ -168,7 +274,7 @@ pub(crate) fn card(stats: TokenStats, theme: &Theme) -> gpui::Div {
                 .pb(px(6.0))
                 .text_size(px(11.0))
                 .text_color(theme.text_muted)
-                .child("Recorded thread totals"),
+                .child("Reported thread totals"),
         )
         .children(rows(stats).into_iter().map(|(label, value)| {
             div()
@@ -199,7 +305,7 @@ pub(crate) fn card(stats: TokenStats, theme: &Theme) -> gpui::Div {
                 .pb(px(6.0))
                 .text_size(px(11.0))
                 .text_color(theme.text_muted)
-                .child("Totals include reported usage only. TPS includes tools and waiting."),
+                .child("Live counts update when reported. TPS includes tools and waiting."),
         )
 }
 
@@ -222,19 +328,98 @@ mod tests {
     }
 
     #[test]
-    fn measuring_preserves_thread_totals_without_reusing_previous_tps() {
+    fn a_new_turn_keeps_previous_tps_until_output_is_reported() {
         let entries = [assistant(Some(TokenUsage {
             output_tokens: Some(400),
             ..Default::default()
         }))];
         let stats = TokenStats::from_transcript(&entries, true);
-        assert_eq!(stats.label(), "Measuring");
+        assert_eq!(stats.label(), "20.0 tok/s");
         assert_eq!(rows(stats)[1].1, "400");
-        assert_eq!(rows(stats)[7].1, "Measuring");
+        assert_eq!(
+            rows(stats)[7],
+            ("Average TPS (previous turn)", "20.0 tok/s".into())
+        );
         assert_eq!(
             TokenStats::from_transcript(&entries, false).label(),
             "20.0 tok/s"
         );
+    }
+
+    #[test]
+    fn live_rate_replaces_the_previous_turn_and_advances_during_tools() {
+        let previous = assistant(Some(TokenUsage {
+            output_tokens: Some(400),
+            ..Default::default()
+        }));
+        let mut current = assistant(None);
+        current.id = "current".into();
+        current.status = Some(MessageStatus::Streaming);
+        current.duration_ms = Some(10_000);
+        let mut entries = [previous, current];
+        assert_eq!(
+            TokenStats::from_transcript(&entries, true).label(),
+            "20.0 tok/s"
+        );
+        entries[1].token_usage = Some(Box::new(TokenUsage {
+            output_tokens: Some(0),
+            ..Default::default()
+        }));
+        assert_eq!(
+            TokenStats::from_transcript(&entries, true).label(),
+            "20.0 tok/s"
+        );
+        entries[1].token_usage.as_mut().unwrap().output_tokens = Some(100);
+        let live = TokenStats::from_transcript(&entries, true);
+        assert!(live.is_live());
+        assert_eq!(live.label(), "10.0 tok/s");
+        assert_eq!(live.rate_description(), "Live average TPS");
+        let waiting = live.with_elapsed(Some(20_000));
+        assert_eq!(waiting.label(), "5.0 tok/s");
+        assert_eq!(rows(waiting)[1].1, "500");
+        assert_eq!(
+            rows(TokenStats::from_transcript(&entries, true))[1].1,
+            "500"
+        );
+        entries[1].status = Some(MessageStatus::Complete);
+        entries[1].duration_ms = Some(20_000);
+        let completed = TokenStats::from_transcript(&entries, false);
+        assert!(!completed.is_live());
+        assert_eq!(completed.label(), "5.0 tok/s");
+        assert_eq!(completed.with_elapsed(Some(30_000)).label(), "5.0 tok/s");
+    }
+
+    #[test]
+    fn a_first_turn_without_counts_has_no_loading_label_or_invented_rate() {
+        let mut current = assistant(None);
+        current.status = Some(MessageStatus::Streaming);
+        assert_eq!(
+            TokenStats::from_transcript(&[current], true).label(),
+            "- tok/s"
+        );
+    }
+
+    #[test]
+    fn live_clock_uses_host_duration_and_resets_on_reports_and_turn_changes() {
+        let now = Instant::now();
+        let mut clock = LiveTurnClock::default();
+        let mut current = assistant(None);
+        current.status = Some(MessageStatus::Streaming);
+        let mut entries = [current];
+        assert_eq!(clock.elapsed_ms(&entries, None, now), Some(20_000));
+        let later = now + std::time::Duration::from_secs(5);
+        assert_eq!(clock.elapsed_ms(&entries, None, later), Some(25_000));
+        entries[0].duration_ms = Some(30_000);
+        assert_eq!(clock.elapsed_ms(&entries, None, later), Some(30_000));
+        entries[0].id = "next".into();
+        entries[0].duration_ms = Some(1000);
+        assert_eq!(clock.elapsed_ms(&entries, None, later), Some(1000));
+        assert_eq!(
+            clock.elapsed_ms(&entries, Some(entries[0].created_at + 60_000), later),
+            Some(60_000)
+        );
+        entries[0].status = Some(MessageStatus::Complete);
+        assert_eq!(clock.elapsed_ms(&entries, None, later), None);
     }
 
     #[test]

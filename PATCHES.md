@@ -54,16 +54,29 @@ Zeron release.
   Reopening a thread restores its recorded totals without counting repeated
   snapshots or joined continuations twice. Average TPS is output tokens
   divided by the entire turn's wall-clock duration, including startup, tools,
-  and waiting; it is not raw model-generation speed. Show **Measuring** for TPS
-  while working without clearing the thread totals. Show **Not reported** for
+  and waiting; it is not raw model-generation speed. Keep the previous turn's
+  rate until the new turn reports output instead of showing **Measuring**.
+  Stream reported counts into the footer during the turn and advance the
+  live average every second locally, including tool and input waits, without
+  additional provider requests. The popover distinguishes live, previous,
+  and completed-turn rates. Tool/thinking text never substitutes for token
+  telemetry. Show **Not reported** for
   unavailable fields, and retain earlier reported counts when a later turn
   omits them. Cache is included in
   input and reasoning in output, never added again to the totals.
-  Persist Claude/Codex reports with each assistant turn so reopening and
-  device sync retain the selected thread's own statistics. Codex differences
-  session totals across requests, rather than mistaking the latest model
+  Persist Claude, Codex, and OpenCode reports with each assistant turn so
+  reopening and device sync retain the selected thread's own statistics.
+  Codex computes differences between session totals across requests, rather
+  than mistaking the latest model
   request for the whole turn. In-place Codex steers without a separate provider
   usage boundary leave TPS unreported rather than guessing an allocation.
+  OpenCode sums completed main-session requests across each turn on both
+  server protocols, including cache and reasoning in the normalized counts.
+  Claude tracks streaming usage by API message ID across repeated content
+  blocks; its final result replaces provisional totals, never adds to them.
+  OpenCode exposes completed-request usage during a still-running turn.
+  Repeated request snapshots and late reports from retired turns do not
+  inflate usage. An unfinished request leaves full-turn TPS unreported.
   Older providers without trustworthy turn totals show no TPS. Existing
   history is untouched and not retroactively estimated.
   Remote chats require this patch on the engine running the agent; installing

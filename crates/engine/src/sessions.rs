@@ -1676,8 +1676,9 @@ fn sync_segment<'a>(
     device_id: &str,
     started_at: i64,
     folded: &[MessagePart],
+    usage: Option<&TokenUsage>,
 ) -> Result<(), DocError> {
-    if folded.is_empty() {
+    if folded.is_empty() && usage.is_none() {
         return Ok(());
     }
     let rendered = render_parts(folded);
@@ -1685,7 +1686,7 @@ fn sync_segment<'a>(
         *writer = Some(SegmentWriter::begin(doc, entry_id, device_id, started_at)?);
     }
     if let Some(w) = writer.as_mut() {
-        w.sync(&rendered)?;
+        w.sync_with_usage(&rendered, usage)?;
     }
     Ok(())
 }
@@ -2185,6 +2186,7 @@ async fn drive_run(
                     if dirty {
                         if let Err(err) = sync_segment(
                             doc_ref, &mut writer, &entry_id, &device_id, segment_started, &folded,
+                            turn_usage.as_ref(),
                         ) {
                             tracing::warn!(chat = %chat_id, error = %err, "segment sync failed");
                         }
@@ -2484,8 +2486,13 @@ async fn drive_run(
         // Usage is metadata, never evidence that an idle provider has started
         // another turn. Adapters emit whole-turn snapshots, so replace, not add.
         if let AgentEvent::TurnUsage { usage } = &event {
-            if idle_since.is_none() {
+            if idle_since.is_none() && turn_usage != Some(*usage) {
                 turn_usage = Some(*usage);
+                if !dirty {
+                    dirty = true;
+                    flush_at = tokio::time::Instant::now()
+                        + std::time::Duration::from_millis(STREAM_COMMIT_MS);
+                }
             }
             continue;
         }
@@ -3304,6 +3311,89 @@ mod tests {
                 .expect("FeedHarness serves one run per test");
             Ok(futures::stream::poll_fn(move |cx| feed.poll_recv(cx).map(|e| e.map(Ok))).boxed())
         }
+    }
+
+    #[tokio::test]
+    async fn usage_only_reports_reach_the_transcript_before_done() {
+        let (feed, rx) = mpsc::unbounded_channel();
+        let registry = HarnessRegistry::new();
+        registry.register(Arc::new(FeedHarness {
+            feed: Mutex::new(Some(rx)),
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let core =
+            crate::EngineCore::assemble(dir.path(), Arc::new(registry), HarnessId::Mock, None)
+                .unwrap();
+        let chat = "live-turn-usage";
+        core.sessions
+            .dispatch(chat, HarnessId::Mock, request(), None)
+            .await
+            .unwrap();
+        let handle = core.doc_host.open(chat).unwrap();
+        feed.send(AgentEvent::SessionStarted {
+            harness: HarnessId::Mock,
+            model: "mock-1".into(),
+            tools: vec![],
+            cwd: "/tmp".into(),
+            session_id: "hs-1".into(),
+            assistant_message_id: "a1".into(),
+        })
+        .unwrap();
+        for output in [100, 200] {
+            feed.send(AgentEvent::TurnUsage {
+                usage: TokenUsage {
+                    output_tokens: Some(output),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Some(entry) = handle.doc().read_entries().unwrap().last()
+                        && entry
+                            .token_usage
+                            .as_deref()
+                            .and_then(|usage| usage.output_tokens)
+                            == Some(output)
+                    {
+                        assert_eq!(entry.status, Some(MessageStatus::Streaming));
+                        assert!(entry.duration_ms.unwrap() > 0);
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            core.sessions.session_status(chat).unwrap().status,
+            SessionStatus::Working
+        );
+        feed.send(AgentEvent::Done {
+            status: DoneStatus::Completed,
+            result: None,
+            error: None,
+            session_id: None,
+        })
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if handle
+                    .doc()
+                    .read_entries()
+                    .unwrap()
+                    .last()
+                    .is_some_and(|entry| entry.status == Some(MessageStatus::Complete))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        core.sessions.shutdown().await;
     }
 
     // A tagged subagent event that folds to NO parts used to leave its sink

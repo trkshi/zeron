@@ -4,6 +4,7 @@
 use serde_json::Value;
 use zeron_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, TokenUsage, ToolCall};
 
+use super::usage::TurnUsageTracker;
 use super::wire::{ContentBlock, Frame};
 
 /// Human-readable text for the CLI's assistant-level error codes. These arrive
@@ -211,6 +212,7 @@ pub(crate) struct Normalizer {
     /// Claude's result cost is cumulative for this CLI process, unlike its
     /// per-result token counts. Keep the baseline across warm turns.
     last_cost_usd: Option<f64>,
+    turn_usage: TurnUsageTracker,
 }
 
 impl Normalizer {
@@ -224,6 +226,7 @@ impl Normalizer {
             assistant_message_id: new_message_id(),
             session_id: None,
             last_cost_usd: Some(0.0),
+            turn_usage: TurnUsageTracker::default(),
         }
     }
 
@@ -337,6 +340,12 @@ impl Normalizer {
         (prev, self.assistant_message_id.clone())
     }
 
+    /// A confirmed user steer starts a new measured segment, unlike an
+    /// assistant-frame boundary within the same turn.
+    pub fn reset_turn_usage(&mut self) {
+        self.turn_usage.reset();
+    }
+
     /// Normalize one stdout frame into 0+ unified events. `interrupted` folds
     /// a post-interrupt `result` into `Done { status: Interrupted }`.
     pub fn normalize(&mut self, frame: Frame, interrupted: bool) -> Vec<AgentEvent> {
@@ -430,6 +439,28 @@ impl Normalizer {
             // `AgentEvent::Subagent` instead — the engine routes them to the
             // subagent's own doc.
             Frame::StreamEvent(f) => {
+                if f.parent_tool_use_id.is_none() {
+                    let usage = match f.event.kind.as_str() {
+                        "message_start" => f
+                            .event
+                            .message
+                            .as_ref()
+                            .and_then(|message| self.turn_usage.start(message)),
+                        "message_delta" => f
+                            .event
+                            .usage
+                            .as_ref()
+                            .and_then(|usage| self.turn_usage.delta(usage)),
+                        "message_stop" => {
+                            self.turn_usage.stop();
+                            None
+                        }
+                        _ => None,
+                    };
+                    if let Some(usage) = usage {
+                        return vec![AgentEvent::TurnUsage { usage }];
+                    }
+                }
                 if f.event.kind != "content_block_delta" {
                     return Vec::new();
                 }
@@ -571,6 +602,9 @@ impl Normalizer {
                     })
                     .collect();
                 self.last_model = f.message.model.clone().or(self.last_model.take());
+                if let Some(usage) = self.turn_usage.message(&f.message) {
+                    out.push(AgentEvent::TurnUsage { usage });
+                }
                 if let Some(usage) = &f.message.usage {
                     let fields = [
                         "input_tokens",
@@ -709,25 +743,12 @@ impl Normalizer {
                     .zip(previous_cost)
                     .filter(|(cost, previous)| cost >= previous)
                     .map(|(cost, previous)| cost - previous);
-                // Anthropic reports uncached input separately from reads and
-                // writes. Inclusive input needs all three reported components;
-                // an omitted cache field is not a reported zero.
                 let turn_usage = TokenUsage {
-                    input_tokens: f.usage.input_tokens.and_then(|input| {
-                        input
-                            .checked_add(f.usage.cache_read_input_tokens?)?
-                            .checked_add(f.usage.cache_creation_input_tokens?)
-                    }),
-                    output_tokens: f.usage.output_tokens,
-                    cached_input_tokens: f.usage.cache_read_input_tokens,
-                    cache_write_input_tokens: f.usage.cache_creation_input_tokens,
-                    reasoning_output_tokens: f
-                        .usage
-                        .output_tokens_details
-                        .and_then(|details| details.thinking_tokens),
                     cost_usd,
-                    ..Default::default()
+                    ..f.usage.token_usage()
                 };
+                let had_live_usage = self.turn_usage.has_reports();
+                self.turn_usage.reset();
                 let done = if f.subtype == "success" {
                     AgentEvent::Done {
                         status: if interrupted {
@@ -797,7 +818,7 @@ impl Normalizer {
                     });
                 }
                 out.push(usage);
-                if turn_usage != TokenUsage::default() {
+                if had_live_usage || turn_usage != TokenUsage::default() {
                     out.push(AgentEvent::TurnUsage { usage: turn_usage });
                 }
                 out.push(done);
@@ -888,6 +909,103 @@ mod tests {
             .into_iter()
             .find(|event| matches!(event, AgentEvent::Done { .. }))
             .expect("done event")
+    }
+
+    #[test]
+    fn live_usage_deduplicates_blocks_and_final_result_replaces_it() {
+        let mut normalizer = Normalizer::new();
+        let mut report = |value: Value| {
+            let events = normalizer.normalize(
+                super::super::wire::parse_frame(&value.to_string()).unwrap(),
+                false,
+            );
+            events.into_iter().find_map(|event| match event {
+                AgentEvent::TurnUsage { usage } => Some(usage),
+                _ => None,
+            })
+        };
+        let start = json!({"type": "stream_event", "event": {"type": "message_start", "message": {
+            "id": "request-1", "usage": {"input_tokens": 10, "output_tokens": 0,
+            "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40}
+        }}});
+        assert_eq!(report(start).unwrap().input_tokens, Some(80));
+        let delta = json!({"type": "stream_event", "event": {"type": "message_delta", "usage": {"output_tokens": 50}}});
+        assert_eq!(report(delta.clone()).unwrap().output_tokens, Some(50));
+        assert_eq!(report(delta).unwrap().output_tokens, Some(50));
+        let echo = json!({"type": "assistant", "message": {"id": "request-1", "content": [], "usage": {
+            "input_tokens": 10, "output_tokens": 0, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40
+        }}});
+        assert_eq!(report(echo.clone()).unwrap().output_tokens, Some(50));
+        assert_eq!(report(echo).unwrap().input_tokens, Some(80));
+        let next = json!({"type": "assistant", "message": {"id": "request-2", "usage": {
+            "input_tokens": 5, "output_tokens": 20, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0
+        }}});
+        assert_eq!(report(next).unwrap().output_tokens, Some(70));
+        let final_report = report(json!({"type": "result", "subtype": "success", "usage": {
+            "input_tokens": 15, "output_tokens": 75, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40
+        }})).unwrap();
+        assert_eq!(final_report.output_tokens, Some(75));
+        assert_eq!(final_report.input_tokens, Some(85));
+        // A result resets request totals for the next warm turn.
+        let next = report(
+            json!({"type": "assistant", "message": {"id": "request-3", "usage": {
+                "output_tokens": 7
+            }}}),
+        )
+        .unwrap();
+        assert_eq!(next.output_tokens, Some(7));
+    }
+
+    #[test]
+    fn live_usage_ignores_subagents_and_retired_request_ids_after_steer() {
+        let mut normalizer = Normalizer::new();
+        let frame = |id: &str, parent: Option<&str>| {
+            super::super::wire::parse_frame(&json!({
+            "type": "assistant", "parent_tool_use_id": parent, "message": {"id": id, "usage": {"output_tokens": 20}}
+        }).to_string()).unwrap()
+        };
+        let usage = |events: Vec<AgentEvent>| {
+            events.into_iter().find_map(|event| match event {
+                AgentEvent::TurnUsage { usage } => Some(usage),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            usage(normalizer.normalize(frame("old", None), false))
+                .unwrap()
+                .output_tokens,
+            Some(20)
+        );
+        assert_eq!(
+            usage(normalizer.normalize(frame("child", Some("spawn")), false)),
+            None
+        );
+        normalizer.reset_turn_usage();
+        assert_eq!(usage(normalizer.normalize(frame("old", None), false)), None);
+        assert_eq!(
+            usage(normalizer.normalize(frame("new", None), false))
+                .unwrap()
+                .output_tokens,
+            Some(20)
+        );
+    }
+
+    #[test]
+    fn missing_final_counts_clear_live_output_instead_of_guessing() {
+        let mut normalizer = Normalizer::new();
+        normalizer.normalize(
+            super::super::wire::parse_frame(
+                r#"{"type":"assistant","message":{"id":"request","usage":{"output_tokens":20}}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        let events = normalizer.normalize(
+            super::super::wire::parse_frame(r#"{"type":"result","subtype":"success"}"#).unwrap(),
+            false,
+        );
+        assert!(events.iter().any(|event| matches!(event, AgentEvent::TurnUsage { usage } if usage.output_tokens.is_none())));
+        assert!(matches!(events.last(), Some(AgentEvent::Done { .. })));
     }
 
     #[test]
