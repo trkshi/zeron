@@ -23,6 +23,12 @@ Zeron release.
   when the Markdown parser produces identical content. Preserve indentation,
   spaces on nonblank lines, internal paragraph breaks, and meaningful code or
   raw-HTML whitespace. Failed sends still restore the original draft.
+- Discard the interrupted Claude turn's held completion once a steer is
+  confirmed, so quiet tools in the new turn cannot trigger a stale end or
+  prematurely drain queued messages. Preserve the fallback for steers the
+  CLI never confirms and let active tools finish normally. Remote chats need
+  this fix on the engine running Claude; a Windows rebuild alone does not
+  update the Ubuntu engine.
 - Show structured asynchronous Codex questions in a separate panel with choices
   and custom answers, without replacing the normal chat draft. The panel uses
   the composer's theme-aware frosted-glass material. Questions stay answerable

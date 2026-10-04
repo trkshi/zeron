@@ -143,6 +143,50 @@ case "$first" in
   emit '{"type":"result","subtype":"success","result":"answered-both","errors":[],"usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-sup"}'
   ;;
 
+*scenario:quiet-steer-old-result*|*scenario:quiet-steer-no-old-result*)
+  printf '%s\n' "$$" >> quiet-steer-processes
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":["Bash"],"cwd":"/tmp","session_id":"sess-quiet-steer"}'
+  emit '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"old response"}}}'
+  read -r steer || exit 1
+  case "$steer" in *'"priority":"now"'*) ;; *) exit 9 ;; esac
+  case "$first" in
+    *scenario:quiet-steer-old-result*)
+      emit '{"type":"result","subtype":"success","result":"old response","usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-quiet-steer"}'
+      ;;
+  esac
+  emit "$steer"
+  emit '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"before quiet tool"}}}'
+  emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"quiet-tool","name":"Bash","input":{"command":"fake slow tool"}}]}}'
+  # The test releases this tool only after the old Done timer could fire.
+  attempts=0
+  while [ ! -f release-quiet-tool ]; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 400 ] || exit 10
+    sleep 0.05
+  done
+  emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"quiet-tool","is_error":false}]}}'
+  emit '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"after quiet tool"}}}'
+  emit '{"type":"result","subtype":"success","result":"steered-finished","usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-quiet-steer"}'
+  # Stay warm so engine tests can observe ordinary queue delivery separately.
+  while read -r next; do
+    case "$next" in *'"subtype":"interrupt"'*) exit 0 ;; esac
+    emit "$next"
+    emit '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"queued response"}}}'
+    emit '{"type":"result","subtype":"success","result":"queued-finished","usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-quiet-steer"}'
+  done
+  ;;
+
+*scenario:tool-steer*)
+  emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":["Bash"],"cwd":"/tmp","session_id":"sess-steer-tool"}'
+  emit '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"active-tool","name":"Bash","input":{"command":"fake active tool"}}]}}'
+  read -r steer || exit 1
+  case "$steer" in *'"priority":"next"'*) ;; *) exit 9 ;; esac
+  emit '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"active-tool","is_error":false}]}}'
+  emit "$steer"
+  emit '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"steered after tool"}}}'
+  emit '{"type":"result","subtype":"success","result":"steered after tool","usage":{"input_tokens":1,"output_tokens":1},"session_id":"sess-steer-tool"}'
+  ;;
+
 *scenario:absorbed-steer*)
   # A steer whose replay never comes: the turn end must not be held forever.
   emit '{"type":"system","subtype":"init","model":"claude-fable-5","tools":[],"cwd":"/tmp","session_id":"sess-abs"}'

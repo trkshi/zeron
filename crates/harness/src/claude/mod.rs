@@ -822,6 +822,9 @@ async fn run_session(session: Session) {
                                 .as_ref()
                                 .and_then(|id| pending_steers.iter().position(|p| p == id))
                         {
+                            // A confirmed steer supersedes the held result; it must
+                            // not finish the new turn during a quiet tool.
+                            held_done = None;
                             for _ in 0..=at {
                                 pending_steers.pop_front();
                                 let (prev, next) = norm.rotate_for_steer();

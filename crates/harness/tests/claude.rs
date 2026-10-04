@@ -898,6 +898,161 @@ async fn a_replay_confirms_superseded_steers_and_the_turn_ends() {
     ));
 }
 
+async fn quiet_steer_events(scenario: &str) -> Vec<AgentEvent> {
+    let dir = tempfile::tempdir().unwrap();
+    let (controls, steer, token) = controls("A");
+    let harness = harness().with_graces(Duration::from_millis(50), Duration::from_millis(100));
+    let mut req = request(scenario);
+    req.cwd = dir.path().to_str().unwrap().to_owned();
+    let mut stream = harness.run(req, controls).await.expect("run starts");
+    let mut events = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = stream
+                .next()
+                .await
+                .expect("fixture is live")
+                .expect("event");
+            if matches!(&event, AgentEvent::TextDelta { text } if text == "old response") {
+                steer
+                    .send(SteerMessage {
+                        prompt: "redirect please".into(),
+                        message_id: None,
+                    })
+                    .await
+                    .unwrap();
+            }
+            let tool_started =
+                matches!(&event, AgentEvent::ToolCall { id, .. } if id == "quiet-tool");
+            events.push(event);
+            if tool_started {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("steered tool starts");
+
+    // Keep the actual turn open beyond HELD_DONE_SETTLE without depending on
+    // a subprocess sleep racing the final-result assertions.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(7);
+    loop {
+        match tokio::time::timeout_at(deadline, stream.next()).await {
+            Ok(Some(event)) => events.push(event.expect("event")),
+            Ok(None) => panic!("fixture exited before its tool was released"),
+            Err(_) => break,
+        }
+    }
+    std::fs::write(dir.path().join("release-quiet-tool"), "").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = stream.next().await.expect("fixture is live").expect("event");
+            let finished = matches!(&event, AgentEvent::Done { result: Some(result), .. } if result == "steered-finished");
+            events.push(event);
+            if finished {
+                break;
+            }
+        }
+    }).await.expect("real steered result arrives");
+    token.cancel();
+    tokio::time::timeout(Duration::from_secs(5), stream.collect::<Vec<_>>())
+        .await
+        .expect("fixture shuts down");
+    events
+}
+
+#[tokio::test]
+async fn a_confirmed_steer_does_not_release_the_old_done_during_a_quiet_tool() {
+    let events = quiet_steer_events("scenario:quiet-steer-old-result").await;
+    let done_results: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Done { result, .. } => Some(result.as_deref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        done_results,
+        vec![Some("steered-finished")],
+        "old Done must not finish an active steered turn: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_quiet_steer_without_an_old_result_stays_open_until_its_real_done() {
+    let events = quiet_steer_events("scenario:quiet-steer-no-old-result").await;
+    let done_results: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::Done { result, .. } => Some(result.as_deref()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_results, vec![Some("steered-finished")]);
+}
+
+#[tokio::test]
+async fn steering_during_a_tool_uses_next_and_preserves_the_tool_result() {
+    let (controls, steer, _token) = controls("A");
+    let mut stream = harness()
+        .run(request("scenario:tool-steer"), controls)
+        .await
+        .expect("run starts");
+    let mut events = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = stream
+                .next()
+                .await
+                .expect("fixture is live")
+                .expect("event");
+            let tool_started =
+                matches!(&event, AgentEvent::ToolCall { id, .. } if id == "active-tool");
+            events.push(event);
+            if tool_started {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("initial tool starts");
+    steer
+        .send(SteerMessage {
+            prompt: "redirect please".into(),
+            message_id: None,
+        })
+        .await
+        .unwrap();
+    events.extend(
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            stream
+                .map(|event| event.expect("event"))
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .expect("run finishes"),
+    );
+    let result = events.iter().position(|event|
+        matches!(event, AgentEvent::ToolResult { id, is_error: false, .. } if id == "active-tool"))
+        .expect("tool finishes normally");
+    let boundary = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::Steered { .. }))
+        .expect("steer acknowledged");
+    assert!(
+        result < boundary,
+        "tool must finish before the steer is applied"
+    );
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::Done {
+            status: DoneStatus::Completed,
+            ..
+        })
+    ));
+}
+
 /// A steer the CLI never replays must not hold the turn end forever.
 #[tokio::test]
 async fn an_unreplayed_steer_releases_the_turn_end() {
