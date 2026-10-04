@@ -6,7 +6,9 @@
 //! types) are accepted, and unknown item types map to nothing.
 
 use serde_json::Value;
-use zeron_proto::{AgentEvent, DoneStatus, TodoItem, TodoStatus, ToolCall, UserInputQuestion};
+use zeron_proto::{
+    AgentEvent, DoneStatus, TodoItem, TodoStatus, TokenUsage, ToolCall, UserInputQuestion,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -161,8 +163,7 @@ pub(crate) fn turn_error_message(params: &Value) -> Option<String> {
         })
 }
 
-/// `thread/tokenUsage/updated` → a [`AgentEvent::Usage`] snapshot of the LAST
-/// turn's tokens (held by the session loop, emitted before `Done`).
+/// Legacy probe snapshot of the latest model request, not the full user turn.
 pub(crate) fn usage_event(params: &Value) -> Option<AgentEvent> {
     let last = field(params, &["tokenUsage", "token_usage"])?.get("last")?;
     let count = |keys: &[&str]| {
@@ -174,6 +175,125 @@ pub(crate) fn usage_event(params: &Value) -> Option<AgentEvent> {
         input_tokens: count(&["inputTokens", "input_tokens"]),
         output_tokens: count(&["outputTokens", "output_tokens"]),
     })
+}
+
+fn token_counts(value: &Value) -> TokenUsage {
+    let count = |keys: &[&str]| field(value, keys).and_then(Value::as_u64);
+    TokenUsage {
+        input_tokens: count(&["inputTokens", "input_tokens"]),
+        output_tokens: count(&["outputTokens", "output_tokens"]),
+        total_tokens: count(&["totalTokens", "total_tokens"]),
+        cached_input_tokens: count(&["cachedInputTokens", "cached_input_tokens"]),
+        cache_write_input_tokens: count(&["cacheWriteInputTokens", "cache_write_input_tokens"]),
+        reasoning_output_tokens: count(&["reasoningOutputTokens", "reasoning_output_tokens"]),
+        cost_usd: None,
+    }
+}
+
+/// Difference session totals instead of summing `last`: one user turn may
+/// make many model requests, and duplicate snapshots must contribute zero.
+#[derive(Default)]
+pub(crate) struct TurnUsageTracker {
+    previous_total: Option<TokenUsage>,
+    current: Option<TokenUsage>,
+    incomplete_turn: bool,
+}
+
+impl TurnUsageTracker {
+    pub fn reset(&mut self) {
+        self.current = None;
+        self.incomplete_turn = false;
+    }
+
+    pub fn steer_in_place(&mut self) -> Option<AgentEvent> {
+        // An in-place steer keeps the same provider turn, but the engine
+        // starts another message segment. Billing cannot split an in-flight
+        // request at that boundary; clear partial stats instead of guessing.
+        let had_report = self.current.take().is_some();
+        self.incomplete_turn = true;
+        had_report.then_some(AgentEvent::TurnUsage {
+            usage: TokenUsage::default(),
+        })
+    }
+
+    pub fn observe(&mut self, params: &Value, active: bool) -> Option<AgentEvent> {
+        let wire = field(params, &["tokenUsage", "token_usage"])?;
+        let Some(total) = wire
+            .get("total")
+            .filter(|v| v.is_object())
+            .map(token_counts)
+        else {
+            // Older providers only send the latest request. Do not pass it off
+            // as a full-turn total or invent a TPS measurement from it.
+            if active && self.previous_total.is_none() {
+                self.incomplete_turn = true;
+            }
+            return None;
+        };
+        if !active {
+            // A resume may advertise the previous turn before new work starts.
+            // Only seed once; late/stale snapshots cannot rewind our baseline.
+            self.previous_total.get_or_insert(total);
+            return None;
+        }
+        let last = wire.get("last").map(token_counts).unwrap_or_default();
+        let previous = self.previous_total.replace(total).unwrap_or_default();
+        let delta = |now: Option<u64>, before: Option<u64>, last: Option<u64>| match (now, before) {
+            (Some(now), Some(before)) => now.checked_sub(before),
+            (Some(_), None) => last,
+            _ => None,
+        };
+        let increment = TokenUsage {
+            input_tokens: delta(total.input_tokens, previous.input_tokens, last.input_tokens),
+            output_tokens: delta(
+                total.output_tokens,
+                previous.output_tokens,
+                last.output_tokens,
+            ),
+            total_tokens: delta(total.total_tokens, previous.total_tokens, last.total_tokens),
+            cached_input_tokens: delta(
+                total.cached_input_tokens,
+                previous.cached_input_tokens,
+                last.cached_input_tokens,
+            ),
+            cache_write_input_tokens: delta(
+                total.cache_write_input_tokens,
+                previous.cache_write_input_tokens,
+                last.cache_write_input_tokens,
+            ),
+            reasoning_output_tokens: delta(
+                total.reasoning_output_tokens,
+                previous.reasoning_output_tokens,
+                last.reasoning_output_tokens,
+            ),
+            cost_usd: None,
+        };
+        let add = |a: Option<u64>, b: Option<u64>| a?.checked_add(b?);
+        let usage = match self.current {
+            None => increment,
+            Some(current) => TokenUsage {
+                input_tokens: add(current.input_tokens, increment.input_tokens),
+                output_tokens: add(current.output_tokens, increment.output_tokens),
+                total_tokens: add(current.total_tokens, increment.total_tokens),
+                cached_input_tokens: add(
+                    current.cached_input_tokens,
+                    increment.cached_input_tokens,
+                ),
+                cache_write_input_tokens: add(
+                    current.cache_write_input_tokens,
+                    increment.cache_write_input_tokens,
+                ),
+                reasoning_output_tokens: add(
+                    current.reasoning_output_tokens,
+                    increment.reasoning_output_tokens,
+                ),
+                cost_usd: None,
+            },
+        };
+        self.current = Some(usage);
+        // An unknown/rewound report must also replace earlier known counts.
+        (!self.incomplete_turn).then_some(AgentEvent::TurnUsage { usage })
+    }
 }
 
 pub(crate) fn context_usage_event(params: &Value) -> Option<AgentEvent> {
@@ -196,6 +316,121 @@ pub(crate) fn context_usage_event(params: &Value) -> Option<AgentEvent> {
         .and_then(Value::as_u64)
         .filter(|n| *n > 0);
     (tokens.is_some() || window.is_some()).then_some(AgentEvent::ContextUsage { tokens, window })
+}
+
+#[cfg(test)]
+mod usage_tracker_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn snapshot(input: u64, output: u64, last_input: u64, last_output: u64) -> Value {
+        json!({"tokenUsage": {
+            "total": {"inputTokens": input, "outputTokens": output, "totalTokens": input + output,
+                "cachedInputTokens": input / 2, "cacheWriteInputTokens": 0, "reasoningOutputTokens": output / 2},
+            "last": {"inputTokens": last_input, "outputTokens": last_output, "totalTokens": last_input + last_output,
+                "cachedInputTokens": last_input / 2, "cacheWriteInputTokens": 0, "reasoningOutputTokens": last_output / 2}
+        }})
+    }
+
+    fn observed(tracker: &mut TurnUsageTracker, value: &Value) -> TokenUsage {
+        match tracker.observe(value, true).unwrap() {
+            AgentEvent::TurnUsage { usage } => usage,
+            _ => panic!("expected turn usage"),
+        }
+    }
+
+    #[test]
+    fn many_requests_and_repeated_totals_count_once_not_just_last() {
+        let mut tracker = TurnUsageTracker::default();
+        let first = observed(&mut tracker, &snapshot(1100, 250, 100, 50));
+        assert_eq!(first.input_tokens, Some(100));
+        assert_eq!(first.output_tokens, Some(50));
+        let next = snapshot(1300, 310, 200, 60);
+        let usage = observed(&mut tracker, &next);
+        assert_eq!(usage.input_tokens, Some(300));
+        assert_eq!(usage.output_tokens, Some(110));
+        assert_eq!(usage.total(), Some(410));
+        assert_eq!(usage.cached_input_tokens, Some(150));
+        assert_eq!(usage.reasoning_output_tokens, Some(55));
+        assert_eq!(observed(&mut tracker, &next), usage);
+
+        tracker.reset();
+        let next_turn = observed(&mut tracker, &snapshot(1500, 410, 200, 100));
+        assert_eq!(next_turn.input_tokens, Some(200));
+        assert_eq!(next_turn.output_tokens, Some(100));
+    }
+
+    #[test]
+    fn resume_baseline_and_missing_counters_are_not_fabricated() {
+        let mut tracker = TurnUsageTracker::default();
+        assert!(
+            tracker
+                .observe(&snapshot(1100, 250, 100, 50), false)
+                .is_none()
+        );
+        let usage = observed(
+            &mut tracker,
+            &json!({"token_usage": {
+                "total": {"input_tokens": 1300, "output_tokens": 310},
+                "last": {"input_tokens": 200, "output_tokens": 60}
+            }}),
+        );
+        assert_eq!(usage.input_tokens, Some(200));
+        assert_eq!(usage.output_tokens, Some(60));
+        assert_eq!(usage.total(), Some(260));
+        assert_eq!(usage.cached_input_tokens, None);
+        assert_eq!(usage.reasoning_output_tokens, None);
+        assert_eq!(usage.cost_usd, None);
+    }
+
+    #[test]
+    fn counter_rewinds_make_metrics_unknown_instead_of_underflowing() {
+        let mut tracker = TurnUsageTracker::default();
+        observed(&mut tracker, &snapshot(1100, 250, 100, 50));
+        let usage = observed(&mut tracker, &snapshot(200, 40, 200, 40));
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(usage.output_tokens, None);
+        assert_eq!(usage.average_tps(Some(10_000)), None);
+    }
+
+    #[test]
+    fn last_request_only_cannot_claim_a_full_turn_tps() {
+        let mut tracker = TurnUsageTracker::default();
+        assert!(
+            tracker
+                .observe(
+                    &json!({"tokenUsage": {"last": {"inputTokens": 42, "outputTokens": 7}}}),
+                    true
+                )
+                .is_none()
+        );
+        assert!(
+            tracker
+                .observe(&snapshot(1100, 250, 100, 50), true)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn in_place_steers_do_not_claim_to_split_one_provider_turn() {
+        let mut tracker = TurnUsageTracker::default();
+        observed(&mut tracker, &snapshot(1100, 250, 100, 50));
+        assert_eq!(
+            tracker.steer_in_place(),
+            Some(AgentEvent::TurnUsage {
+                usage: TokenUsage::default()
+            })
+        );
+        assert!(
+            tracker
+                .observe(&snapshot(1300, 310, 200, 60), true)
+                .is_none()
+        );
+        tracker.reset();
+        let usage = observed(&mut tracker, &snapshot(1500, 410, 200, 100));
+        assert_eq!(usage.input_tokens, Some(200));
+        assert_eq!(usage.output_tokens, Some(100));
+    }
 }
 
 /// Tool-shaped Codex items must always close the lifecycle they open: started

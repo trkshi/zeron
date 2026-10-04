@@ -513,6 +513,7 @@ mod tests {
             status: Some(zeron_doc::MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         }
     }
 

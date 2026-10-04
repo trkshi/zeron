@@ -1180,6 +1180,7 @@ mod tests {
     fn entry(parts: Vec<MessagePart>) -> SessionMessageEntry {
         SessionMessageEntry {
             duration_ms: None,
+            token_usage: None,
             id: "e1".into(),
             role: MessageRole::Assistant,
             parts,

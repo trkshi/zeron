@@ -8299,6 +8299,7 @@ impl Composer {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         };
         self.launching_new_chat = is_new;
         if is_new {
@@ -8465,6 +8466,7 @@ impl Composer {
                             status: None,
                             continuation_of: None,
                             duration_ms: None,
+                            token_usage: None,
                         };
                         let echo_chat_id = chat_id.clone();
                         this.update(cx, |composer, cx| {
@@ -10847,7 +10849,7 @@ impl Render for Composer {
                         .filter(|device| state.local_device_id.as_ref() != Some(device))
                 };
                 self.account_usage
-                    .update(cx, |usage, cx| usage.track(harness, target, cx));
+                    .update(cx, |usage, cx| usage.track(harness, target, surface_width, cx));
             }
             container.child(
                 div()
@@ -15167,6 +15169,7 @@ mod tests {
                 status: Some(zeron_doc::MessageStatus::Streaming),
                 continuation_of: None,
                 duration_ms: None,
+                token_usage: None,
             }]
         };
         state.update(cx, |s, _| s.selected_chat = Some("a".into()));
@@ -15234,6 +15237,7 @@ mod tests {
             status,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         };
         // Streaming entry with unresolved input → panel.
         let t = vec![entry(
@@ -15271,6 +15275,7 @@ mod tests {
                 status: Some(MessageStatus::Complete),
                 continuation_of: None,
                 duration_ms: None,
+                token_usage: None,
             },
         ];
         assert!(pending_input_request(&t).is_none());
@@ -15305,6 +15310,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         };
         let t = vec![
             entry(Some(MessageStatus::Streaming), vec![input_part.clone()]),

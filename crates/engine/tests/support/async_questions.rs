@@ -353,6 +353,7 @@ async fn rejected_async_delivery_stays_open_and_rpc_reports_the_outcome() {
             status: Some(MessageStatus::Aborted),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         })
         .unwrap();
     queue_as_viewer(handle.doc(), "answer-without-config", answer());

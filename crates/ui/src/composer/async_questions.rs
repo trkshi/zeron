@@ -711,6 +711,7 @@ mod tests {
             }],
             created_at: 1, device_id: "host".into(), status: Some(MessageStatus::Complete),
             continuation_of: None, duration_ms: None,
+            token_usage: None,
         }
     }
 

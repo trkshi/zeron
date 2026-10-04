@@ -712,6 +712,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         }
     }
 
@@ -992,6 +993,7 @@ mod composer_tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         }
     }
 

@@ -1234,6 +1234,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         })
         .unwrap();
         let mut writer = SegmentWriter::begin(&doc, "m-assist", device_id, 2).unwrap();
@@ -1336,6 +1337,7 @@ async fn recover_stale_journal_settles_chips_in_completed_local_entries() {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         })
         .unwrap();
     }
@@ -1404,6 +1406,7 @@ async fn subagent_done_without_a_live_sink_updates_a_persisted_chip() {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         })
         .unwrap();
     core.sessions
@@ -2892,6 +2895,94 @@ async fn context_usage_settles_after_done_without_reopening_the_turn() {
         entries(&core).len(),
         2,
         "usage does not create transcript rows"
+    );
+}
+
+#[tokio::test]
+async fn whole_turn_usage_is_persisted_once_at_each_boundary_not_reopened_by_late_reports() {
+    let dir = tempfile::tempdir().unwrap();
+    let usage = |output| zeron_proto::TokenUsage {
+        input_tokens: Some(1000),
+        output_tokens: Some(output),
+        ..Default::default()
+    };
+    let core = assemble(
+        dir.path(),
+        Arc::new(ScriptedHarness {
+            script: vec![
+                AgentEvent::TextDelta {
+                    text: "First".into(),
+                },
+                AgentEvent::TurnUsage { usage: usage(100) },
+                AgentEvent::TurnUsage { usage: usage(100) },
+                AgentEvent::Subagent {
+                    parent_tool_use_id: "child".into(),
+                    event: Box::new(AgentEvent::TurnUsage {
+                        usage: usage(99999),
+                    }),
+                },
+                AgentEvent::Steered {
+                    assistant_message_id: None,
+                    next_assistant_message_id: Some("second-assistant".into()),
+                },
+                AgentEvent::TextDelta {
+                    text: "Second".into(),
+                },
+                AgentEvent::TurnUsage { usage: usage(200) },
+                done(DoneStatus::Completed),
+                AgentEvent::TurnUsage {
+                    usage: usage(99999),
+                },
+                AgentEvent::ContextUsage {
+                    tokens: Some(0),
+                    window: Some(200000),
+                },
+            ],
+            step_delay: Duration::from_millis(20),
+            hang_until_interrupt: false,
+        }),
+    );
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "usage-run",
+        SessionCommandPayload::Run {
+            request: run_request("measure tokens"),
+            message_id: "usage-user".into(),
+        },
+    );
+    wait_for(
+        || {
+            handle
+                .doc()
+                .context_usage()
+                .is_some_and(|context| context.tokens == Some(0))
+        },
+        "late usage to be consumed",
+    )
+    .await;
+    let entries = entries(&core);
+    let turns: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.role == zeron_doc::MessageRole::Assistant)
+        .collect();
+    assert_eq!(
+        turns.len(),
+        2,
+        "usage must not create phantom assistant turns"
+    );
+    assert_eq!(turns[0].token_usage.as_deref().copied(), Some(usage(100)));
+    assert_eq!(turns[1].token_usage.as_deref().copied(), Some(usage(200)));
+    assert!(
+        turns
+            .iter()
+            .all(|entry| entry.duration_ms.is_some_and(|ms| ms > 0))
+    );
+    assert_eq!(
+        core.sessions
+            .session_status(CHAT)
+            .map(|session| session.status),
+        Some(SessionStatus::Idle)
     );
 }
 

@@ -1,7 +1,7 @@
 //! zeron-proto — wire types shared by engine, UI, and RPC.
 //!
 //! Ported from zeron's `packages/control/src/wire.ts` + `packages/harness/src/types.ts`.
-//! Context occupancy is replicated per chat; billing `Usage` remains a harness passthrough.
+//! Context occupancy and `TurnUsage` replicate per chat; legacy `Usage` stays probe-only.
 
 pub mod agent;
 pub mod entities;

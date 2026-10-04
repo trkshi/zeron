@@ -1197,6 +1197,7 @@ async fn run_session(session: Session) {
     let mut reasoning_streams: HashMap<String, ReasoningStream> = HashMap::new();
     // Token usage is held until the turn ends, emitted just before Done.
     let mut pending_usage: Option<AgentEvent> = None;
+    let mut turn_usage = normalize::TurnUsageTracker::default();
     // Steers whose `turn/steer` lost the turn-completed race; delivered as the
     // next `turn/start` when the expected turn's end notification arrives.
     let mut queued_steers: VecDeque<String> = VecDeque::new();
@@ -1350,6 +1351,13 @@ async fn run_session(session: Session) {
                         if let Some(usage) = usage_event(&params) {
                             pending_usage = Some(usage);
                         }
+                        let reported_turn = params.get("turnId")
+                            .or_else(|| params.get("turn_id"))
+                            .and_then(Value::as_str);
+                        let active = !done_current && reported_turn
+                            .is_none_or(|id| router.active.as_deref() == Some(id));
+                        if let Some(usage) = turn_usage.observe(&params, active)
+                            && !send(&event_tx, usage).await { break 'main; }
                     }
 
                     // Codex's `update_plan` tool: the whole checklist, replaced
@@ -1421,6 +1429,8 @@ async fn run_session(session: Session) {
                             {
                                 break 'main;
                             }
+                            turn_usage.reset();
+                            pending_usage = None;
                         } else if !steering_open {
                             break 'main;
                         }
@@ -1530,6 +1540,11 @@ async fn run_session(session: Session) {
                         });
                         match client.request("turn/steer", steer_params).await {
                             Ok(_) => {
+                                if let Some(usage) = turn_usage.steer_in_place()
+                                    && !send(&event_tx, usage).await
+                                {
+                                    break 'main;
+                                }
                                 let (prev, next) = rotate(&mut assistant_message_id);
                                 if !send(
                                     &event_tx,
@@ -1542,6 +1557,7 @@ async fn run_session(session: Session) {
                                 {
                                     break 'main;
                                 }
+                                pending_usage = None;
                             }
                             // A failed `turn/steer` does NOT mean the text is
                             // bad: most commonly the active turn finished
@@ -1564,6 +1580,8 @@ async fn run_session(session: Session) {
                                         &client, turn_params(&text), &mut router, &event_tx,
                                         &mut assistant_message_id, &mut done_current,
                                     ).await { break 'main; }
+                                    turn_usage.reset();
+                                    pending_usage = None;
                                 }
                             }
                         }
@@ -1573,6 +1591,8 @@ async fn run_session(session: Session) {
                             &client, turn_params(&text), &mut router, &event_tx,
                             &mut assistant_message_id, &mut done_current,
                         ).await { break 'main; }
+                        turn_usage.reset();
+                        pending_usage = None;
                     }
                 }
                 None => {

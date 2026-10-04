@@ -609,6 +609,11 @@ pub enum AgentEvent {
         input_tokens: u64,
         output_tokens: u64,
     },
+    /// Whole-turn usage snapshot, not a delta or the latest model request.
+    /// The engine persists the final snapshot alongside the turn's duration.
+    TurnUsage {
+        usage: TokenUsage,
+    },
     /// The agent advertised (or changed) its slash-command set — ACP
     /// `available_commands_update`. The engine caches the latest list per
     /// harness for the composer's `/` popup; never persisted to docs.
@@ -864,9 +869,94 @@ pub struct ContextUsage {
     pub window: Option<u64>,
 }
 
+/// Provider-reported billing counts for one user turn. Input includes cache
+/// reads/writes; reasoning is a subset of output, not an additional charge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TokenUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+}
+
+impl TokenUsage {
+    pub fn total(self) -> Option<u64> {
+        self.total_tokens
+            .or_else(|| self.input_tokens?.checked_add(self.output_tokens?))
+    }
+
+    pub fn cache_hit_rate(self) -> Option<f64> {
+        let input = self.input_tokens.filter(|n| *n > 0)?;
+        let cached = self.cached_input_tokens.filter(|n| *n <= input)?;
+        Some(cached as f64 / input as f64)
+    }
+
+    /// Output averaged over the entire turn, including tools and waiting.
+    pub fn average_tps(self, duration_ms: Option<i64>) -> Option<f64> {
+        let duration = duration_ms.filter(|ms| *ms > 0)?;
+        Some(self.output_tokens? as f64 * 1000.0 / duration as f64)
+    }
+}
+
 impl ContextUsage {
     pub fn fraction(self) -> Option<f64> {
         Some(self.tokens? as f64 / self.window.filter(|n| *n > 0)? as f64)
+    }
+}
+
+#[cfg(test)]
+mod token_usage_tests {
+    use super::*;
+
+    #[test]
+    fn cache_and_reasoning_are_not_added_to_totals_twice() {
+        let usage = TokenUsage {
+            input_tokens: Some(1000),
+            output_tokens: Some(200),
+            cached_input_tokens: Some(700),
+            cache_write_input_tokens: Some(100),
+            reasoning_output_tokens: Some(50),
+            ..Default::default()
+        };
+        assert_eq!(usage.total(), Some(1200));
+        assert_eq!(usage.cache_hit_rate(), Some(0.7));
+        assert_eq!(usage.average_tps(Some(10_000)), Some(20.0));
+        for duration in [None, Some(0), Some(-10)] {
+            assert_eq!(usage.average_tps(duration), None);
+        }
+        assert_eq!(TokenUsage::default().average_tps(Some(1000)), None);
+        assert_eq!(
+            TokenUsage {
+                output_tokens: Some(0),
+                ..Default::default()
+            }
+            .average_tps(Some(1000)),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn optional_reports_round_trip_without_inventing_zero() {
+        let usage: TokenUsage = serde_json::from_str(r#"{"outputTokens":0}"#).unwrap();
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(usage.total(), None);
+        assert_eq!(usage.cache_hit_rate(), None);
+        let event = AgentEvent::TurnUsage { usage };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["type"], "turnUsage");
+        assert_eq!(value["usage"], serde_json::json!({"outputTokens": 0}));
+        assert_eq!(serde_json::from_value::<AgentEvent>(value).unwrap(), event);
     }
 }
 

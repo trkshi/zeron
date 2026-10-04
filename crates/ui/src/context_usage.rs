@@ -1,11 +1,16 @@
 //! Context occupancy is read from the replicated chat snapshot, never local CLI state.
 use crate::theme::Theme;
-use gpui::{IntoElement, PathBuilder, SharedString, canvas, div, point, prelude::*, px};
+use gpui::{SharedString, div, prelude::*, px};
 use zeron_proto::ContextUsage;
 
-/// The context ring's trigger chip; the footer ([`crate::account_usage`])
+/// The context trigger chip; the footer ([`crate::account_usage`])
 /// opens [`card`] from it on click.
-pub fn chip(usage: Option<ContextUsage>, open: bool, theme: &Theme) -> gpui::Stateful<gpui::Div> {
+pub fn chip(
+    usage: Option<ContextUsage>,
+    open: bool,
+    compact: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
     let fraction = usage.and_then(ContextUsage::fraction);
     let color = match fraction {
         Some(f) if f >= 0.9 => theme.danger,
@@ -13,31 +18,33 @@ pub fn chip(usage: Option<ContextUsage>, open: bool, theme: &Theme) -> gpui::Sta
         Some(_) => theme.text_muted,
         None => theme.text_faint,
     };
-    let label = fraction
-        .map(|f| format!("{:.0}%", f * 100.0))
-        .unwrap_or_else(|| "—".into());
-    ring_chip(
+    let label = if compact {
+        String::new()
+    } else {
+        fraction
+            .map(|f| format!("{:.0}%", f * 100.0))
+            .unwrap_or_else(|| "—".into())
+    };
+    icon_chip(
         "context-usage",
-        fraction.unwrap_or(0.0) as f32,
+        crate::icons::CPU,
         color,
         color,
         label,
         open,
-        theme,
     )
 }
 
-/// One footer ring indicator: ring + percent, identical geometry for every
-/// ring so they sit side by side as equals. `arc` colours the ring's fill,
+/// One footer indicator: icon + reading, identical geometry for every
+/// chip so they sit side by side as equals. `icon_color` colours the glyph,
 /// `text` the label; `open` holds the hover wash while its popover is up.
-pub(crate) fn ring_chip(
+pub(crate) fn icon_chip(
     id: &'static str,
-    fraction: f32,
-    arc: gpui::Hsla,
+    icon_path: &'static str,
+    icon_color: gpui::Hsla,
     text: gpui::Hsla,
     label: String,
     open: bool,
-    theme: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -53,49 +60,18 @@ pub(crate) fn ring_chip(
         .cursor_pointer()
         .when(open, |s| s.bg(crate::theme::ink(0.05)))
         .hover(|s| s.bg(crate::theme::ink(0.05)))
-        .child(ring(fraction, arc, theme))
-        .child(SharedString::from(label))
+        .child(
+            crate::icons::icon(icon_path)
+                .size(px(16.0))
+                .flex_none()
+                .text_color(icon_color),
+        )
+        .when(!label.is_empty(), |chip| {
+            chip.child(SharedString::from(label))
+        })
 }
 
-/// The footer's 16px progress ring: a faint full track under a `fraction` arc
-/// starting at twelve o'clock. Shared with the account usage indicator.
-pub(crate) fn ring(fraction: f32, color: gpui::Hsla, theme: &Theme) -> impl IntoElement {
-    let track = theme.text_faint.opacity(0.25);
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let center = bounds.center();
-            let mut arc = |fraction: f32, color| {
-                if fraction <= 0.0 {
-                    return;
-                }
-                let steps = (64.0 * fraction).ceil().max(2.0) as usize;
-                let mut path = PathBuilder::stroke(px(1.8));
-                for i in 0..=steps {
-                    let angle = -std::f32::consts::FRAC_PI_2
-                        + std::f32::consts::TAU * fraction * i as f32 / steps as f32;
-                    let p = point(
-                        center.x + px(6.0 * angle.cos()),
-                        center.y + px(6.0 * angle.sin()),
-                    );
-                    if i == 0 {
-                        path.move_to(p);
-                    } else {
-                        path.line_to(p);
-                    }
-                }
-                if let Ok(path) = path.build() {
-                    window.paint_path(path, color);
-                }
-            };
-            arc(1.0, track);
-            arc(fraction.clamp(0.0, 1.0), color);
-        },
-    )
-    .size(px(16.0))
-}
-
-fn with_separators(count: u64) -> String {
+pub(crate) fn with_separators(count: u64) -> String {
     let digits = count.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {

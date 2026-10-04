@@ -44,6 +44,23 @@ Zeron release.
   format and prefix on its existing duration label. Omit the completion time
   when it cannot be derived from stored timing; older turns without a stored
   duration remain unchanged.
+- Show calendar, context, and speedometer icons in the composer footer. The
+  speed chip opens a themed token-usage popover with input, output, total,
+  cached input, cache-hit rate, cache writes, reasoning, Average TPS, and
+  provider-reported USD cost where available. Average TPS is output tokens
+  divided by the entire turn's wall-clock duration, including startup, tools,
+  and waiting; it is not raw model-generation speed. Show **Measuring** while
+  working and **Not reported** for unavailable fields. Cache is included in
+  input and reasoning in output, never added again to the totals.
+  Persist Claude/Codex reports with each assistant turn so reopening and
+  device sync retain the selected thread's own statistics. Codex differences
+  session totals across requests, rather than mistaking the latest model
+  request for the whole turn. In-place Codex steers without a separate provider
+  usage boundary leave TPS unreported rather than guessing an allocation.
+  Older providers without trustworthy turn totals show no TPS. Existing
+  history is untouched and not retroactively estimated.
+  Remote chats require this patch on the engine running the agent; installing
+  the Windows app alone does not update the Ubuntu host.
 - Notify once when a new asynchronous question request arrives in the open
   conversation, even while Zeron is minimized or in the background. Use the
   existing **Input required** sound preference and desktop notification

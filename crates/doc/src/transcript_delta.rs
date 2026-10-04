@@ -169,6 +169,8 @@ fn try_text_append(prev: &SessionMessageEntry, next: &SessionMessageEntry) -> Op
         || prev.device_id != next.device_id
         || prev.status != next.status
         || prev.continuation_of != next.continuation_of
+        || prev.duration_ms != next.duration_ms
+        || prev.token_usage != next.token_usage
         || prev.parts.len() != next.parts.len()
     {
         return None;
@@ -348,6 +350,19 @@ mod tests {
     use crate::parts::MessagePart;
     use crate::schema::MessageRole;
 
+    #[test]
+    fn usage_and_duration_changes_cannot_disappear_into_a_text_append() {
+        let previous = entry("turn", "Hello");
+        let mut next = entry("turn", "Hello again");
+        next.token_usage = Some(Box::new(zeron_proto::TokenUsage {
+            output_tokens: Some(5),
+            ..Default::default()
+        }));
+        assert!(try_text_append(&previous, &next).is_none());
+        next.token_usage = None;
+        next.duration_ms = Some(1000);
+        assert!(try_text_append(&previous, &next).is_none());
+    }
     fn entry(id: &str, text: &str) -> SessionMessageEntry {
         SessionMessageEntry {
             id: id.into(),
@@ -361,6 +376,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         }
     }
 
@@ -545,6 +561,7 @@ mod context_update_tests {
             status: Some(crate::MessageStatus::Streaming),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         };
         let baseline = TranscriptBaseline::capture(&[entry.clone()]);
         assert!(baseline.covers(&entry));

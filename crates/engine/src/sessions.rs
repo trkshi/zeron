@@ -30,8 +30,8 @@ use zeron_doc::{
 };
 use zeron_harness::{CancellationToken, Harness, RunControls, SteerMessage};
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus, UserInputAnswer,
-    UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, RunRequest, Session, SessionStatus, TokenUsage,
+    UserInputAnswer, UserInputQuestion,
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
@@ -1565,6 +1565,7 @@ impl SubagentSink {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         };
         if let Err(err) = self.doc.push_message(&entry) {
             tracing::warn!(doc = %self.doc_id, error = %err, "subagent steer write failed");
@@ -1697,12 +1698,14 @@ fn finish_segment<'a>(
     started_at: i64,
     folded: &[MessagePart],
     status: MessageStatus,
+    usage: Option<&TokenUsage>,
 ) -> Result<(), DocError> {
     let rendered = render_parts(folded);
     match writer {
-        Some(w) => w.finish(&rendered, status),
-        None if !folded.is_empty() => {
-            SegmentWriter::begin(doc, entry_id, device_id, started_at)?.finish(&rendered, status)
+        Some(w) => w.finish_with_usage(&rendered, status, usage),
+        None if !folded.is_empty() || usage.is_some() => {
+            SegmentWriter::begin(doc, entry_id, device_id, started_at)?
+                .finish_with_usage(&rendered, status, usage)
         }
         None => Ok(()),
     }
@@ -1795,6 +1798,8 @@ async fn drive_run(
     mut cancel_rx: watch::Receiver<bool>,
     resume_state: RunResumeState,
 ) {
+    // Include provider startup, tools, and input waits in the turn duration.
+    let turn_started = now_ms();
     let device_id = inner.device_id.clone();
     // Captured for post-run auto-titling (the request moves into the harness).
     let harness_id = harness.id();
@@ -1908,6 +1913,7 @@ async fn drive_run(
                 now_ms(),
                 &parts,
                 MessageStatus::Complete,
+                None,
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "start failure entry failed");
             }
@@ -1954,7 +1960,8 @@ async fn drive_run(
     }
     let mut prepared_events = std::collections::VecDeque::new();
     let mut entry_id = new_id();
-    let mut segment_started = now_ms();
+    let mut segment_started = turn_started;
+    let mut turn_usage: Option<TokenUsage> = None;
     let mut writer: Option<SegmentWriter<'_>> = None;
     let mut dirty = false;
     let mut flush_at = tokio::time::Instant::now();
@@ -2226,10 +2233,10 @@ async fn drive_run(
                     // engine watchdog instead of a native Done. Preserve that
                     // completion notice, but never notify for an empty boundary
                     // or while an accepted steer still awaits delivery.
-                    let completed_turn = ((!folded.is_empty() || writer.is_some())
+                    let completed_turn = ((!folded.is_empty() || writer.is_some() || turn_usage.is_some())
                         && !inner.has_pending_steers(&chat_id, &run_id))
                         .then(|| entry_id.clone());
-                    if !folded.is_empty() || writer.is_some() {
+                    if !folded.is_empty() || writer.is_some() || turn_usage.is_some() {
                         if let Err(err) = finish_segment(
                             doc_ref,
                             writer.take(),
@@ -2238,12 +2245,14 @@ async fn drive_run(
                             segment_started,
                             &folded,
                             MessageStatus::Complete,
+                            turn_usage.as_ref(),
                         ) {
                             tracing::warn!(chat = %chat_id, error = %err, "quiesce segment finish failed");
                         }
                         inner.note_message(&chat_id, &folded_text(&folded));
                     }
                     folded.clear();
+                    turn_usage = None;
                     dirty = false;
                     entry_id = new_id();
                     segment_started = now_ms();
@@ -2472,6 +2481,14 @@ async fn drive_run(
             }
             continue;
         }
+        // Usage is metadata, never evidence that an idle provider has started
+        // another turn. Adapters emit whole-turn snapshots, so replace, not add.
+        if let AgentEvent::TurnUsage { usage } = &event {
+            if idle_since.is_none() {
+                turn_usage = Some(*usage);
+            }
+            continue;
+        }
         if let AgentEvent::AsyncInputRequested { request_id, .. } = &event {
             if !seen_async_inputs.insert(request_id.clone()) {
                 continue;
@@ -2507,6 +2524,7 @@ async fn drive_run(
                     status: Some(MessageStatus::Complete),
                     continuation_of: None,
                     duration_ms: None,
+                    token_usage: None,
                 }) {
                     tracing::warn!(chat = %chat_id, error = %err, "late async question write failed");
                 }
@@ -2571,6 +2589,7 @@ async fn drive_run(
                 // fall through — this event is the new segment's first part.
                 entry_id = new_id();
                 segment_started = now_ms();
+                turn_usage = None;
                 inner.set_status(&chat_id, SessionStatus::Working, true);
             } else {
                 match &event {
@@ -2714,11 +2733,13 @@ async fn drive_run(
                 segment_started,
                 &folded,
                 MessageStatus::Complete,
+                turn_usage.as_ref(),
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "segment finish failed");
             }
             inner.note_message(&chat_id, &folded_text(&folded));
             folded.clear();
+            turn_usage = None;
             dirty = false;
             entry_id = next_assistant_message_id.clone().unwrap_or_else(new_id);
             segment_started = now_ms();
@@ -2823,7 +2844,7 @@ async fn drive_run(
             // A Done landing on a PARKED session with nothing streamed (the
             // idle reaper's or an interrupt's own teardown) has no entry to
             // finalize — writing one would leave an empty aborted stub.
-            let nothing_streamed = writer.is_none() && folded.is_empty();
+            let nothing_streamed = writer.is_none() && folded.is_empty() && turn_usage.is_none();
             if !nothing_streamed {
                 if let Err(err) = finish_segment(
                     doc_ref,
@@ -2833,6 +2854,7 @@ async fn drive_run(
                     segment_started,
                     &folded,
                     message_status,
+                    turn_usage.as_ref(),
                 ) {
                     tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
                 }
@@ -2868,6 +2890,7 @@ async fn drive_run(
                 && !inner.registry.update_pending(harness_id)
             {
                 folded.clear();
+                turn_usage = None;
                 dirty = false;
                 entry_id = new_id();
                 segment_started = now_ms();
@@ -3004,6 +3027,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         })
         .unwrap();
         let current = format!("Current {skill}\nKeep **Markdown**");
@@ -3045,6 +3069,7 @@ mod tests {
                 status: None,
                 continuation_of: None,
                 duration_ms: None,
+                token_usage: None,
             })
             .unwrap();
         }

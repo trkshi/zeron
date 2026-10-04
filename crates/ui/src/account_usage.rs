@@ -1,15 +1,16 @@
-//! The composer footer's ring cluster. The plan-usage ring shows how much of
+//! The composer footer's usage cluster. The plan-usage chip shows how much of
 //! the active account's rate limit the session's harness has used, beside
-//! the context ring. Clicking it opens the harness's accounts — each with its
-//! usage meters — and clicking one switches to it, the same `ActivateAgentAccount` Settings →
+//! the context chip and whole-turn TPS. Clicking it opens the harness's accounts
+//! with their usage meters, and clicking one switches to it, the same action
+//! `ActivateAgentAccount` Settings →
 //! Accounts runs. Both views share [`AccountsSnapshotCache`], so a switch in
 //! either shows up in the other.
 use std::time::{Duration, Instant};
 
 use futures::{FutureExt, StreamExt, channel::mpsc};
 use gpui::{
-    Context, Entity, IntoElement, Render, SharedString, Subscription, Task, Window, div,
-    prelude::*, px,
+    Context, Entity, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString, Subscription,
+    Task, Window, div, prelude::*, px,
 };
 use zeron_proto::{AgentAccount, AgentAccountsSnapshot, HarnessId};
 use zeron_rpc::methods;
@@ -110,6 +111,11 @@ pub struct AccountUsage {
     load_task: Option<Task<()>>,
     action_task: Option<Task<()>>,
     popup: popover::Popup<FooterCard>,
+    popup_focus: FocusHandle,
+    previous_focus: Option<FocusHandle>,
+    chat_id: Option<String>,
+    compact: bool,
+    icons_only: bool,
     _poll: Task<()>,
     _cache: Subscription,
     _state: Subscription,
@@ -161,6 +167,11 @@ impl AccountUsage {
             load_task: None,
             action_task: None,
             popup: popover::Popup::default(),
+            popup_focus: cx.focus_handle(),
+            previous_focus: None,
+            chat_id: None,
+            compact: false,
+            icons_only: false,
             _poll: poll,
             // Settings → Accounts writes the same cache.
             _cache: cx.observe_global::<AccountsSnapshotCache>(|_, cx| cx.notify()),
@@ -199,8 +210,16 @@ impl AccountUsage {
         &mut self,
         harness: Option<HarnessId>,
         target: Option<String>,
+        available_width: f32,
         cx: &mut Context<Self>,
     ) {
+        // Preserve the single-row footer: drop secondary readings before
+        // shrinking its hit targets or crowding the workspace controls.
+        let density = (available_width < 520.0, available_width < 360.0);
+        if (self.compact, self.icons_only) != density {
+            (self.compact, self.icons_only) = density;
+            cx.notify();
+        }
         let harness = harness.filter(|h| signs_in(*h) && reports_usage(*h));
         if self.target != target || self.harness != harness {
             self.target = target;
@@ -353,22 +372,33 @@ impl AccountUsage {
     /// A trigger click: open this ring's popover, or close it when the
     /// press found it open (the card's mouse-down-out already began that
     /// close — see `Popup::note_trigger_press`).
-    fn toggle(&mut self, card: FooterCard, cx: &mut Context<Self>) {
+    fn toggle(&mut self, card: FooterCard, window: &mut Window, cx: &mut Context<Self>) {
         if self.popup.take_press_was_open() || self.popup.as_open() == Some(&card) {
-            self.dismiss(cx);
+            self.dismiss(window, cx);
             return;
         }
         if card == FooterCard::Accounts {
             // Opening the card is the moment someone cares: re-probe.
             self.load(UsageRefresh::All, cx);
         }
+        if !self.popup_focus.contains_focused(window, cx) {
+            self.previous_focus = window.focused(cx);
+        }
         self.popup.open(card);
+        window.focus(&self.popup_focus, cx);
         cx.notify();
     }
 
-    fn dismiss(&mut self, cx: &mut Context<Self>) {
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.popup.begin_close() {
             popover::reap_popup(cx, |usage: &mut Self| &mut usage.popup);
+        }
+        if self.popup_focus.contains_focused(window, cx) {
+            if let Some(focus) = self.previous_focus.take() {
+                window.focus(&focus, cx);
+            } else {
+                window.blur();
+            }
         }
         cx.notify();
     }
@@ -384,6 +414,10 @@ impl AccountUsage {
     ) -> gpui::AnyElement {
         let chip = chip
             .relative()
+            .role(gpui::Role::Button)
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|style| style.bg(crate::theme::ink(0.08)))
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(move |usage, _, _, _| {
@@ -392,12 +426,30 @@ impl AccountUsage {
                         .note_trigger_press_matching(|open| *open == card);
                 }),
             )
-            .on_click(cx.listener(move |usage, _, _, cx| usage.toggle(card, cx)));
+            .on_click(cx.listener(move |usage, _, window, cx| usage.toggle(card, window, cx)))
+            .on_key_down(cx.listener(move |usage, event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                    && !usage.popup_focus.contains_focused(window, cx)
+                {
+                    usage.toggle(card, window, cx);
+                    cx.stop_propagation();
+                }
+            }));
         if self.popup.get() != Some(&card) {
             return chip.into_any_element();
         }
         let content = content(self, cx)
-            .on_mouse_down_out(cx.listener(|usage, _, _, cx| usage.dismiss(cx)))
+            .track_focus(&self.popup_focus)
+            .on_key_down(cx.listener(|usage, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    usage.dismiss(window, cx);
+                    cx.stop_propagation();
+                } else if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    // Reading a footer popover must not submit the draft below.
+                    cx.stop_propagation();
+                }
+            }))
+            .on_mouse_down_out(cx.listener(|usage, _, window, cx| usage.dismiss(window, cx)))
             .into_any_element();
         chip.child(popover::anchored_menu_above_end(
             card.id(),
@@ -507,6 +559,7 @@ impl AccountUsage {
 enum FooterCard {
     Accounts,
     Context,
+    Tokens,
 }
 
 impl FooterCard {
@@ -514,12 +567,13 @@ impl FooterCard {
         match self {
             FooterCard::Accounts => "account-usage-menu",
             FooterCard::Context => "context-usage-menu",
+            FooterCard::Tokens => "token-usage-menu",
         }
     }
 }
 
-/// The footer's ring cluster: account usage (accent arc, so the two read
-/// apart), then context occupancy. Each opens its popover on click.
+/// Account limit, context occupancy, and token throughput each open their
+/// existing themed popover from a compact, keyboard-accessible chip.
 impl Render for AccountUsage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self._activation.is_none() {
@@ -533,22 +587,51 @@ impl Render for AccountUsage {
                 },
             ));
         }
+        let chat_id = self.state.read(cx).selected_chat.clone();
+        if self.chat_id != chat_id {
+            self.dismiss(window, cx);
+            self.chat_id = chat_id;
+        }
         let theme = Theme::of(cx).clone();
-        let context = self.state.read(cx).context_usage;
+        let (context, stats) = {
+            let state = self.state.read(cx);
+            let measuring = state.selected_chat.as_deref().is_some_and(|chat| {
+                matches!(
+                    state.indicator_for(chat, chrono::Utc::now()),
+                    zeron_proto::view::Indicator::Working
+                        | zeron_proto::view::Indicator::AwaitingInput
+                )
+            });
+            (
+                state.context_usage,
+                crate::token_usage::TurnStats::from_transcript(&state.transcript, measuring),
+            )
+        };
         let account = self.fraction(cx).map(|fraction| {
             let level = usage_level(fraction);
-            let chip = crate::context_usage::ring_chip(
+            let chip = crate::context_usage::icon_chip(
                 "account-usage",
-                fraction,
+                crate::icons::CALENDAR,
                 usage_color(level, &theme),
                 match level {
                     UsageLevel::Normal => theme.text_muted,
                     _ => usage_color(level, &theme),
                 },
-                format!("{}%", (fraction * 100.0).round() as u32),
+                if self.compact {
+                    String::new()
+                } else {
+                    format!("{}%", (fraction * 100.0).round() as u32)
+                },
                 self.popup.get() == Some(&FooterCard::Accounts),
-                &theme,
-            );
+            )
+            .aria_label(format!(
+                "Account usage, {}%",
+                (fraction * 100.0).round() as u32
+            ))
+            .tooltip(crate::settings::widgets::text_tooltip(format!(
+                "Account usage: {}% (most-used rate-limit window)",
+                (fraction * 100.0).round() as u32
+            )));
             self.trigger(
                 chip,
                 FooterCard::Accounts,
@@ -560,12 +643,46 @@ impl Render for AccountUsage {
             let chip = crate::context_usage::chip(
                 context,
                 self.popup.get() == Some(&FooterCard::Context),
+                self.compact,
                 &theme,
-            );
+            )
+            .aria_label("Context window usage")
+            .tooltip(crate::settings::widgets::text_tooltip(
+                context
+                    .and_then(zeron_proto::ContextUsage::fraction)
+                    .map(|fraction| format!("Context window: {:.0}%", fraction * 100.0))
+                    .unwrap_or_else(|| "Context window: usage not reported".into()),
+            ));
             self.trigger(
                 chip,
                 FooterCard::Context,
                 move |_, cx| crate::context_usage::card(context, &Theme::of(cx).for_popup()),
+                cx,
+            )
+        });
+        let tokens = self.chat_id.as_ref().map(|_| {
+            let label = stats.label();
+            let chip = crate::context_usage::icon_chip(
+                "token-usage",
+                crate::icons::SPEEDOMETER,
+                theme.text_muted,
+                theme.text_muted,
+                if self.icons_only {
+                    String::new()
+                } else {
+                    label.clone()
+                },
+                self.popup.get() == Some(&FooterCard::Tokens),
+            )
+            .when(!self.icons_only, |chip| chip.min_w(px(96.0)))
+            .aria_label(format!("Token usage, {label}"))
+            .tooltip(crate::settings::widgets::text_tooltip(format!(
+                "Token usage: {label} (full-turn average)"
+            )));
+            self.trigger(
+                chip,
+                FooterCard::Tokens,
+                move |_, cx| crate::token_usage::card(stats, &Theme::of(cx).for_popup()),
                 cx,
             )
         });
@@ -575,6 +692,7 @@ impl Render for AccountUsage {
             .gap(px(4.0))
             .children(account)
             .children(context)
+            .children(tokens)
     }
 }
 

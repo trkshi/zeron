@@ -63,6 +63,7 @@ pub mod terminal;
 mod todo_panel;
 pub mod theme;
 pub mod theme_library;
+mod token_usage;
 pub mod transcript;
 pub mod typography;
 mod workspace_links;

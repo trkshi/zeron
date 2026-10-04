@@ -3743,6 +3743,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         }
     }
 
@@ -4798,6 +4799,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         };
         let row = |id: &str| zeron_doc::QueuedMessage {
             id: id.into(),
@@ -4836,6 +4838,7 @@ mod tests {
             status: None,
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         };
         state.push_echo("c1", echo.clone());
         // Duplicate pushes dedupe.

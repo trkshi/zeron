@@ -156,16 +156,40 @@ pub(crate) struct ResultFrame {
     pub errors: Vec<Value>,
     #[serde(default)]
     pub usage: UsageBody,
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub total_cost_usd: Option<f64>,
     #[serde(default)]
     pub session_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct UsageBody {
-    #[serde(default)]
-    pub input_tokens: u64,
-    #[serde(default)]
-    pub output_tokens: u64,
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub output_tokens_details: Option<OutputTokenDetails>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct OutputTokenDetails {
+    #[serde(default, deserialize_with = "optional_metric")]
+    pub thinking_tokens: Option<u64>,
+}
+
+// Optional telemetry must never prevent a valid result from ending its turn.
+fn optional_metric<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// A CLI→client control request (`can_use_tool` is the one we act on).

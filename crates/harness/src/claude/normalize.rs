@@ -2,7 +2,7 @@
 //! decoding, error-code mapping).
 
 use serde_json::Value;
-use zeron_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, ToolCall};
+use zeron_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, TokenUsage, ToolCall};
 
 use super::wire::{ContentBlock, Frame};
 
@@ -208,6 +208,9 @@ pub(crate) struct Normalizer {
     assistant_message_id: String,
     /// Last session id seen (init or result) — used for synthetic Dones.
     pub session_id: Option<String>,
+    /// Claude's result cost is cumulative for this CLI process, unlike its
+    /// per-result token counts. Keep the baseline across warm turns.
+    last_cost_usd: Option<f64>,
 }
 
 impl Normalizer {
@@ -220,6 +223,7 @@ impl Normalizer {
             agent_spawn_tools: std::collections::HashSet::new(),
             assistant_message_id: new_message_id(),
             session_id: None,
+            last_cost_usd: Some(0.0),
         }
     }
 
@@ -694,8 +698,35 @@ impl Normalizer {
                     self.session_id = Some(id.clone());
                 }
                 let usage = AgentEvent::Usage {
-                    input_tokens: f.usage.input_tokens,
+                    input_tokens: f.usage.input_tokens.unwrap_or_default(),
+                    output_tokens: f.usage.output_tokens.unwrap_or_default(),
+                };
+                let reported_cost = f
+                    .total_cost_usd
+                    .filter(|cost| cost.is_finite() && *cost >= 0.0);
+                let previous_cost = std::mem::replace(&mut self.last_cost_usd, reported_cost);
+                let cost_usd = reported_cost
+                    .zip(previous_cost)
+                    .filter(|(cost, previous)| cost >= previous)
+                    .map(|(cost, previous)| cost - previous);
+                // Anthropic reports uncached input separately from reads and
+                // writes. Inclusive input needs all three reported components;
+                // an omitted cache field is not a reported zero.
+                let turn_usage = TokenUsage {
+                    input_tokens: f.usage.input_tokens.and_then(|input| {
+                        input
+                            .checked_add(f.usage.cache_read_input_tokens?)?
+                            .checked_add(f.usage.cache_creation_input_tokens?)
+                    }),
                     output_tokens: f.usage.output_tokens,
+                    cached_input_tokens: f.usage.cache_read_input_tokens,
+                    cache_write_input_tokens: f.usage.cache_creation_input_tokens,
+                    reasoning_output_tokens: f
+                        .usage
+                        .output_tokens_details
+                        .and_then(|details| details.thinking_tokens),
+                    cost_usd,
+                    ..Default::default()
                 };
                 let done = if f.subtype == "success" {
                     AgentEvent::Done {
@@ -765,7 +796,11 @@ impl Normalizer {
                         window: Some(window),
                     });
                 }
-                out.extend([usage, done]);
+                out.push(usage);
+                if turn_usage != TokenUsage::default() {
+                    out.push(AgentEvent::TurnUsage { usage: turn_usage });
+                }
+                out.push(done);
                 out
             }
 
@@ -849,8 +884,128 @@ mod tests {
 
     fn result_done(raw: &str) -> AgentEvent {
         let events = normalize_one(raw);
-        assert_eq!(events.len(), 2, "usage + done");
-        events.into_iter().nth(1).expect("done event")
+        events
+            .into_iter()
+            .find(|event| matches!(event, AgentEvent::Done { .. }))
+            .expect("done event")
+    }
+
+    #[test]
+    fn result_usage_includes_cache_once_and_preserves_missing_fields() {
+        let events = normalize_one(
+            r#"{"type":"result","subtype":"success","usage":{"input_tokens":10,"output_tokens":200,"cache_read_input_tokens":700,"cache_creation_input_tokens":300,"output_tokens_details":{"thinking_tokens":50}},"total_cost_usd":0.02}"#,
+        );
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::TurnUsage { usage } => Some(*usage),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(usage.input_tokens, Some(1010));
+        assert_eq!(usage.total(), Some(1210));
+        assert_eq!(usage.cached_input_tokens, Some(700));
+        assert_eq!(usage.cache_write_input_tokens, Some(300));
+        assert_eq!(usage.reasoning_output_tokens, Some(50));
+        assert_eq!(usage.cost_usd, Some(0.02));
+
+        let events =
+            normalize_one(r#"{"type":"result","subtype":"success","usage":{"output_tokens":0}}"#);
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::TurnUsage { usage } => Some(*usage),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(usage.output_tokens, Some(0));
+        assert_eq!(usage.cached_input_tokens, None);
+        assert_eq!(usage.reasoning_output_tokens, None);
+        assert_eq!(usage.total(), None);
+    }
+
+    #[test]
+    fn warm_turn_cost_is_a_delta_of_claudes_cumulative_report() {
+        let mut normalizer = Normalizer::new();
+        let mut costs = Vec::new();
+        for cost in [0.02, 0.05] {
+            let frame = crate::claude::wire::parse_frame(
+                &serde_json::json!({
+                    "type": "result", "subtype": "success", "total_cost_usd": cost,
+                    "usage": {"input_tokens": 10, "output_tokens": 20}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            for event in normalizer.normalize(frame, false) {
+                if let AgentEvent::TurnUsage { usage } = event {
+                    costs.push(usage.cost_usd.unwrap());
+                }
+            }
+        }
+        assert!((costs[0] - 0.02).abs() < 1e-9);
+        assert!((costs[1] - 0.03).abs() < 1e-9);
+    }
+
+    #[test]
+    fn malformed_optional_metrics_do_not_hide_the_terminal_result() {
+        let events = normalize_one(
+            r#"{"type":"result","subtype":"success","result":"done","usage":{"input_tokens":10,"output_tokens":200,"cache_read_input_tokens":"unknown","cache_creation_input_tokens":0,"output_tokens_details":null},"total_cost_usd":"unknown"}"#,
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::Done {
+                status: DoneStatus::Completed,
+                ..
+            }
+        )));
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::TurnUsage { usage } => Some(*usage),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            usage.input_tokens, None,
+            "uncached input is not a known inclusive total"
+        );
+        assert_eq!(usage.output_tokens, Some(200));
+        assert_eq!(usage.cached_input_tokens, None);
+        assert_eq!(usage.cache_write_input_tokens, Some(0));
+        assert_eq!(usage.reasoning_output_tokens, None);
+        assert_eq!(usage.cost_usd, None);
+    }
+
+    #[test]
+    fn a_missing_cost_report_cannot_be_charged_to_the_next_turn() {
+        let mut normalizer = Normalizer::new();
+        let mut costs = Vec::new();
+        for cost in [Some(0.02), None, Some(0.05), Some(0.07)] {
+            let frame = crate::claude::wire::parse_frame(
+                &serde_json::json!({
+                    "type": "result", "subtype": "success", "total_cost_usd": cost,
+                    "usage": {"output_tokens": 20}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            costs.push(
+                normalizer
+                    .normalize(frame, false)
+                    .into_iter()
+                    .find_map(|event| match event {
+                        AgentEvent::TurnUsage { usage } => Some(usage.cost_usd),
+                        _ => None,
+                    })
+                    .unwrap(),
+            );
+        }
+        assert_eq!(costs[0], Some(0.02));
+        assert_eq!(costs[1], None);
+        assert_eq!(costs[2], None);
+        assert!((costs[3].unwrap() - 0.02).abs() < 1e-9);
     }
 
     #[test]

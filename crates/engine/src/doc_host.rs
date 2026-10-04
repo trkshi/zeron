@@ -785,6 +785,7 @@ impl ChatDocHandle {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         })
     }
 
@@ -5902,6 +5903,7 @@ mod transfer_progress_tests {
                     status: None,
                     continuation_of: None,
                     duration_ms: None,
+                    token_usage: None,
                 })
                 .unwrap();
         }

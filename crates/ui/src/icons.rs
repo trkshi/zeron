@@ -79,6 +79,9 @@ icon_assets![
     (QUEUE_PAPERCLIP, "queue-paperclip"),
     (CLOCK_CIRCLE, "clock-circle"),
     (CALENDAR, "calendar"),
+    // Solar Linear CPU and Spedometer Middle, under the attribution above.
+    (CPU, "cpu"),
+    (SPEEDOMETER, "speedometer"),
     (LIST, "list"),
     (FOLDER_WITH_FILES, "folder-with-files"),
     // Original tree glyph with compact nodes for the independent Files panel.

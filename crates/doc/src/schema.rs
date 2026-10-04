@@ -4,7 +4,7 @@
 //! - `meta`:     LoroMap  { chatId: string, schemaVersion: number }         (host-only writer)
 //! - `messages`: LoroList of LoroMap {
 //!   id, role, parts: LoroList<part map>, createdAt, deviceId, status?,
-//!   continuationOf?, durationMs? }
+//!   continuationOf?, durationMs?, tokenUsage?(json) }
 //! - `commands`: LoroList of LoroMap {
 //!   id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution? }
 //! - `queue`:    LoroMovableList of LoroMap {
@@ -59,6 +59,10 @@ pub struct SessionMessageEntry {
     /// the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
+    /// Final whole-turn billing counts. Boxed so user rows and older history
+    /// without a breakdown stay lightweight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<Box<zeron_proto::TokenUsage>>,
 }
 
 /// The doc-resident flat part map (`DocMessagePart` in TS). Distinct from the app-layer
@@ -819,6 +823,9 @@ fn write_entry_scalar_fields(map: &LoroMap, entry: &SessionMessageEntry) -> Resu
     if let Some(duration_ms) = entry.duration_ms {
         map.insert("durationMs", duration_ms)?;
     }
+    if let Some(usage) = &entry.token_usage {
+        map.insert("tokenUsage", serde_json::to_string(usage)?)?;
+    }
     Ok(())
 }
 
@@ -935,6 +942,8 @@ fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError
         continuation_of: Option<String>,
         #[serde(default)]
         duration_ms: Option<i64>,
+        #[serde(default)]
+        token_usage: Option<serde_json::Value>,
     }
     match serde_json::from_value::<RawEntry>(v.clone()) {
         Ok(raw) => Ok(SessionMessageEntry {
@@ -946,6 +955,7 @@ fn entry_from_json(v: serde_json::Value) -> Result<SessionMessageEntry, DocError
             status: raw.status,
             continuation_of: raw.continuation_of,
             duration_ms: raw.duration_ms,
+            token_usage: raw.token_usage.and_then(decode_token_usage),
         }),
         // 2026-08-10 incident rule: a missing field must cost AT MOST what
         // the field carried — never the entry, never the transcript. Rooms
@@ -1011,7 +1021,15 @@ fn salvage_entry(
             .and_then(|s| serde_json::from_value(s.clone()).ok()),
         continuation_of: str_field("continuationOf"),
         duration_ms: obj.get("durationMs").and_then(|x| x.as_i64()),
+        token_usage: obj.get("tokenUsage").cloned().and_then(decode_token_usage),
     })
+}
+
+fn decode_token_usage(value: serde_json::Value) -> Option<Box<zeron_proto::TokenUsage>> {
+    match value {
+        serde_json::Value::String(json) => serde_json::from_str(&json).ok(),
+        value => serde_json::from_value(value).ok(),
+    }
 }
 
 /// Salvage one part whose strict `DocPartJson` parse failed: infer the kind
@@ -1096,8 +1114,9 @@ pub fn join_continuation_entries(entries: Vec<SessionMessageEntry>) -> Vec<Sessi
             Some(root_id) => {
                 if let Some(&at) = root_index.get(root_id) {
                     out[at].parts.extend(entry.parts);
-                    if entry.duration_ms.is_some() {
+                    if entry.duration_ms.is_some() || entry.token_usage.is_some() {
                         out[at].duration_ms = entry.duration_ms;
+                        out[at].token_usage = entry.token_usage;
                     }
                 } else {
                     // Orphan continuation — surface as its own entry rather than dropping.
@@ -1155,6 +1174,7 @@ impl<'a> SegmentWriter<'a> {
                 status: Some(MessageStatus::Streaming),
                 continuation_of: None,
                 duration_ms: None,
+                token_usage: None,
             },
         )?;
         map.insert_container("parts", LoroList::new())?;
@@ -1281,7 +1301,18 @@ impl<'a> SegmentWriter<'a> {
 
     /// Finish the stream: sync final parts, stamp a terminal status, and
     /// record how long the turn ran (`now - createdAt`).
-    pub fn finish(mut self, folded: &[MessagePart], status: MessageStatus) -> Result<(), DocError> {
+    pub fn finish(self, folded: &[MessagePart], status: MessageStatus) -> Result<(), DocError> {
+        self.finish_with_usage(folded, status, None)
+    }
+
+    /// Commit usage atomically with the duration and terminal status, so a
+    /// synced viewer never divides one turn's tokens by another's elapsed time.
+    pub fn finish_with_usage(
+        mut self,
+        folded: &[MessagePart],
+        status: MessageStatus,
+        usage: Option<&zeron_proto::TokenUsage>,
+    ) -> Result<(), DocError> {
         self.sync(folded)?;
         let map = self.entry_map()?;
         map.insert("status", status_str(status))?;
@@ -1291,6 +1322,9 @@ impl<'a> SegmentWriter<'a> {
             .unwrap_or(self.created_at);
         if self.created_at > 0 {
             map.insert("durationMs", (now - self.created_at).max(0))?;
+        }
+        if let Some(usage) = usage {
+            map.insert("tokenUsage", serde_json::to_string(usage)?)?;
         }
         self.doc.doc.commit();
         Ok(())
@@ -1440,6 +1474,7 @@ mod tests {
         };
         doc.push_message(&SessionMessageEntry {
             duration_ms: None,
+            token_usage: None,
             id: "fork:side".into(),
             role: MessageRole::System,
             parts: vec![seam.clone()],
@@ -1474,6 +1509,7 @@ mod tests {
                 status: Some(MessageStatus::Complete),
                 continuation_of: (segment > 0).then(|| "segment-0".into()),
                 duration_ms: None,
+                token_usage: None,
             })
             .unwrap();
         }
@@ -1551,6 +1587,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         }
     }
 
@@ -1779,6 +1816,7 @@ mod tests {
             status: Some(MessageStatus::Aborted),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         })
         .unwrap();
         assert!(!doc.resolve_input("nope").unwrap());
@@ -1921,6 +1959,90 @@ mod tests {
         assert_eq!(
             restored.read_entries().unwrap(),
             doc.read_entries().unwrap()
+        );
+    }
+
+    #[test]
+    fn turn_usage_finishes_and_syncs_with_its_duration() {
+        let doc = SessionDoc::init("usage-chat").unwrap();
+        let writer = SegmentWriter::begin(&doc, "turn-1", "host", 1).unwrap();
+        assert_eq!(doc.read_entries().unwrap()[0].token_usage, None);
+        let usage = zeron_proto::TokenUsage {
+            input_tokens: Some(1200),
+            output_tokens: Some(200),
+            cached_input_tokens: Some(800),
+            ..Default::default()
+        };
+        writer
+            .finish_with_usage(
+                &[MessagePart::Text {
+                    id: "p0".into(),
+                    text: "done".into(),
+                }],
+                MessageStatus::Complete,
+                Some(&usage),
+            )
+            .unwrap();
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries[0].token_usage.as_deref().copied(), Some(usage));
+        assert!(entries[0].duration_ms.unwrap() > 0);
+        assert_eq!(entries[0].status, Some(MessageStatus::Complete));
+
+        let replica = LoroDoc::new();
+        replica.import(&doc.export_snapshot().unwrap()).unwrap();
+        assert_eq!(
+            SessionDoc::from_doc(replica).read_entries().unwrap(),
+            entries
+        );
+        let wire = serde_json::to_value(&entries[0]).unwrap();
+        assert_eq!(wire["tokenUsage"]["outputTokens"], 200);
+        assert_eq!(
+            serde_json::from_value::<SessionMessageEntry>(wire).unwrap(),
+            entries[0]
+        );
+    }
+
+    #[test]
+    fn old_or_malformed_usage_does_not_cost_transcript_content() {
+        let raw = serde_json::json!({
+            "id": "a1", "role": "assistant", "createdAt": 1, "deviceId": "host",
+            "parts": [{"id": "t0", "kind": "text", "text": "keep me"}]
+        });
+        let old = decode_entry_json(raw.clone()).unwrap();
+        assert_eq!(old.token_usage, None);
+        let mut malformed = raw;
+        malformed["tokenUsage"] = "not JSON".into();
+        assert_eq!(decode_entry_json(malformed).unwrap(), old);
+    }
+
+    #[test]
+    fn continuation_usage_and_duration_stay_paired() {
+        let mut root = user_entry("root", "first");
+        root.role = MessageRole::Assistant;
+        root.duration_ms = Some(1000);
+        root.token_usage = Some(Box::new(zeron_proto::TokenUsage {
+            output_tokens: Some(100),
+            ..Default::default()
+        }));
+        let mut tail = root.clone();
+        tail.id = "tail".into();
+        tail.continuation_of = Some(root.id.clone());
+        tail.duration_ms = Some(2000);
+        tail.token_usage = None;
+        let joined = join_continuation_entries(vec![root.clone(), tail.clone()]);
+        assert_eq!(joined[0].duration_ms, Some(2000));
+        assert_eq!(joined[0].token_usage, None);
+        tail.duration_ms = None;
+        tail.token_usage = root.token_usage.clone();
+        let joined = join_continuation_entries(vec![root, tail]);
+        assert_eq!(joined[0].duration_ms, None);
+        assert_eq!(
+            joined[0]
+                .token_usage
+                .as_deref()
+                .unwrap()
+                .average_tps(joined[0].duration_ms),
+            None
         );
     }
 
@@ -2166,6 +2288,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         })
         .unwrap();
         let entries = doc.read_entries().unwrap();

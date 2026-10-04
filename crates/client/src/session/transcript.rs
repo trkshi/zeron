@@ -268,8 +268,9 @@ impl Tracker {
                         for &i in &members[1..] {
                             if let Some(part) = self.slots[i].entry.as_ref() {
                                 message.parts.extend(part.parts.iter().cloned());
-                                if part.duration_ms.is_some() {
+                                if part.duration_ms.is_some() || part.token_usage.is_some() {
                                     message.duration_ms = part.duration_ms;
+                                    message.token_usage = part.token_usage.clone();
                                 }
                             }
                         }
@@ -307,6 +308,7 @@ fn append_hint(prev: &Entry, next: &SessionMessageEntry) -> Option<AppendHint> {
         || old.device_id != next.device_id
         || old.status != next.status
         || old.duration_ms != next.duration_ms
+        || old.token_usage != next.token_usage
         || old.parts.len() != next.parts.len()
     {
         return None;
@@ -361,6 +363,7 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
             duration_ms: None,
+            token_usage: None,
         }
     }
 
