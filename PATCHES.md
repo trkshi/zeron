@@ -47,12 +47,17 @@ Zeron release.
 - Order the composer footer as TPS, account usage, then context usage. Keep
   the original separate account/context progress rings and percentages,
   including their warning colors and individual popovers. The TPS speedometer
-  chip opens a themed token-usage popover with input, output, total,
-  cached input, cache-hit rate, cache writes, reasoning, Average TPS, and
-  provider-reported USD cost where available. Average TPS is output tokens
+  chip opens a themed token-usage popover with recorded thread totals for
+  input, output, total, cached input, cache writes, reasoning, and
+  provider-reported USD cost where available. The cache-hit rate uses complete
+  reported input/cache counts; Average TPS stays specific to the latest turn.
+  Reopening a thread restores its recorded totals without counting repeated
+  snapshots or joined continuations twice. Average TPS is output tokens
   divided by the entire turn's wall-clock duration, including startup, tools,
-  and waiting; it is not raw model-generation speed. Show **Measuring** while
-  working and **Not reported** for unavailable fields. Cache is included in
+  and waiting; it is not raw model-generation speed. Show **Measuring** for TPS
+  while working without clearing the thread totals. Show **Not reported** for
+  unavailable fields, and retain earlier reported counts when a later turn
+  omits them. Cache is included in
   input and reasoning in output, never added again to the totals.
   Persist Claude/Codex reports with each assistant turn so reopening and
   device sync retain the selected thread's own statistics. Codex differences

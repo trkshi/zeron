@@ -604,7 +604,7 @@ impl Render for AccountUsage {
             });
             (
                 state.context_usage,
-                crate::token_usage::TurnStats::from_transcript(&state.transcript, measuring),
+                crate::token_usage::TokenStats::from_transcript(&state.transcript, measuring),
             )
         };
         let account = self.fraction(cx).map(|fraction| {
@@ -678,7 +678,7 @@ impl Render for AccountUsage {
             .when(!self.icons_only, |chip| chip.min_w(px(96.0)))
             .aria_label(format!("Token usage, {label}"))
             .tooltip(crate::settings::widgets::text_tooltip(format!(
-                "Token usage: {label} (full-turn average)"
+                "Thread token totals; TPS: {label} (full-turn average)"
             )));
             self.trigger(
                 chip,
