@@ -2054,6 +2054,12 @@ mod tests {
             input_tokens: Some(1200),
             output_tokens: Some(200),
             cached_input_tokens: Some(800),
+            generation: Some(zeron_proto::GenerationUsage {
+                output_tokens: 200,
+                reasoning_output_tokens: Some(40),
+                elapsed_ms: 1000,
+                ttft_ms: 200,
+            }),
             ..Default::default()
         };
         writer
@@ -2079,6 +2085,17 @@ mod tests {
         );
         let wire = serde_json::to_value(&entries[0]).unwrap();
         assert_eq!(wire["tokenUsage"]["outputTokens"], 200);
+        assert_eq!(wire["tokenUsage"]["generation"]["ttftMs"], 200);
+        assert_eq!(
+            entries[0]
+                .token_usage
+                .as_deref()
+                .unwrap()
+                .generation
+                .unwrap()
+                .tps(),
+            Some(200.0)
+        );
         assert_eq!(
             serde_json::from_value::<SessionMessageEntry>(wire).unwrap(),
             entries[0]

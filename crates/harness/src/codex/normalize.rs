@@ -187,6 +187,7 @@ fn token_counts(value: &Value) -> TokenUsage {
         cache_write_input_tokens: count(&["cacheWriteInputTokens", "cache_write_input_tokens"]),
         reasoning_output_tokens: count(&["reasoningOutputTokens", "reasoning_output_tokens"]),
         cost_usd: None,
+        generation: None,
     }
 }
 
@@ -196,12 +197,14 @@ fn token_counts(value: &Value) -> TokenUsage {
 pub(crate) struct TurnUsageTracker {
     previous_total: Option<TokenUsage>,
     current: Option<TokenUsage>,
+    generation: Option<zeron_proto::GenerationUsage>,
     incomplete_turn: bool,
 }
 
 impl TurnUsageTracker {
     pub fn reset(&mut self) {
         self.current = None;
+        self.generation = None;
         self.incomplete_turn = false;
     }
 
@@ -210,6 +213,7 @@ impl TurnUsageTracker {
         // starts another message segment. Billing cannot split an in-flight
         // request at that boundary; clear partial stats instead of guessing.
         let had_report = self.current.take().is_some();
+        self.generation = None;
         self.incomplete_turn = true;
         had_report.then_some(AgentEvent::TurnUsage {
             usage: TokenUsage::default(),
@@ -267,6 +271,7 @@ impl TurnUsageTracker {
                 last.reasoning_output_tokens,
             ),
             cost_usd: None,
+            generation: self.generation,
         };
         let add = |a: Option<u64>, b: Option<u64>| a?.checked_add(b?);
         let usage = match self.current {
@@ -288,11 +293,22 @@ impl TurnUsageTracker {
                     increment.reasoning_output_tokens,
                 ),
                 cost_usd: None,
+                generation: increment.generation,
             },
         };
         self.current = Some(usage);
         // An unknown/rewound report must also replace earlier known counts.
         (!self.incomplete_turn).then_some(AgentEvent::TurnUsage { usage })
+    }
+
+    pub fn generation(&mut self, generation: zeron_proto::GenerationUsage) -> Option<AgentEvent> {
+        if self.incomplete_turn || generation.tps().is_none() {
+            return None;
+        }
+        self.generation = Some(generation);
+        let usage = self.current.as_mut()?;
+        usage.generation = Some(generation);
+        Some(AgentEvent::TurnUsage { usage: *usage })
     }
 }
 
@@ -358,6 +374,31 @@ mod usage_tracker_tests {
         let next_turn = observed(&mut tracker, &snapshot(1500, 410, 200, 100));
         assert_eq!(next_turn.input_tokens, Some(200));
         assert_eq!(next_turn.output_tokens, Some(100));
+    }
+
+    #[test]
+    fn generation_is_request_specific_survives_counts_and_resets_at_turn_boundaries() {
+        let mut tracker = TurnUsageTracker::default();
+        let generation = zeron_proto::GenerationUsage {
+            output_tokens: 100,
+            reasoning_output_tokens: Some(40),
+            elapsed_ms: 1000,
+            ttft_ms: 200,
+        };
+        // Rollout telemetry can arrive before the app-server count notification.
+        assert!(tracker.generation(generation).is_none());
+        let first = observed(&mut tracker, &snapshot(1100, 250, 100, 50));
+        assert_eq!(first.generation, Some(generation));
+        let next = observed(&mut tracker, &snapshot(1300, 310, 200, 60));
+        assert_eq!(next.output_tokens, Some(110));
+        assert_eq!(next.generation, Some(generation));
+        tracker.steer_in_place();
+        assert!(tracker.generation(generation).is_none());
+        tracker.reset();
+        assert_eq!(
+            observed(&mut tracker, &snapshot(1500, 410, 200, 100)).generation,
+            None
+        );
     }
 
     #[test]

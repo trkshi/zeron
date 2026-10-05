@@ -870,6 +870,27 @@ pub struct ContextUsage {
     pub window: Option<u64>,
 }
 
+/// One model request's measured generation window, not a whole agent turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationUsage {
+    pub output_tokens: u64,
+    pub reasoning_output_tokens: Option<u64>,
+    pub elapsed_ms: u64,
+    pub ttft_ms: u64,
+}
+
+impl GenerationUsage {
+    /// Match codex-lb: exclude reasoning from output and TTFT from elapsed time.
+    pub fn tps(self) -> Option<f64> {
+        let output = self
+            .output_tokens
+            .checked_sub(self.reasoning_output_tokens.unwrap_or(0))?;
+        let duration = self.elapsed_ms.checked_sub(self.ttft_ms)?;
+        (output > 0 && duration > 0).then(|| output as f64 * 1000.0 / duration as f64)
+    }
+}
+
 /// Provider-reported billing counts for one user turn. Input includes cache
 /// reads/writes; reasoning is a subset of output, not an additional charge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -889,6 +910,8 @@ pub struct TokenUsage {
     pub reasoning_output_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<GenerationUsage>,
 }
 
 impl TokenUsage {
@@ -919,6 +942,67 @@ impl ContextUsage {
 #[cfg(test)]
 mod token_usage_tests {
     use super::*;
+
+    #[test]
+    fn generation_tps_excludes_reasoning_and_first_token_wait() {
+        let generation = GenerationUsage {
+            output_tokens: 200,
+            reasoning_output_tokens: Some(40),
+            elapsed_ms: 1000,
+            ttft_ms: 200,
+        };
+        assert_eq!(generation.tps(), Some(200.0));
+        assert_eq!(
+            GenerationUsage {
+                ttft_ms: 1000,
+                ..generation
+            }
+            .tps(),
+            None
+        );
+        assert_eq!(
+            GenerationUsage {
+                ttft_ms: 1001,
+                ..generation
+            }
+            .tps(),
+            None
+        );
+        assert_eq!(
+            GenerationUsage {
+                output_tokens: 40,
+                ..generation
+            }
+            .tps(),
+            None
+        );
+        assert_eq!(
+            GenerationUsage {
+                output_tokens: 39,
+                ..generation
+            }
+            .tps(),
+            None
+        );
+        assert_eq!(
+            GenerationUsage {
+                reasoning_output_tokens: None,
+                ..generation
+            }
+            .tps(),
+            Some(250.0)
+        );
+        let usage = TokenUsage {
+            output_tokens: Some(200),
+            generation: Some(generation),
+            ..Default::default()
+        };
+        assert_eq!(usage.average_tps(Some(10_000)), Some(20.0));
+        assert_eq!(
+            serde_json::from_value::<TokenUsage>(serde_json::to_value(usage).unwrap()).unwrap(),
+            usage
+        );
+    }
 
     #[test]
     fn cache_and_reasoning_are_not_added_to_totals_twice() {

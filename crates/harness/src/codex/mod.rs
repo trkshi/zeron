@@ -6,6 +6,8 @@
 //! experimentalApi`); this driver is validated against codex-cli 0.153.4 —
 //! imageGeneration additionally follows the 0.154.0 schema (savedPath only).
 //! Revalidate the method/notification surface when bumping past it.
+//! Optional codex-lb generation metrics use 0.160.0 rollout usage records;
+//! older CLIs without response IDs retain whole-turn averages.
 //!
 //! - `initialize` handshake (clientInfo + `capabilities.experimentalApi`) then
 //!   the `initialized` notification; unknown notification methods tolerated.
@@ -37,6 +39,7 @@
 //!   always ends with `Done { status: Interrupted }`.
 
 pub(crate) mod catalog;
+mod generation;
 mod normalize;
 mod subagents;
 
@@ -1096,9 +1099,14 @@ async fn run_session(session: Session) {
         let thread_id = thread["thread"]["id"].as_str().unwrap_or("").to_owned();
         let mut children = subagents::Subagents::new(thread_id.clone());
         children.restore(&thread["thread"]);
-        Ok::<_, HarnessError>((thread_id, children))
+        let generation = if title_only {
+            None
+        } else {
+            generation::Monitor::from_thread(&client, &request.cwd, &thread).await
+        };
+        Ok::<_, HarnessError>((thread_id, children, generation))
     };
-    let (thread_id, mut children) = tokio::select! {
+    let (thread_id, mut children, mut generation) = tokio::select! {
         res = setup => match res {
             Ok(thread_id) => thread_id,
             Err(e) => {
@@ -1212,6 +1220,8 @@ async fn run_session(session: Session) {
         .is_some();
     let mut done_after_interrupt = false;
     let mut escalation: Option<tokio::task::JoinHandle<()>> = None;
+    let mut generation_poll = tokio::time::interval(Duration::from_millis(500));
+    generation_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     'main: loop {
         tokio::select! {
@@ -1370,6 +1380,17 @@ async fn run_session(session: Session) {
 
                     "turn/completed" => {
                         let id = turn_id(&params);
+                        if !interrupted && !done_current && router.active.as_deref() == Some(id.as_str())
+                            && let Some(monitor) = generation.as_mut()
+                        {
+                            let report = tokio::select! {
+                                _ = interrupt.cancelled() => None,
+                                result = tokio::time::timeout(Duration::from_millis(1500), monitor.finish(&id)) => result.ok().flatten(),
+                            };
+                            if let Some(report) = report
+                                && let Some(usage) = turn_usage.generation(report)
+                                && !send(&event_tx, usage).await { break 'main; }
+                        }
                         router.note_completed(&id);
                         // Item ids never span turns; without this the set grew
                         // one entry per message for a persistent session's life.
@@ -1521,6 +1542,18 @@ async fn run_session(session: Session) {
                 Some(Incoming::Eof) | None => break 'main,
             },
 
+            _ = generation_poll.tick(), if generation.is_some() && !done_current && !interrupted && router.active.is_some() => {
+                if let (Some(monitor), Some(turn)) = (generation.as_mut(), router.active.as_deref()) {
+                    let report = tokio::select! {
+                        _ = interrupt.cancelled() => None,
+                        result = tokio::time::timeout(Duration::from_millis(600), monitor.poll(turn)) => result.ok().flatten(),
+                    };
+                    if let Some(report) = report
+                        && let Some(usage) = turn_usage.generation(report)
+                        && !send(&event_tx, usage).await { break 'main; }
+                }
+            },
+
             steer = steering.recv(), if steering_open && !interrupted => match steer {
                 Some(msg) => {
                     let text = msg.prompt;
@@ -1540,6 +1573,9 @@ async fn run_session(session: Session) {
                         });
                         match client.request("turn/steer", steer_params).await {
                             Ok(_) => {
+                                if let Some(monitor) = generation.as_mut() {
+                                    monitor.suspend(&expected);
+                                }
                                 if let Some(usage) = turn_usage.steer_in_place()
                                     && !send(&event_tx, usage).await
                                 {

@@ -89,6 +89,25 @@ Zeron release.
   not alert again. Windows uses the question chime because upstream's Windows
   desktop-toast handler is not implemented. This is a UI-only change; the
   Ubuntu engine does not need an update.
+- Prefer the latest request's measured generation TPS in the footer when
+  codex-lb reports it. Match its dashboard formula: output minus reasoning,
+  divided by elapsed time minus time to first token. Keep whole-turn average
+  TPS in the token popover, and retain the existing, clearly labeled average
+  for providers without request timing. Hold readings between reports.
+  The host must explicitly opt in through
+  `$CODEX_HOME/zeron-codex-lb-usage.toml` (`~/.codex` by default) with
+  `enabled = true` and `origin = "http://your-codex-lb:2455"`.
+  The selected `codex-lb` provider must use `CODEX_LB_API_KEY` and exactly that
+  origin. Requires codex-lb's read-only
+  `GET /v1/responses/{response_id}/metrics` integration endpoint. Lookup uses
+  the same API key and exact response IDs from this thread's Codex rollout,
+  never another conversation's latest request. Only bounded new rollout data
+  is read; prompts and keys are never sent to the metrics endpoint or persisted
+  in token statistics. Redirects are disabled, lookups have short timeouts,
+  and telemetry failures do not fail the chat. Persist generation measurements
+  with the turn for reconnects and device sync. Unsupported/older Codex
+  rollouts keep the prior average display; existing history is not remeasured.
+  Reported cost is unchanged and is not inferred from codex-lb pricing.
 - Retain upstream's `Shift+Backspace` fix: holding Shift while pressing
   Backspace still deletes backward or removes the selected text in the
   composer and search inputs.

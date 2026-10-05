@@ -677,9 +677,12 @@ impl Render for AccountUsage {
                 self.popup.get() == Some(&FooterCard::Tokens),
             )
             .when(!self.icons_only, |chip| chip.min_w(px(96.0)))
-            .aria_label(format!("Token usage, {}: {label}", stats.rate_description()))
+            .aria_label(format!(
+                "Token usage, {}: {label}",
+                stats.rate_description()
+            ))
             .tooltip(crate::settings::widgets::text_tooltip(format!(
-                "Thread token totals; {}: {label} (includes tools and waiting)",
+                "Thread token totals; {}: {label}",
                 stats.rate_description()
             )));
             self.trigger(

@@ -84,6 +84,7 @@ impl TurnUsageTracker {
                     .zip(usage.cost_usd)
                     .map(|(a, b)| a + b)
                     .filter(|cost| cost.is_finite()),
+                generation: None,
             };
         }
         Some(total)
@@ -122,6 +123,7 @@ fn request_usage(info: &Value) -> Option<TokenUsage> {
             .get("cost")
             .and_then(Value::as_f64)
             .filter(|cost| cost.is_finite() && *cost >= 0.0),
+        generation: None,
     })
 }
 

@@ -1,7 +1,7 @@
-//! Reported thread totals and live turn-average TPS come from the transcript.
+//! Recorded thread totals, request generation TPS, and turn-average TPS.
 use gpui::{SharedString, div, prelude::*, px};
 use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
-use zeron_proto::TokenUsage;
+use zeron_proto::{GenerationUsage, TokenUsage};
 
 use crate::{context_usage::with_separators, popover, theme::Theme};
 
@@ -13,6 +13,8 @@ pub(crate) struct TokenStats {
     duration_ms: Option<i64>,
     live: bool,
     previous: bool,
+    generation: Option<GenerationUsage>,
+    generation_previous: bool,
 }
 
 impl TokenStats {
@@ -65,10 +67,37 @@ impl TokenStats {
             stats.duration_ms = entry.duration_ms;
         }
         stats.previous = working && !stats.live;
+        stats.generation = stats.turn_usage.and_then(|usage| usage.generation);
+        stats.generation_previous = stats.previous;
+        if working && stats.generation.and_then(GenerationUsage::tps).is_none() {
+            stats.generation = entries
+                .iter()
+                .rev()
+                .find(|entry| is_turn(entry) && entry.status != Some(MessageStatus::Streaming))
+                .and_then(|entry| entry.token_usage.as_deref()?.generation)
+                .filter(|generation| generation.tps().is_some());
+            stats.generation_previous = true;
+        }
         stats
     }
 
     pub fn rate_description(self) -> &'static str {
+        if self.generation.and_then(GenerationUsage::tps).is_some() {
+            self.generation_description()
+        } else {
+            self.average_description()
+        }
+    }
+
+    fn generation_description(self) -> &'static str {
+        if self.generation_previous {
+            "Generation TPS (previous turn)"
+        } else {
+            "Generation TPS (latest request)"
+        }
+    }
+
+    fn average_description(self) -> &'static str {
         if self.live {
             "Live average TPS"
         } else if self.previous {
@@ -79,6 +108,13 @@ impl TokenStats {
     }
 
     pub fn label(self) -> String {
+        self.generation
+            .and_then(GenerationUsage::tps)
+            .map(|tps| format!("{tps:.1} tok/s"))
+            .unwrap_or_else(|| self.average_label())
+    }
+
+    fn average_label(self) -> String {
         self.turn_usage
             .and_then(|usage| usage.average_tps(self.duration_ms))
             .map(|tps| format!("{tps:.1} tok/s"))
@@ -136,11 +172,12 @@ fn thread_usage(entries: &[SessionMessageEntry]) -> TokenUsage {
                     usage.reasoning_output_tokens,
                 ),
                 cost_usd,
+                generation: None,
             }
         })
 }
 
-fn rows(stats: TokenStats) -> [(&'static str, String); 9] {
+fn rows(stats: TokenStats) -> [(&'static str, String); 10] {
     let usage = stats.thread_usage;
     let count = |value: Option<u64>| {
         value
@@ -165,7 +202,7 @@ fn rows(stats: TokenStats) -> [(&'static str, String); 9] {
             count(usage.reasoning_output_tokens),
         ),
         (
-            stats.rate_description(),
+            stats.average_description(),
             stats
                 .turn_usage
                 .and_then(|usage| usage.average_tps(stats.duration_ms))
@@ -178,6 +215,14 @@ fn rows(stats: TokenStats) -> [(&'static str, String); 9] {
                 .cost_usd
                 .filter(|cost| cost.is_finite() && *cost >= 0.0)
                 .map(|cost| format!("${cost:.4}"))
+                .unwrap_or_else(|| "Not reported".into()),
+        ),
+        (
+            stats.generation_description(),
+            stats
+                .generation
+                .and_then(GenerationUsage::tps)
+                .map(|tps| format!("{tps:.1} tok/s"))
                 .unwrap_or_else(|| "Not reported".into()),
         ),
     ]
@@ -226,7 +271,7 @@ pub(crate) fn card(stats: TokenStats, theme: &Theme) -> gpui::Div {
                 .pb(px(6.0))
                 .text_size(px(11.0))
                 .text_color(theme.text_muted)
-                .child("Live counts update when reported. TPS includes tools and waiting."),
+                .child("Generation TPS excludes TTFT and reasoning tokens. Turn average includes tools and waiting."),
         )
 }
 
@@ -246,6 +291,86 @@ mod tests {
             duration_ms: Some(20_000),
             token_usage: usage.map(Box::new),
         }
+    }
+
+    fn generation(output: u64) -> GenerationUsage {
+        GenerationUsage {
+            output_tokens: output,
+            reasoning_output_tokens: Some(40),
+            elapsed_ms: 1000,
+            ttft_ms: 200,
+        }
+    }
+
+    #[test]
+    fn footer_prefers_latest_request_generation_not_the_turn_average() {
+        let mut entry = assistant(Some(TokenUsage {
+            output_tokens: Some(400),
+            generation: Some(generation(100)),
+            ..Default::default()
+        }));
+        entry.status = Some(MessageStatus::Streaming);
+        let mut entries = [entry];
+        let first = TokenStats::from_transcript(&entries, true);
+        assert_eq!(first.label(), "75.0 tok/s");
+        assert_eq!(first.rate_description(), "Generation TPS (latest request)");
+        assert_eq!(rows(first)[7].1, "20.0 tok/s");
+        assert_eq!(rows(first)[9].1, "75.0 tok/s");
+        entries[0].duration_ms = Some(40_000);
+        entries[0].status = Some(MessageStatus::Complete);
+        let done = TokenStats::from_transcript(&entries, false);
+        assert_eq!(done.label(), "75.0 tok/s");
+        assert_eq!(rows(done)[7].1, "10.0 tok/s");
+        entries[0].token_usage.as_mut().unwrap().generation = Some(generation(200));
+        assert_eq!(
+            TokenStats::from_transcript(&entries, false).label(),
+            "200.0 tok/s"
+        );
+    }
+
+    #[test]
+    fn generation_holds_previous_turn_until_this_turn_reports_a_request() {
+        let previous = assistant(Some(TokenUsage {
+            output_tokens: Some(400),
+            generation: Some(generation(100)),
+            ..Default::default()
+        }));
+        let mut current = assistant(Some(TokenUsage {
+            output_tokens: Some(100),
+            ..Default::default()
+        }));
+        current.status = Some(MessageStatus::Streaming);
+        let mut entries = [previous, current];
+        let first = TokenStats::from_transcript(&entries, true);
+        assert_eq!(first.label(), "75.0 tok/s");
+        assert_eq!(first.rate_description(), "Generation TPS (previous turn)");
+        assert_eq!(rows(first)[7].1, "5.0 tok/s");
+        entries[1].token_usage.as_mut().unwrap().generation = Some(generation(200));
+        assert_eq!(
+            TokenStats::from_transcript(&entries, true).label(),
+            "200.0 tok/s"
+        );
+        entries[1].token_usage.as_mut().unwrap().generation = None;
+        entries[1].status = Some(MessageStatus::Complete);
+        let completed = TokenStats::from_transcript(&entries, false);
+        assert_eq!(completed.label(), "5.0 tok/s");
+        assert_eq!(completed.rate_description(), "Average TPS (last turn)");
+        assert_eq!(rows(completed)[9].1, "Not reported");
+    }
+
+    #[test]
+    fn invalid_request_windows_fall_back_to_clearly_labeled_turn_average() {
+        let mut invalid = generation(100);
+        invalid.ttft_ms = invalid.elapsed_ms;
+        let entries = [assistant(Some(TokenUsage {
+            output_tokens: Some(400),
+            generation: Some(invalid),
+            ..Default::default()
+        }))];
+        let stats = TokenStats::from_transcript(&entries, false);
+        assert_eq!(stats.label(), "20.0 tok/s");
+        assert_eq!(stats.rate_description(), "Average TPS (last turn)");
+        assert_eq!(rows(stats)[9].1, "Not reported");
     }
 
     #[test]
