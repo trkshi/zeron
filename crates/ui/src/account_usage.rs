@@ -106,6 +106,7 @@ pub struct AccountUsage {
     pending_refresh: Option<UsageRefresh>,
     window_active: bool,
     completions: CompletionTracker,
+    token_stats: crate::token_usage::TokenStatsCache,
     poll_wake: mpsc::UnboundedSender<()>,
     error: Option<SharedString>,
     load_task: Option<Task<()>>,
@@ -162,6 +163,7 @@ impl AccountUsage {
             pending_refresh: None,
             window_active: false,
             completions: CompletionTracker::default(),
+            token_stats: crate::token_usage::TokenStatsCache::default(),
             poll_wake,
             error: None,
             load_task: None,
@@ -605,7 +607,12 @@ impl Render for AccountUsage {
             });
             (
                 state.context_usage,
-                crate::token_usage::TokenStats::from_transcript(&state.transcript, working),
+                self.token_stats.get(
+                    state.selected_chat.as_deref(),
+                    state.token_stats_revision,
+                    working,
+                    &state.transcript,
+                ),
             )
         };
         let account = self.fraction(cx).map(|fraction| {

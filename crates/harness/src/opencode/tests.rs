@@ -938,6 +938,7 @@ async fn v2_wire_streams_text_and_settles_on_execution_success() {
             cache_write_input_tokens: Some(0),
             reasoning_output_tokens: Some(0),
             cost_usd: Some(0.0),
+            generation: None,
         })
     );
     assert_eq!(

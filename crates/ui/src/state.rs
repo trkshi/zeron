@@ -752,6 +752,8 @@ pub struct AppState {
     /// Changes only when transcript/optimistic content changes. Presence,
     /// catalogs and other app-state notifications need no row derivation.
     pub(crate) transcript_revision: u64,
+    /// Usage/status/structure updates invalidate footer stats; text appends do not.
+    pub(crate) token_stats_revision: u64,
     /// Changes whenever an input of [`Self::file_link_roots`] does — chat
     /// rows, projects, this device's id — so views can memoize the roots.
     pub(crate) link_roots_revision: u64,
@@ -851,6 +853,7 @@ impl AppState {
             transcript_cache: Default::default(),
             prepared_transcripts: HashMap::new(),
             transcript_revision: 0,
+            token_stats_revision: 0,
             link_roots_revision: 0,
             echoes: HashMap::new(),
             pending_sends: HashMap::new(),
@@ -1073,6 +1076,7 @@ impl AppState {
             self.transcript.clear();
             self.context_usage = None;
             self.transcript_revision = self.transcript_revision.wrapping_add(1);
+            self.token_stats_revision = self.token_stats_revision.wrapping_add(1);
             self.transcript_replayed = false;
             self.transcript_task = None;
             self.queue.clear();
@@ -1408,6 +1412,7 @@ impl AppState {
             self.prepared_transcripts.remove(id);
         }
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
+        self.token_stats_revision = self.token_stats_revision.wrapping_add(1);
         // Doc frames supersede optimistic echoes carrying the same id.
         if let Some(chat_id) = self.selected_chat.as_deref()
             && let Some(echoes) = self.echoes.get_mut(chat_id)
@@ -1430,6 +1435,9 @@ impl AppState {
         }
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         let is_reset = matches!(&frame, TranscriptFrame::Reset { .. });
+        if crate::token_usage::invalidates_stats(&frame) {
+            self.token_stats_revision = self.token_stats_revision.wrapping_add(1);
+        }
         zeron_doc::apply_transcript_frame(&mut self.transcript, frame)?;
         if is_reset {
             self.transcript_replayed = true;
@@ -2067,6 +2075,7 @@ impl AppState {
         self.prepared_transcripts.clear();
         self.context_usage = None;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
+        self.token_stats_revision = self.token_stats_revision.wrapping_add(1);
         self.transcript_replayed = false;
         self.echoes.clear();
         self.pending_sends.clear();
@@ -2478,6 +2487,7 @@ impl AppState {
         self.transcript.clear();
         self.context_usage = None;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
+        self.token_stats_revision = self.token_stats_revision.wrapping_add(1);
         self.transcript_replayed = false;
         if let Some(cached) = cached {
             self.transcript_baselines.insert(
@@ -3745,6 +3755,95 @@ mod tests {
             duration_ms: None,
             token_usage: None,
         }
+    }
+
+    #[test]
+    fn token_stats_revision_ignores_text_appends_and_invalidates_metadata_and_resets() {
+        let mut state = AppState::new();
+        let mut entry = user_entry("turn");
+        entry.role = zeron_doc::MessageRole::Assistant;
+        entry.status = Some(zeron_doc::MessageStatus::Streaming);
+        entry.parts = vec![zeron_doc::MessagePart::Text {
+            id: "text".into(),
+            text: "reply".into(),
+        }];
+        entry.duration_ms = Some(20_000);
+        entry.token_usage = Some(Box::new(zeron_proto::TokenUsage {
+            output_tokens: Some(100),
+            ..Default::default()
+        }));
+        state.apply_transcript(vec![entry.clone()]);
+        let revision = state.token_stats_revision;
+        let mut cache = crate::token_usage::TokenStatsCache::default();
+        assert_eq!(
+            cache.get(None, revision, true, &state.transcript).label(),
+            "5.0 tok/s"
+        );
+        state
+            .apply_transcript_frame(TranscriptFrame::Delta {
+                upsert: vec![],
+                append: vec![zeron_doc::TextAppend {
+                    entry: "turn".into(),
+                    part: "text".into(),
+                    text: "!".into(),
+                    len: 6,
+                }],
+                remove: vec![],
+                count: 1,
+            })
+            .unwrap();
+        assert_eq!(state.token_stats_revision, revision);
+        assert_eq!(
+            cache
+                .get(None, state.token_stats_revision, true, &state.transcript)
+                .label(),
+            "5.0 tok/s"
+        );
+        entry.duration_ms = Some(10_000);
+        entry.token_usage.as_mut().unwrap().output_tokens = Some(200);
+        state
+            .apply_transcript_frame(TranscriptFrame::Delta {
+                upsert: vec![zeron_doc::TranscriptUpsert {
+                    after: None,
+                    entry: entry.clone(),
+                }],
+                append: vec![],
+                remove: vec![],
+                count: 1,
+            })
+            .unwrap();
+        assert_ne!(state.token_stats_revision, revision);
+        assert_eq!(
+            cache
+                .get(None, state.token_stats_revision, true, &state.transcript)
+                .label(),
+            "20.0 tok/s"
+        );
+        state
+            .apply_transcript_frame(TranscriptFrame::reset(&[entry.clone()]))
+            .unwrap();
+        assert_eq!(state.token_stats_revision, revision + 2);
+        assert_eq!(
+            cache
+                .get(None, state.token_stats_revision, true, &state.transcript)
+                .label(),
+            "20.0 tok/s"
+        );
+        state
+            .apply_transcript_frame(TranscriptFrame::Delta {
+                upsert: vec![],
+                append: vec![],
+                remove: vec![entry.id],
+                count: 0,
+            })
+            .unwrap();
+        assert_eq!(state.token_stats_revision, revision + 3);
+        assert_eq!(
+            cache
+                .get(None, state.token_stats_revision, false, &state.transcript)
+                .label(),
+            "- tok/s"
+        );
     }
 
     #[gpui::test]

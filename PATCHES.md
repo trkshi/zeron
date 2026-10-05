@@ -52,8 +52,10 @@ Zeron release.
   provider-reported USD cost where available. The cache-hit rate uses complete
   reported input/cache counts; Average TPS stays specific to the latest turn.
   Reopening a thread restores its recorded totals without counting repeated
-  snapshots or joined continuations twice. Average TPS is output tokens
-  divided by the entire turn's wall-clock duration, including startup, tools,
+  snapshots or joined continuations twice.
+  Cache scalar footer statistics between relevant transcript updates; text-only
+  streaming and unrelated renders do not rescan history. Average TPS is output
+  tokens divided by the entire turn's wall-clock duration, including startup, tools,
   and waiting; it is not raw model-generation speed. Keep the previous turn's
   rate until the new turn reports output instead of showing **Measuring**.
   Stream reported counts into the footer during the turn. Update the live
@@ -78,6 +80,9 @@ Zeron release.
   OpenCode exposes completed-request usage during a still-running turn.
   Repeated request snapshots and late reports from retired turns do not
   inflate usage. An unfinished request leaves full-turn TPS unreported.
+  Bound Claude's live request tracking to 4096 IDs per warm session. If that
+  cap or the ID-size limit is exceeded, discard live tracking and use final
+  provider reports until the session ends, rather than readmitting stale IDs.
   Older providers without trustworthy turn totals show no TPS. Existing
   history is untouched and not retroactively estimated.
   Remote chats require this patch on the engine running the agent; installing

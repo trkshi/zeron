@@ -6,6 +6,9 @@ use crate::generation::GenerationTimer;
 
 use super::wire::{MessageBody, UsageBody};
 
+pub(super) const MAX_TRACKED_REQUESTS: usize = 4096;
+const MAX_REQUEST_ID_BYTES: usize = 256;
+
 /// Claude repeats one API message across content blocks. Keep request IDs
 /// separate from Zeron's display IDs so repeated usage never adds twice.
 #[derive(Default)]
@@ -14,6 +17,7 @@ pub(super) struct TurnUsageTracker {
     retired: HashSet<String>,
     current: Option<String>,
     incomplete: bool,
+    exhausted: bool,
 }
 
 #[derive(Default)]
@@ -27,19 +31,20 @@ impl TurnUsageTracker {
     pub fn reset(&mut self) {
         self.retired.extend(self.requests.drain().map(|(id, _)| id));
         self.current = None;
-        self.incomplete = false;
+        self.incomplete = self.exhausted;
     }
 
     pub fn has_reports(&self) -> bool {
-        !self.requests.is_empty()
+        !self.requests.is_empty() || self.exhausted
     }
 
     pub fn start(&mut self, message: Option<&MessageBody>) -> Option<TokenUsage> {
+        let usage = message.and_then(|message| self.message(message));
         self.current = message
             .and_then(|message| message.id.as_ref())
-            .filter(|id| !id.is_empty() && !self.retired.contains(*id))
+            .filter(|id| self.requests.contains_key(*id))
             .cloned();
-        self.message(message?)
+        usage
     }
 
     pub fn output(&mut self) {
@@ -75,6 +80,9 @@ impl TurnUsageTracker {
     }
 
     pub fn message(&mut self, message: &MessageBody) -> Option<TokenUsage> {
+        if self.exhausted {
+            return None;
+        }
         let Some(id) = message.id.as_ref().filter(|id| !id.is_empty()) else {
             if message.usage.is_some() && self.has_reports() {
                 self.incomplete = true;
@@ -84,6 +92,19 @@ impl TurnUsageTracker {
         };
         if self.retired.contains(id) {
             return None;
+        }
+        if id.len() > MAX_REQUEST_ID_BYTES
+            || (!self.requests.contains_key(id)
+                && self.requests.len() + self.retired.len() >= MAX_TRACKED_REQUESTS)
+        {
+            // Evicting IDs could admit an old echo as new usage. Until this
+            // warm child ends, trust only Claude's authoritative final report.
+            self.exhausted = true;
+            self.incomplete = true;
+            self.current = None;
+            self.requests = HashMap::new();
+            self.retired = HashSet::new();
+            return Some(TokenUsage::default());
         }
         let order = self.requests.len();
         let report = self
@@ -158,5 +179,119 @@ fn merge(report: &mut UsageBody, update: UsageBody) {
     };
     if let Some(details) = update.output_tokens_details {
         report.output_tokens_details = Some(details);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn message(id: &str, output: u64) -> MessageBody {
+        MessageBody {
+            id: Some(id.into()),
+            usage: Some(serde_json::json!({ "output_tokens": output })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn retired_requests_remain_ignored_across_warm_turns_and_steers() {
+        let mut tracker = TurnUsageTracker::default();
+        for i in 0..128 {
+            assert_eq!(
+                tracker
+                    .start(Some(&message(&format!("request-{i}"), 10)))
+                    .unwrap()
+                    .output_tokens,
+                Some(10)
+            );
+            tracker.reset();
+        }
+        assert_eq!(tracker.start(Some(&message("request-0", 999))), None);
+        assert_eq!(tracker.message(&message("request-127", 999)), None);
+        assert_eq!(
+            tracker.delta(&UsageBody {
+                output_tokens: Some(999),
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(
+            tracker
+                .start(Some(&message("new", 7)))
+                .unwrap()
+                .output_tokens,
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn exhaustion_bounds_tracking_and_never_readmits_old_requests() {
+        let mut tracker = TurnUsageTracker::default();
+        for i in 0..MAX_TRACKED_REQUESTS {
+            tracker.start(Some(&message(&format!("request-{i}"), 10)));
+            tracker.reset();
+        }
+        assert_eq!(tracker.retired.len(), MAX_TRACKED_REQUESTS);
+        assert!(!tracker.exhausted);
+        assert_eq!(
+            tracker.start(Some(&message("overflow", 10))),
+            Some(TokenUsage::default())
+        );
+        assert!(tracker.exhausted);
+        assert!(tracker.retired.is_empty());
+        assert!(tracker.requests.is_empty());
+        for i in 0..MAX_TRACKED_REQUESTS {
+            assert_eq!(
+                tracker.start(Some(&message(&format!("request-{i}"), 999))),
+                None
+            );
+            tracker.reset();
+        }
+        assert_eq!(tracker.message(&message("new", 10)), None);
+        assert_eq!(tracker.generation(), None);
+        assert!(tracker.has_reports());
+        assert!(tracker.retired.is_empty());
+        assert!(tracker.requests.is_empty());
+    }
+
+    #[test]
+    fn an_active_request_at_capacity_can_still_update_and_deduplicate() {
+        let mut tracker = TurnUsageTracker::default();
+        for i in 0..MAX_TRACKED_REQUESTS - 1 {
+            tracker.message(&message(&format!("old-{i}"), 10));
+            tracker.reset();
+        }
+        tracker.start(Some(&message("active", 10)));
+        let report = tracker
+            .delta(&UsageBody {
+                output_tokens: Some(20),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(report.output_tokens, Some(20));
+        assert_eq!(
+            tracker
+                .message(&message("active", 10))
+                .unwrap()
+                .output_tokens,
+            Some(20)
+        );
+        assert!(!tracker.exhausted);
+        assert_eq!(
+            tracker.requests.len() + tracker.retired.len(),
+            MAX_TRACKED_REQUESTS
+        );
+    }
+
+    #[test]
+    fn oversized_request_ids_also_fall_back_without_retaining_them() {
+        let mut tracker = TurnUsageTracker::default();
+        let oversized = message(&"x".repeat(MAX_REQUEST_ID_BYTES + 1), 10);
+        assert_eq!(tracker.start(Some(&oversized)), Some(TokenUsage::default()));
+        assert!(tracker.exhausted);
+        assert!(tracker.current.is_none());
+        assert!(tracker.requests.is_empty());
+        assert!(tracker.retired.is_empty());
     }
 }

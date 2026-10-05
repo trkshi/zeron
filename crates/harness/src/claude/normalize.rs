@@ -1010,6 +1010,45 @@ mod tests {
             })
     }
 
+    #[test]
+    fn exhausted_live_tracking_still_preserves_final_usage_and_cost() {
+        let mut normalizer = Normalizer::new();
+        for i in 0..=super::super::usage::MAX_TRACKED_REQUESTS {
+            usage_frame(
+                &mut normalizer,
+                json!({
+                    "type": "assistant",
+                    "message": {"id": format!("request-{i}"), "usage": {"output_tokens": 10}}
+                }),
+            );
+            normalizer.reset_turn_usage();
+        }
+        assert_eq!(
+            usage_frame(
+                &mut normalizer,
+                json!({
+                    "type": "assistant", "message": {"id": "request-0", "usage": {"output_tokens": 999}}
+                })
+            ),
+            None
+        );
+        let result = || {
+            json!({
+                "type": "result", "subtype": "success", "total_cost_usd": 0.5,
+                "usage": {"input_tokens": 12, "output_tokens": 75,
+                    "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40}
+            })
+        };
+        let final_usage = usage_frame(&mut normalizer, result()).unwrap();
+        assert_eq!(final_usage.input_tokens, Some(82));
+        assert_eq!(final_usage.output_tokens, Some(75));
+        assert_eq!(final_usage.cost_usd, Some(0.5));
+        assert_eq!(final_usage.generation, None);
+        let next_turn = usage_frame(&mut normalizer, result()).unwrap();
+        assert_eq!(next_turn.output_tokens, Some(75));
+        assert_eq!(next_turn.cost_usd, Some(0.0));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn generation_is_per_request_survives_final_totals_and_ignores_child_timing() {
         use std::time::Duration;
