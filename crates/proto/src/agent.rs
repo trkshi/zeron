@@ -878,10 +878,13 @@ pub struct GenerationUsage {
     pub reasoning_output_tokens: Option<u64>,
     pub elapsed_ms: u64,
     pub ttft_ms: u64,
+    /// Client-observed streaming time rather than provider/server timing.
+    #[serde(default)]
+    pub estimated: bool,
 }
 
 impl GenerationUsage {
-    /// Match codex-lb: exclude reasoning from output and TTFT from elapsed time.
+    /// Exclude first-output wait and separately reported reasoning tokens.
     pub fn tps(self) -> Option<f64> {
         let output = self
             .output_tokens
@@ -950,6 +953,7 @@ mod token_usage_tests {
             reasoning_output_tokens: Some(40),
             elapsed_ms: 1000,
             ttft_ms: 200,
+            estimated: false,
         };
         assert_eq!(generation.tps(), Some(200.0));
         assert_eq!(
@@ -1001,6 +1005,26 @@ mod token_usage_tests {
         assert_eq!(
             serde_json::from_value::<TokenUsage>(serde_json::to_value(usage).unwrap()).unwrap(),
             usage
+        );
+    }
+
+    #[test]
+    fn generation_estimate_provenance_is_optional_for_older_documents() {
+        let mut usage: TokenUsage = serde_json::from_value(serde_json::json!({
+            "generation": {
+                "outputTokens": 120, "reasoningOutputTokens": 20,
+                "elapsedMs": 2000, "ttftMs": 0,
+            }
+        }))
+        .unwrap();
+        let generation = usage.generation.as_mut().unwrap();
+        assert!(!generation.estimated);
+        generation.estimated = true;
+        let value = serde_json::to_value(AgentEvent::TurnUsage { usage }).unwrap();
+        assert_eq!(value["usage"]["generation"]["estimated"], true);
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(value).unwrap(),
+            AgentEvent::TurnUsage { usage }
         );
     }
 

@@ -90,10 +90,15 @@ impl TokenStats {
     }
 
     fn generation_description(self) -> &'static str {
-        if self.generation_previous {
-            "Generation TPS (previous turn)"
-        } else {
-            "Generation TPS (latest request)"
+        match (
+            self.generation
+                .is_some_and(|generation| generation.estimated),
+            self.generation_previous,
+        ) {
+            (true, true) => "Estimated generation TPS (previous turn)",
+            (true, false) => "Estimated generation TPS (latest request)",
+            (false, true) => "Generation TPS (previous turn)",
+            (false, false) => "Generation TPS (latest request)",
         }
     }
 
@@ -108,10 +113,15 @@ impl TokenStats {
     }
 
     pub fn label(self) -> String {
-        self.generation
-            .and_then(GenerationUsage::tps)
-            .map(|tps| format!("{tps:.1} tok/s"))
+        self.generation_label()
             .unwrap_or_else(|| self.average_label())
+    }
+
+    fn generation_label(self) -> Option<String> {
+        let generation = self.generation?;
+        let tps = generation.tps()?;
+        let prefix = if generation.estimated { "~" } else { "" };
+        Some(format!("{prefix}{tps:.1} tok/s"))
     }
 
     fn average_label(self) -> String {
@@ -220,9 +230,7 @@ fn rows(stats: TokenStats) -> [(&'static str, String); 10] {
         (
             stats.generation_description(),
             stats
-                .generation
-                .and_then(GenerationUsage::tps)
-                .map(|tps| format!("{tps:.1} tok/s"))
+                .generation_label()
                 .unwrap_or_else(|| "Not reported".into()),
         ),
     ]
@@ -271,7 +279,11 @@ pub(crate) fn card(stats: TokenStats, theme: &Theme) -> gpui::Div {
                 .pb(px(6.0))
                 .text_size(px(11.0))
                 .text_color(theme.text_muted)
-                .child("Generation TPS excludes TTFT and reasoning tokens. Turn average includes tools and waiting."),
+                .child(if stats.generation.is_some_and(|generation| generation.estimated) {
+                    "Estimated from streamed output timing and reported tokens. Separately reported reasoning is excluded. Turn average includes tools and waiting."
+                } else {
+                    "Generation TPS excludes first-output wait and separately reported reasoning. Turn average includes tools and waiting."
+                }),
         )
 }
 
@@ -299,7 +311,33 @@ mod tests {
             reasoning_output_tokens: Some(40),
             elapsed_ms: 1000,
             ttft_ms: 200,
+            estimated: false,
         }
+    }
+
+    #[test]
+    fn client_measured_generation_is_distinguished_from_server_measurements() {
+        let mut generation = generation(100);
+        generation.estimated = true;
+        let entries = [assistant(Some(TokenUsage {
+            output_tokens: Some(400),
+            generation: Some(generation),
+            ..Default::default()
+        }))];
+        let stats = TokenStats::from_transcript(&entries, false);
+        assert_eq!(stats.label(), "~75.0 tok/s");
+        assert_eq!(
+            stats.rate_description(),
+            "Estimated generation TPS (latest request)"
+        );
+        assert_eq!(rows(stats)[9].1, "~75.0 tok/s");
+        assert_eq!(rows(stats)[7].1, "20.0 tok/s");
+        let working = TokenStats::from_transcript(&entries, true);
+        assert_eq!(working.label(), "~75.0 tok/s");
+        assert_eq!(
+            working.rate_description(),
+            "Estimated generation TPS (previous turn)"
+        );
     }
 
     #[test]

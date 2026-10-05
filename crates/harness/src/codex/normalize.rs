@@ -384,6 +384,7 @@ mod usage_tracker_tests {
             reasoning_output_tokens: Some(40),
             elapsed_ms: 1000,
             ttft_ms: 200,
+            estimated: false,
         };
         // Rollout telemetry can arrive before the app-server count notification.
         assert!(tracker.generation(generation).is_none());

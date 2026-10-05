@@ -2114,6 +2114,7 @@ async fn run_session(session: Session) {
                         break 'main;
                     }
                     BusMsg::Connected => {
+                        turn.usage.invalidate_open_timing();
                         // A RECONNECT mid-turn may have swallowed our idle
                         // (no replay): re-sync from the server's own status
                         // surface — not running means idle. Can't tell:
@@ -2720,6 +2721,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             match status.get("type").and_then(Value::as_str) {
                 Some("busy") => turn.idle_ready = true,
                 Some("retry") => {
+                    turn.usage.invalidate_open_timing();
                     turn.idle_ready = true;
                     let attempt = status.get("attempt").and_then(Value::as_u64).unwrap_or(0);
                     let message = status
@@ -2764,6 +2766,9 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             if name == "MessageAbortedError" {
                 // The abort echo of an interrupt — not an error chip.
                 return BusOutcome::Continue;
+            }
+            if turn.active {
+                turn.usage.invalidate_open_timing();
             }
             let message = error
                 .get("data")
@@ -2918,6 +2923,9 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                     true,
                     Some((children, pending_spawns, unbound_children)),
                 );
+                if turn.active {
+                    turn.usage.part_output(part, has_generated_output(&events));
+                }
                 mark_content(turn, &events);
                 let mut settle: Vec<AgentEvent> = Vec::new();
                 // A completed `task` part settles its child chip.
@@ -2984,6 +2992,17 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             }
             if session == session_id {
                 let events = part_delta_events(main_feed, props, part_id, delta);
+                let message = props
+                    .get("messageID")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if turn.active
+                    && !delta.is_empty()
+                    && (has_generated_output(&events)
+                        || !main_feed.assistant_messages.contains_key(message))
+                {
+                    turn.usage.output(message);
+                }
                 mark_content(turn, &events);
                 return forward(event_tx, events).await;
             }
@@ -2995,6 +3014,19 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                 let parent = child.parent_tool_use_id.clone();
                 let tagged = events.into_iter().map(|ev| tag(&parent, ev)).collect();
                 return forward(event_tx, tagged).await;
+            }
+            BusOutcome::Continue
+        }
+        "message.generation.delta" => {
+            if is_ours
+                && turn.active
+                && props
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .is_some_and(|delta| !delta.is_empty())
+                && let Some(message) = props.get("messageID").and_then(Value::as_str)
+            {
+                turn.usage.output(message);
             }
             BusOutcome::Continue
         }
@@ -3178,6 +3210,13 @@ async fn forward(
         }
     }
     BusOutcome::Continue
+}
+
+fn has_generated_output(events: &[AgentEvent]) -> bool {
+    events.iter().any(|event| match event {
+        AgentEvent::TextDelta { text } | AgentEvent::ReasoningDelta { text } => !text.is_empty(),
+        _ => false,
+    })
 }
 
 fn mark_content(turn: &mut TurnState, events: &[AgentEvent]) {
@@ -3891,6 +3930,13 @@ fn normalize_v2_frame_with_session_models(
                 &json!({ "status": "pending" }),
             )]
         }
+        "session.tool.input.delta" => vec![json!({
+            "type": "message.generation.delta",
+            "properties": {
+                "sessionID": session(), "messageID": message(),
+                "delta": data.get("delta").cloned().unwrap_or(json!("")),
+            }
+        })],
         "session.tool.called" => {
             let id = data.get("id").and_then(Value::as_str).unwrap_or_default();
             let name = tool_names

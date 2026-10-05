@@ -108,6 +108,18 @@ Zeron release.
   with the turn for reconnects and device sync. Unsupported/older Codex
   rollouts keep the prior average display; existing history is not remeasured.
   Reported cost is unchanged and is not inferred from codex-lb pricing.
+- Add client-measured generation TPS for Claude Code and OpenCode. Pair real
+  request output counts with the first-to-last streamed output window, not
+  tool execution, initial waiting, or the later whole-turn result. Mark these
+  rates with `~` and **Estimated generation TPS**; codex-lb's server-measured
+  rate keeps its existing label. Exclude reasoning only when separately
+  reported, and never derive token counts from visible text. Keep whole-turn
+  average TPS and recorded thread totals in the popover. Requests without a
+  measurable stream keep the average fallback. Retain readings between
+  reports, deduplicate request echoes, and discard incomplete/reconnected
+  timing instead of guessing. Persist estimates with the turn; existing
+  history is not remeasured. Remote use requires an updated Ubuntu engine
+  as well as the Windows app.
 - Retain upstream's `Shift+Backspace` fix: holding Shift while pressing
   Backspace still deletes backward or removes the selected text in the
   composer and search inputs.

@@ -441,18 +441,24 @@ impl Normalizer {
             Frame::StreamEvent(f) => {
                 if f.parent_tool_use_id.is_none() {
                     let usage = match f.event.kind.as_str() {
-                        "message_start" => f
-                            .event
-                            .message
-                            .as_ref()
-                            .and_then(|message| self.turn_usage.start(message)),
+                        "message_start" => self.turn_usage.start(f.event.message.as_ref()),
                         "message_delta" => f
                             .event
                             .usage
                             .as_ref()
                             .and_then(|usage| self.turn_usage.delta(usage)),
-                        "message_stop" => {
-                            self.turn_usage.stop();
+                        "message_stop" => self.turn_usage.stop(),
+                        "content_block_delta" => {
+                            let delta = &f.event.delta;
+                            let has_output = match delta.kind.as_str() {
+                                "text_delta" => !delta.text.is_empty(),
+                                "thinking_delta" => !delta.thinking.is_empty(),
+                                "input_json_delta" => !delta.partial_json.is_empty(),
+                                _ => false,
+                            };
+                            if has_output {
+                                self.turn_usage.output();
+                            }
                             None
                         }
                         _ => None,
@@ -745,6 +751,7 @@ impl Normalizer {
                     .map(|(cost, previous)| cost - previous);
                 let turn_usage = TokenUsage {
                     cost_usd,
+                    generation: self.turn_usage.generation(),
                     ..f.usage.token_usage()
                 };
                 let had_live_usage = self.turn_usage.has_reports();
@@ -988,6 +995,189 @@ mod tests {
                 .output_tokens,
             Some(20)
         );
+    }
+
+    fn usage_frame(normalizer: &mut Normalizer, value: Value) -> Option<TokenUsage> {
+        normalizer
+            .normalize(
+                super::super::wire::parse_frame(&value.to_string()).unwrap(),
+                false,
+            )
+            .into_iter()
+            .find_map(|event| match event {
+                AgentEvent::TurnUsage { usage } => Some(usage),
+                _ => None,
+            })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn generation_is_per_request_survives_final_totals_and_ignores_child_timing() {
+        use std::time::Duration;
+        let mut normalizer = Normalizer::new();
+        let start = |id: &str| {
+            json!({"type": "stream_event", "event": {
+                "type": "message_start", "message": {"id": id, "usage": {"output_tokens": 0}}
+            }})
+        };
+        let text = |parent: Option<&str>| {
+            json!({"type": "stream_event", "parent_tool_use_id": parent,
+                "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "output"}}
+            })
+        };
+        let stop = json!({"type": "stream_event", "event": {"type": "message_stop"}});
+        usage_frame(&mut normalizer, start("first"));
+        tokio::time::advance(Duration::from_secs(20)).await;
+        usage_frame(&mut normalizer, text(None));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        usage_frame(&mut normalizer, text(None));
+        let provisional = usage_frame(&mut normalizer, json!({"type": "stream_event", "event": {
+            "type": "message_delta", "usage": {"output_tokens": 100, "output_tokens_details": {"thinking_tokens": 20}}
+        }})).unwrap();
+        assert_eq!(provisional.generation, None);
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let first = usage_frame(&mut normalizer, stop.clone())
+            .unwrap()
+            .generation
+            .unwrap();
+        assert!(first.estimated);
+        assert_eq!(first.elapsed_ms, 1000);
+        assert_eq!(first.tps(), Some(80.0));
+
+        usage_frame(&mut normalizer, start("second"));
+        assert_eq!(normalizer.turn_usage.generation(), Some(first));
+        usage_frame(
+            &mut normalizer,
+            json!({"type": "stream_event", "event": {
+                "type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "thinking"}
+            }}),
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        usage_frame(&mut normalizer, text(None));
+        tokio::time::advance(Duration::from_secs(30)).await;
+        usage_frame(&mut normalizer, text(Some("child")));
+        usage_frame(
+            &mut normalizer,
+            json!({"type": "stream_event", "parent_tool_use_id": "child", "event": {
+                "type": "message_delta", "usage": {"output_tokens": 9999}
+            }}),
+        );
+        usage_frame(
+            &mut normalizer,
+            json!({"type": "stream_event", "event": {
+                "type": "message_delta", "usage": {"output_tokens": 300, "output_tokens_details": {"thinking_tokens": 100}}
+            }}),
+        );
+        let report = usage_frame(&mut normalizer, stop).unwrap();
+        let second = report.generation.unwrap();
+        assert_eq!(second.output_tokens, 300);
+        assert_eq!(second.elapsed_ms, 2000);
+        assert_eq!(second.tps(), Some(100.0));
+        assert_eq!(report.output_tokens, Some(400));
+        // A repeated older envelope cannot win by hash-map iteration order.
+        let echo = json!({"type": "assistant", "message": {"id": "first", "usage": {"output_tokens": 100}}});
+        assert_eq!(
+            usage_frame(&mut normalizer, echo.clone())
+                .unwrap()
+                .generation,
+            Some(second)
+        );
+        assert_eq!(
+            usage_frame(&mut normalizer, echo).unwrap().output_tokens,
+            Some(400)
+        );
+        let events = normalizer.normalize(
+            super::super::wire::parse_frame(
+                &json!({
+                    "type": "result", "subtype": "success", "usage": {"output_tokens": 500}
+                })
+                .to_string(),
+            )
+            .unwrap(),
+            false,
+        );
+        let final_report = events
+            .iter()
+            .find_map(|event| match event {
+                AgentEvent::TurnUsage { usage } => Some(*usage),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(final_report.output_tokens, Some(500));
+        assert_eq!(final_report.generation, Some(second));
+        assert!(matches!(events.last(), Some(AgentEvent::Done { .. })));
+        assert_eq!(normalizer.turn_usage.generation(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tool_input_streams_are_timed_but_empty_and_signature_deltas_are_not() {
+        use std::time::Duration;
+        let mut normalizer = Normalizer::new();
+        usage_frame(
+            &mut normalizer,
+            json!({"type": "stream_event", "event": {
+                "type": "message_start", "message": {"id": "tool-request"}
+            }}),
+        );
+        let delta = |kind: &str, text: &str| {
+            json!({"type": "stream_event", "event": {
+                "type": "content_block_delta", "delta": {"type": kind, "partial_json": text}
+            }})
+        };
+        usage_frame(&mut normalizer, delta("input_json_delta", ""));
+        tokio::time::advance(Duration::from_secs(20)).await;
+        usage_frame(&mut normalizer, delta("input_json_delta", "{\"command\":"));
+        tokio::time::advance(Duration::from_secs(2)).await;
+        usage_frame(&mut normalizer, delta("input_json_delta", "\"pwd\"}"));
+        tokio::time::advance(Duration::from_secs(20)).await;
+        usage_frame(&mut normalizer, delta("signature_delta", "signature"));
+        usage_frame(
+            &mut normalizer,
+            json!({"type": "stream_event", "event": {
+                "type": "message_delta", "usage": {"output_tokens": 100}
+            }}),
+        );
+        let report = usage_frame(
+            &mut normalizer,
+            json!({"type": "stream_event", "event": {"type": "message_stop"}}),
+        )
+        .unwrap();
+        let generation = report.generation.unwrap();
+        assert_eq!(generation.elapsed_ms, 2000);
+        assert_eq!(generation.reasoning_output_tokens, None);
+        assert_eq!(generation.tps(), Some(50.0));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn confirmed_steering_discards_old_generation_windows() {
+        use std::time::Duration;
+        let mut normalizer = Normalizer::new();
+        let start = json!({"type": "stream_event", "event": {
+            "type": "message_start", "message": {"id": "retired", "usage": {"output_tokens": 100}}
+        }});
+        let delta = json!({"type": "stream_event", "event": {
+            "type": "content_block_delta", "delta": {"type": "text_delta", "text": "output"}
+        }});
+        usage_frame(&mut normalizer, start.clone());
+        usage_frame(&mut normalizer, delta.clone());
+        tokio::time::advance(Duration::from_secs(2)).await;
+        usage_frame(&mut normalizer, delta.clone());
+        normalizer.reset_turn_usage();
+        usage_frame(&mut normalizer, start);
+        usage_frame(&mut normalizer, delta);
+        assert_eq!(
+            usage_frame(
+                &mut normalizer,
+                json!({"type": "stream_event", "event": {"type": "message_stop"}})
+            ),
+            None
+        );
+        let usage = usage_frame(
+            &mut normalizer,
+            json!({"type": "result", "subtype": "success", "usage": {"output_tokens": 10}}),
+        )
+        .unwrap();
+        assert_eq!(usage.output_tokens, Some(10));
+        assert_eq!(usage.generation, None);
     }
 
     #[test]

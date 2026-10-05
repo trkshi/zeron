@@ -2059,6 +2059,7 @@ mod tests {
                 reasoning_output_tokens: Some(40),
                 elapsed_ms: 1000,
                 ttft_ms: 200,
+                estimated: true,
             }),
             ..Default::default()
         };

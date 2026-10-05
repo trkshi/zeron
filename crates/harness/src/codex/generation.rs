@@ -54,6 +54,7 @@ impl ResponseMetrics {
             reasoning_output_tokens: self.reasoning_output_tokens,
             elapsed_ms: self.elapsed_ms?,
             ttft_ms: self.ttft_ms?,
+            estimated: false,
         };
         usage.tps().map(|_| usage)
     }

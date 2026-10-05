@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use zeron_proto::TokenUsage;
+use zeron_proto::{GenerationUsage, TokenUsage};
+
+use crate::generation::GenerationTimer;
 
 use super::wire::{MessageBody, UsageBody};
 
@@ -8,10 +10,17 @@ use super::wire::{MessageBody, UsageBody};
 /// separate from Zeron's display IDs so repeated usage never adds twice.
 #[derive(Default)]
 pub(super) struct TurnUsageTracker {
-    requests: HashMap<String, UsageBody>,
+    requests: HashMap<String, RequestUsage>,
     retired: HashSet<String>,
     current: Option<String>,
     incomplete: bool,
+}
+
+#[derive(Default)]
+struct RequestUsage {
+    usage: UsageBody,
+    timing: GenerationTimer,
+    order: usize,
 }
 
 impl TurnUsageTracker {
@@ -25,17 +34,44 @@ impl TurnUsageTracker {
         !self.requests.is_empty()
     }
 
-    pub fn start(&mut self, message: &MessageBody) -> Option<TokenUsage> {
+    pub fn start(&mut self, message: Option<&MessageBody>) -> Option<TokenUsage> {
         self.current = message
-            .id
-            .as_ref()
+            .and_then(|message| message.id.as_ref())
             .filter(|id| !id.is_empty() && !self.retired.contains(*id))
             .cloned();
-        self.message(message)
+        self.message(message?)
     }
 
-    pub fn stop(&mut self) {
-        self.current = None;
+    pub fn output(&mut self) {
+        if let Some(request) = self
+            .current
+            .as_ref()
+            .and_then(|id| self.requests.get_mut(id))
+        {
+            request.timing.output();
+        }
+    }
+
+    pub fn stop(&mut self) -> Option<TokenUsage> {
+        let id = self.current.take()?;
+        self.requests.get_mut(&id)?.timing.finish();
+        self.snapshot()
+    }
+
+    pub fn generation(&self) -> Option<GenerationUsage> {
+        if self.incomplete {
+            return None;
+        }
+        self.requests
+            .values()
+            .filter_map(|request| {
+                Some((
+                    request.order,
+                    request.timing.generation(request.usage.token_usage())?,
+                ))
+            })
+            .max_by_key(|(order, _)| *order)
+            .map(|(_, generation)| generation)
     }
 
     pub fn message(&mut self, message: &MessageBody) -> Option<TokenUsage> {
@@ -49,13 +85,20 @@ impl TurnUsageTracker {
         if self.retired.contains(id) {
             return None;
         }
-        let report = self.requests.entry(id.clone()).or_default();
+        let order = self.requests.len();
+        let report = self
+            .requests
+            .entry(id.clone())
+            .or_insert_with(|| RequestUsage {
+                order,
+                ..Default::default()
+            });
         if let Some(usage) = message
             .usage
             .as_ref()
             .and_then(|value| serde_json::from_value::<UsageBody>(value.clone()).ok())
         {
-            merge(report, usage);
+            merge(&mut report.usage, usage);
         }
         self.snapshot()
     }
@@ -64,7 +107,7 @@ impl TurnUsageTracker {
         let report = self.requests.get_mut(self.current.as_ref()?)?;
         // message_delta contains cumulative counters for this request, not
         // token increments, and normally omits the initial input/cache data.
-        merge(report, usage.clone());
+        merge(&mut report.usage, usage.clone());
         self.snapshot()
     }
 
@@ -72,7 +115,10 @@ impl TurnUsageTracker {
         if self.incomplete {
             return Some(TokenUsage::default());
         }
-        let mut reports = self.requests.values().map(UsageBody::token_usage);
+        let mut reports = self
+            .requests
+            .values()
+            .map(|request| request.usage.token_usage());
         let mut total = reports.next()?;
         let add = |a: Option<u64>, b: Option<u64>| a?.checked_add(b?);
         for usage in reports {
@@ -91,6 +137,7 @@ impl TurnUsageTracker {
                 ..Default::default()
             };
         }
+        total.generation = self.generation();
         Some(total)
     }
 }
