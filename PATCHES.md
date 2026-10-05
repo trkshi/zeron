@@ -56,12 +56,13 @@ Zeron release.
   divided by the entire turn's wall-clock duration, including startup, tools,
   and waiting; it is not raw model-generation speed. Keep the previous turn's
   rate until the new turn reports output instead of showing **Measuring**.
-  Stream reported counts into the footer during the turn and advance the
-  live average every second locally, including tool and input waits, without
-  additional provider requests. The popover distinguishes live, previous,
-  and completed-turn rates. Tool/thinking text never substitutes for token
-  telemetry. Show **Not reported** for
-  unavailable fields, and retain earlier reported counts when a later turn
+  Stream reported counts into the footer during the turn. Update the live
+  average with each new count/duration snapshot and hold that reading between
+  reports, including during tool and input waits, without additional provider
+  requests. The final average uses the full turn duration. The popover
+  distinguishes live, previous, and completed-turn rates. Tool/thinking text
+  never substitutes for token telemetry. Show **Not reported** for unavailable
+  fields, and retain earlier reported counts when a later turn
   omits them. Cache is included in
   input and reasoning in output, never added again to the totals.
   Persist Claude, Codex, and OpenCode reports with each assistant turn so

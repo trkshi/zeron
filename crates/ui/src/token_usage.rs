@@ -1,6 +1,4 @@
 //! Reported thread totals and live turn-average TPS come from the transcript.
-use std::time::Instant;
-
 use gpui::{SharedString, div, prelude::*, px};
 use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
 use zeron_proto::TokenUsage;
@@ -61,22 +59,13 @@ impl TokenStats {
             }
         });
         if let Some(entry) = entry {
+            // Keep counts paired with their reported duration. Advancing only
+            // elapsed time would decay TPS without fresh token telemetry.
             stats.turn_usage = entry.token_usage.as_deref().copied();
             stats.duration_ms = entry.duration_ms;
         }
         stats.previous = working && !stats.live;
         stats
-    }
-
-    pub fn with_elapsed(mut self, elapsed_ms: Option<i64>) -> Self {
-        if self.live {
-            self.duration_ms = elapsed_ms.or(self.duration_ms);
-        }
-        self
-    }
-
-    pub fn is_live(self) -> bool {
-        self.live
     }
 
     pub fn rate_description(self) -> &'static str {
@@ -112,74 +101,6 @@ fn is_turn(entry: &SessionMessageEntry) -> bool {
             )
         });
     entry.role == MessageRole::Assistant && !standalone_question
-}
-
-/// Advance the host's elapsed snapshot locally, independent of Windows/host
-/// clock skew. This repaint clock never probes the provider for usage.
-#[derive(Default)]
-pub(crate) struct LiveTurnClock {
-    reading: Option<LiveReading>,
-}
-
-struct LiveReading {
-    entry_id: String,
-    source_ms: i64,
-    elapsed_ms: i64,
-    at: Instant,
-}
-
-impl LiveTurnClock {
-    pub fn elapsed_ms(
-        &mut self,
-        entries: &[SessionMessageEntry],
-        host_updated_ms: Option<i64>,
-        now: Instant,
-    ) -> Option<i64> {
-        let entry = entries.iter().rev().find(|entry| is_turn(entry));
-        let snapshot = entry.filter(|entry| entry.status == Some(MessageStatus::Streaming));
-        let Some((entry, mut duration)) =
-            snapshot.and_then(|entry| Some((entry, entry.duration_ms.filter(|ms| *ms > 0)?)))
-        else {
-            self.reading = None;
-            return None;
-        };
-        // A reopened chat may already be deep into a quiet tool. Its host
-        // heartbeat is newer than the last token report and shares its clock.
-        if entry.created_at > 0
-            && let Some(host_updated_ms) = host_updated_ms
-        {
-            duration = duration.max(host_updated_ms.saturating_sub(entry.created_at));
-        }
-        if !self
-            .reading
-            .as_ref()
-            .is_some_and(|reading| reading.entry_id == entry.id && reading.source_ms == duration)
-        {
-            let previous = self
-                .reading
-                .as_ref()
-                .filter(|reading| reading.entry_id == entry.id)
-                .map(|reading| {
-                    let since = now.saturating_duration_since(reading.at).as_millis();
-                    reading
-                        .elapsed_ms
-                        .saturating_add(since.min(i64::MAX as u128) as i64)
-                });
-            self.reading = Some(LiveReading {
-                entry_id: entry.id.clone(),
-                source_ms: duration,
-                elapsed_ms: previous.map_or(duration, |previous| previous.max(duration)),
-                at: now,
-            });
-        }
-        let reading = self.reading.as_ref()?;
-        let since = now.saturating_duration_since(reading.at).as_millis();
-        Some(
-            reading
-                .elapsed_ms
-                .saturating_add(since.min(i64::MAX as u128) as i64),
-        )
-    }
 }
 
 fn thread_usage(entries: &[SessionMessageEntry]) -> TokenUsage {
@@ -347,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn live_rate_replaces_the_previous_turn_and_advances_during_tools() {
+    fn live_rate_replaces_the_previous_turn_when_output_is_reported() {
         let previous = assistant(Some(TokenUsage {
             output_tokens: Some(400),
             ..Default::default()
@@ -371,22 +292,66 @@ mod tests {
         );
         entries[1].token_usage.as_mut().unwrap().output_tokens = Some(100);
         let live = TokenStats::from_transcript(&entries, true);
-        assert!(live.is_live());
+        assert!(live.live);
         assert_eq!(live.label(), "10.0 tok/s");
         assert_eq!(live.rate_description(), "Live average TPS");
-        let waiting = live.with_elapsed(Some(20_000));
-        assert_eq!(waiting.label(), "5.0 tok/s");
-        assert_eq!(rows(waiting)[1].1, "500");
+        assert_eq!(rows(live)[1].1, "500");
+    }
+
+    #[test]
+    fn live_rate_holds_between_reports_and_uses_new_snapshot_duration() {
+        let mut current = assistant(Some(TokenUsage {
+            output_tokens: Some(100),
+            ..Default::default()
+        }));
+        current.status = Some(MessageStatus::Streaming);
+        current.duration_ms = Some(10_000);
+        let mut entries = [current];
+        let first = TokenStats::from_transcript(&entries, true);
+        assert_eq!(first.label(), "10.0 tok/s");
+
+        entries[0].parts.push(MessagePart::Reasoning {
+            id: "reasoning".into(),
+            text: "Still working".into(),
+        });
+        assert_eq!(TokenStats::from_transcript(&entries, true), first);
+        entries[0].parts.push(MessagePart::Text {
+            id: "text".into(),
+            text: "More content without a new token report".into(),
+        });
+        assert_eq!(TokenStats::from_transcript(&entries, true), first);
+        let reopened = entries.clone();
+        assert_eq!(TokenStats::from_transcript(&reopened, true), first);
+
+        entries[0].token_usage.as_mut().unwrap().output_tokens = Some(200);
+        entries[0].duration_ms = Some(25_000);
+        let updated = TokenStats::from_transcript(&entries, true);
+        assert_eq!(updated.label(), "8.0 tok/s");
+        assert_eq!(updated.rate_description(), "Live average TPS");
+        assert_eq!(rows(updated)[1].1, "200");
+        assert_eq!(TokenStats::from_transcript(&entries, true), updated);
+    }
+
+    #[test]
+    fn completed_rate_uses_full_turn_duration_including_waiting() {
+        let mut current = assistant(Some(TokenUsage {
+            output_tokens: Some(100),
+            ..Default::default()
+        }));
+        current.status = Some(MessageStatus::Streaming);
+        current.duration_ms = Some(10_000);
+        let mut entries = [current];
         assert_eq!(
-            rows(TokenStats::from_transcript(&entries, true))[1].1,
-            "500"
+            TokenStats::from_transcript(&entries, true).label(),
+            "10.0 tok/s"
         );
-        entries[1].status = Some(MessageStatus::Complete);
-        entries[1].duration_ms = Some(20_000);
+        entries[0].status = Some(MessageStatus::Complete);
+        entries[0].duration_ms = Some(20_000);
         let completed = TokenStats::from_transcript(&entries, false);
-        assert!(!completed.is_live());
+        assert!(!completed.live);
         assert_eq!(completed.label(), "5.0 tok/s");
-        assert_eq!(completed.with_elapsed(Some(30_000)).label(), "5.0 tok/s");
+        assert_eq!(completed.rate_description(), "Average TPS (last turn)");
+        assert_eq!(rows(completed)[1].1, "100");
     }
 
     #[test]
@@ -397,29 +362,6 @@ mod tests {
             TokenStats::from_transcript(&[current], true).label(),
             "- tok/s"
         );
-    }
-
-    #[test]
-    fn live_clock_uses_host_duration_and_resets_on_reports_and_turn_changes() {
-        let now = Instant::now();
-        let mut clock = LiveTurnClock::default();
-        let mut current = assistant(None);
-        current.status = Some(MessageStatus::Streaming);
-        let mut entries = [current];
-        assert_eq!(clock.elapsed_ms(&entries, None, now), Some(20_000));
-        let later = now + std::time::Duration::from_secs(5);
-        assert_eq!(clock.elapsed_ms(&entries, None, later), Some(25_000));
-        entries[0].duration_ms = Some(30_000);
-        assert_eq!(clock.elapsed_ms(&entries, None, later), Some(30_000));
-        entries[0].id = "next".into();
-        entries[0].duration_ms = Some(1000);
-        assert_eq!(clock.elapsed_ms(&entries, None, later), Some(1000));
-        assert_eq!(
-            clock.elapsed_ms(&entries, Some(entries[0].created_at + 60_000), later),
-            Some(60_000)
-        );
-        entries[0].status = Some(MessageStatus::Complete);
-        assert_eq!(clock.elapsed_ms(&entries, None, later), None);
     }
 
     #[test]

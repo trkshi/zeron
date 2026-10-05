@@ -116,8 +116,6 @@ pub struct AccountUsage {
     chat_id: Option<String>,
     compact: bool,
     icons_only: bool,
-    tps_clock: crate::token_usage::LiveTurnClock,
-    tps_tick: Option<Task<()>>,
     _poll: Task<()>,
     _cache: Subscription,
     _state: Subscription,
@@ -174,8 +172,6 @@ impl AccountUsage {
             chat_id: None,
             compact: false,
             icons_only: false,
-            tps_clock: crate::token_usage::LiveTurnClock::default(),
-            tps_tick: None,
             _poll: poll,
             // Settings → Accounts writes the same cache.
             _cache: cx.observe_global::<AccountsSnapshotCache>(|_, cx| cx.notify()),
@@ -596,7 +592,6 @@ impl Render for AccountUsage {
         if self.chat_id != chat_id {
             self.dismiss(window, cx);
             self.chat_id = chat_id;
-            self.tps_clock = crate::token_usage::LiveTurnClock::default();
         }
         let theme = Theme::of(cx).clone();
         let (context, stats) = {
@@ -608,35 +603,11 @@ impl Render for AccountUsage {
                         | zeron_proto::view::Indicator::AwaitingInput
                 )
             });
-            let host_updated_ms = state
-                .selected_chat
-                .as_deref()
-                .and_then(|chat| state.session_for(chat))
-                .map(|session| session.updated_at.timestamp_millis());
             (
                 state.context_usage,
-                crate::token_usage::TokenStats::from_transcript(&state.transcript, working)
-                    .with_elapsed(self.tps_clock.elapsed_ms(
-                        &state.transcript,
-                        host_updated_ms,
-                        Instant::now(),
-                    )),
+                crate::token_usage::TokenStats::from_transcript(&state.transcript, working),
             )
         };
-        if stats.is_live() && self.window_active {
-            if self.tps_tick.is_none() {
-                self.tps_tick = Some(cx.spawn(async move |this, cx| {
-                    loop {
-                        cx.background_executor().timer(Duration::from_secs(1)).await;
-                        if this.update(cx, |_, cx| cx.notify()).is_err() {
-                            break;
-                        }
-                    }
-                }));
-            }
-        } else {
-            self.tps_tick = None;
-        }
         let account = self.fraction(cx).map(|fraction| {
             let level = usage_level(fraction);
             let chip = crate::context_usage::ring_chip(

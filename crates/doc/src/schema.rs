@@ -1309,8 +1309,8 @@ impl<'a> SegmentWriter<'a> {
                 Some(loro::ValueOrContainer::Value(LoroValue::String(previous)))
                     if previous.as_str() == encoded
             );
-            // Do not turn each text append into a full transcript upsert just
-            // to tick elapsed time. The UI advances this snapshot locally.
+            // Keep duration paired with the counts; text-only changes do not
+            // need a full transcript upsert just to tick elapsed time.
             if !unchanged {
                 map.insert("tokenUsage", encoded)?;
                 if self.created_at > 0 {
