@@ -1,13 +1,11 @@
 name: Release-profile tests
 
 # Pull-request and main CI test the dev profile (fast rebuilds). This runs the
-# same Linux suites once a day against the optimized release profile that
+# same Linux suites manually against the optimized release profile that
 # ships, so optimization-only failures still surface. It does not save a Rust
 # cache, so it cannot evict the main-seeded caches pull requests depend on.
 
 on:
-  schedule:
-    - cron: '17 7 * * *'
   workflow_dispatch:
 
 permissions:
