@@ -563,7 +563,7 @@ impl FilesSurface {
             .child(
                 header_action(
                     "files-sections-fork",
-                    icons::GIT_BRANCH,
+                    icons::FORK,
                     "Fork this chat",
                     theme,
                 )
@@ -838,7 +838,7 @@ impl FilesSurface {
                 .child(
                     pill_button(
                         "files-sections-empty-fork",
-                        icons::GIT_BRANCH,
+                        icons::FORK,
                         "Fork",
                         theme,
                     )

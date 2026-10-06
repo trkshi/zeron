@@ -4,6 +4,7 @@
 //! Context occupancy and `TurnUsage` replicate per chat; legacy `Usage` stays probe-only.
 
 pub mod agent;
+pub mod attachment_mentions;
 pub mod entities;
 pub mod file_mentions;
 pub mod invocation;
