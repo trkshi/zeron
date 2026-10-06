@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use zeron_proto::{GenerationUsage, TokenUsage};
-
-use crate::generation::GenerationTimer;
+use zeron_proto::TokenUsage;
 
 use super::wire::{MessageBody, UsageBody};
 
@@ -13,18 +11,11 @@ const MAX_REQUEST_ID_BYTES: usize = 256;
 /// separate from Zeron's display IDs so repeated usage never adds twice.
 #[derive(Default)]
 pub(super) struct TurnUsageTracker {
-    requests: HashMap<String, RequestUsage>,
+    requests: HashMap<String, UsageBody>,
     retired: HashSet<String>,
     current: Option<String>,
     incomplete: bool,
     exhausted: bool,
-}
-
-#[derive(Default)]
-struct RequestUsage {
-    usage: UsageBody,
-    timing: GenerationTimer,
-    order: usize,
 }
 
 impl TurnUsageTracker {
@@ -47,36 +38,8 @@ impl TurnUsageTracker {
         usage
     }
 
-    pub fn output(&mut self) {
-        if let Some(request) = self
-            .current
-            .as_ref()
-            .and_then(|id| self.requests.get_mut(id))
-        {
-            request.timing.output();
-        }
-    }
-
-    pub fn stop(&mut self) -> Option<TokenUsage> {
-        let id = self.current.take()?;
-        self.requests.get_mut(&id)?.timing.finish();
-        self.snapshot()
-    }
-
-    pub fn generation(&self) -> Option<GenerationUsage> {
-        if self.incomplete {
-            return None;
-        }
-        self.requests
-            .values()
-            .filter_map(|request| {
-                Some((
-                    request.order,
-                    request.timing.generation(request.usage.token_usage())?,
-                ))
-            })
-            .max_by_key(|(order, _)| *order)
-            .map(|(_, generation)| generation)
+    pub fn stop(&mut self) {
+        self.current = None;
     }
 
     pub fn message(&mut self, message: &MessageBody) -> Option<TokenUsage> {
@@ -106,20 +69,13 @@ impl TurnUsageTracker {
             self.retired = HashSet::new();
             return Some(TokenUsage::default());
         }
-        let order = self.requests.len();
-        let report = self
-            .requests
-            .entry(id.clone())
-            .or_insert_with(|| RequestUsage {
-                order,
-                ..Default::default()
-            });
+        let report = self.requests.entry(id.clone()).or_default();
         if let Some(usage) = message
             .usage
             .as_ref()
             .and_then(|value| serde_json::from_value::<UsageBody>(value.clone()).ok())
         {
-            merge(&mut report.usage, usage);
+            merge(report, usage);
         }
         self.snapshot()
     }
@@ -128,7 +84,7 @@ impl TurnUsageTracker {
         let report = self.requests.get_mut(self.current.as_ref()?)?;
         // message_delta contains cumulative counters for this request, not
         // token increments, and normally omits the initial input/cache data.
-        merge(&mut report.usage, usage.clone());
+        merge(report, usage.clone());
         self.snapshot()
     }
 
@@ -136,10 +92,7 @@ impl TurnUsageTracker {
         if self.incomplete {
             return Some(TokenUsage::default());
         }
-        let mut reports = self
-            .requests
-            .values()
-            .map(|request| request.usage.token_usage());
+        let mut reports = self.requests.values().map(UsageBody::token_usage);
         let mut total = reports.next()?;
         let add = |a: Option<u64>, b: Option<u64>| a?.checked_add(b?);
         for usage in reports {
@@ -158,7 +111,6 @@ impl TurnUsageTracker {
                 ..Default::default()
             };
         }
-        total.generation = self.generation();
         Some(total)
     }
 }
@@ -249,7 +201,6 @@ mod tests {
             tracker.reset();
         }
         assert_eq!(tracker.message(&message("new", 10)), None);
-        assert_eq!(tracker.generation(), None);
         assert!(tracker.has_reports());
         assert!(tracker.retired.is_empty());
         assert!(tracker.requests.is_empty());

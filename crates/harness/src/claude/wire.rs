@@ -78,8 +78,6 @@ pub(crate) struct Delta {
     pub text: String,
     #[serde(default)]
     pub thinking: String,
-    #[serde(default)]
-    pub partial_json: String,
 }
 
 /// An `assistant` or `user` frame (an Anthropic API message envelope).

@@ -104,11 +104,7 @@ pub(crate) fn card(stats: TokenStats, theme: &Theme) -> gpui::Div {
                 .pb(px(6.0))
                 .text_size(px(11.0))
                 .text_color(theme.text_muted)
-                .child(if stats.generation.is_some_and(|generation| generation.estimated) {
-                    "Estimated from streamed output timing and reported tokens. Separately reported reasoning is excluded. Turn average includes tools and waiting."
-                } else {
-                    "Generation TPS excludes first-output wait and separately reported reasoning. Turn average includes tools and waiting."
-                }),
+                .child("Generation TPS excludes first-output wait and separately reported reasoning. Turn average includes tools and waiting."),
         )
 }
 
@@ -141,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn client_measured_generation_is_distinguished_from_server_measurements() {
+    fn saved_client_arrival_estimates_fall_back_to_turn_average() {
         let mut generation = generation(100);
         generation.estimated = true;
         let entries = [assistant(Some(TokenUsage {
@@ -150,19 +146,50 @@ mod tests {
             ..Default::default()
         }))];
         let stats = TokenStats::from_transcript(&entries, false);
-        assert_eq!(stats.label(), "~75.0 tok/s");
-        assert_eq!(
-            stats.rate_description(),
-            "Estimated generation TPS (latest request)"
-        );
-        assert_eq!(rows(stats)[9].1, "~75.0 tok/s");
+        assert_eq!(stats.label(), "20.0 tok/s");
+        assert_eq!(stats.rate_description(), "Average TPS (last turn)");
+        assert_eq!(rows(stats)[9].1, "Not reported");
         assert_eq!(rows(stats)[7].1, "20.0 tok/s");
         let working = TokenStats::from_transcript(&entries, true);
-        assert_eq!(working.label(), "~75.0 tok/s");
+        assert_eq!(working.label(), "20.0 tok/s");
         assert_eq!(
             working.rate_description(),
-            "Estimated generation TPS (previous turn)"
+            "Average TPS (previous turn)"
         );
+    }
+
+    #[test]
+    fn live_client_arrival_estimates_cannot_replace_average_or_server_rates() {
+        let previous = assistant(Some(TokenUsage {
+            output_tokens: Some(200),
+            ..Default::default()
+        }));
+        let mut estimate = generation(100);
+        estimate.estimated = true;
+        let mut current = assistant(Some(TokenUsage {
+            output_tokens: Some(400),
+            generation: Some(estimate),
+            ..Default::default()
+        }));
+        current.status = Some(MessageStatus::Streaming);
+        let mut entries = [previous, current];
+        let live = TokenStats::from_transcript(&entries, true);
+        assert_eq!(live.label(), "20.0 tok/s");
+        assert_eq!(live.rate_description(), "Live average TPS");
+        assert_eq!(rows(live)[9].1, "Not reported");
+
+        entries[0].token_usage.as_mut().unwrap().generation = Some(generation(100));
+        let measured = TokenStats::from_transcript(&entries, true);
+        assert_eq!(measured.label(), "75.0 tok/s");
+        assert_eq!(measured.rate_description(), "Generation TPS (previous turn)");
+        assert_eq!(rows(measured)[7].1, "20.0 tok/s");
+
+        entries[0].token_usage.as_mut().unwrap().generation = Some(estimate);
+        entries[1].token_usage.as_mut().unwrap().generation = None;
+        let previous_estimate = TokenStats::from_transcript(&entries, true);
+        assert_eq!(previous_estimate.label(), "20.0 tok/s");
+        assert_eq!(previous_estimate.rate_description(), "Live average TPS");
+        assert_eq!(rows(previous_estimate)[9].1, "Not reported");
     }
 
     #[test]

@@ -64,7 +64,11 @@ impl TokenStats {
             stats.duration_ms = entry.duration_ms;
         }
         stats.previous = working && !stats.live;
-        stats.generation = stats.turn_usage.and_then(|usage| usage.generation);
+        // Saved CLI-arrival estimates can be inflated by buffered output.
+        stats.generation = stats
+            .turn_usage
+            .and_then(|usage| usage.generation)
+            .filter(|generation| !generation.estimated);
         stats.generation_previous = stats.previous;
         if working && stats.generation.and_then(GenerationUsage::tps).is_none() {
             stats.generation = entries
@@ -72,7 +76,7 @@ impl TokenStats {
                 .rev()
                 .find(|entry| is_turn(entry) && entry.status != Some(MessageStatus::Streaming))
                 .and_then(|entry| entry.token_usage.as_deref()?.generation)
-                .filter(|generation| generation.tps().is_some());
+                .filter(|generation| !generation.estimated && generation.tps().is_some());
             stats.generation_previous = true;
         }
         stats
@@ -87,15 +91,10 @@ impl TokenStats {
     }
 
     pub(super) fn generation_description(self) -> &'static str {
-        match (
-            self.generation
-                .is_some_and(|generation| generation.estimated),
-            self.generation_previous,
-        ) {
-            (true, true) => "Estimated generation TPS (previous turn)",
-            (true, false) => "Estimated generation TPS (latest request)",
-            (false, true) => "Generation TPS (previous turn)",
-            (false, false) => "Generation TPS (latest request)",
+        if self.generation_previous {
+            "Generation TPS (previous turn)"
+        } else {
+            "Generation TPS (latest request)"
         }
     }
 
@@ -117,8 +116,7 @@ impl TokenStats {
     pub(super) fn generation_label(self) -> Option<String> {
         let generation = self.generation?;
         let tps = generation.tps()?;
-        let prefix = if generation.estimated { "~" } else { "" };
-        Some(format!("{prefix}{tps:.1} tok/s"))
+        Some(format!("{tps:.1} tok/s"))
     }
 
     fn average_label(self) -> String {
@@ -337,10 +335,10 @@ mod cache_tests {
             reasoning_output_tokens: Some(40),
             elapsed_ms: 2000,
             ttft_ms: 1000,
-            estimated: true,
+            estimated: false,
         });
         let measured = cache.get(Some("chat"), 3, true, &entries);
-        assert_eq!(measured.label(), "~160.0 tok/s");
+        assert_eq!(measured.label(), "160.0 tok/s");
         assert_eq!(measured, TokenStats::from_transcript(&entries, true));
 
         entries[0].status = Some(MessageStatus::Complete);

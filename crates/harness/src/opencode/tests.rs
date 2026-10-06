@@ -585,6 +585,7 @@ async fn v1_turn_usage_deduplicates_requests_and_rejects_retired_turn_reports() 
     .await
     .unwrap();
     assert_eq!(live.output_tokens, Some(25));
+    assert_eq!(live.generation, None);
     wire.bus.send(first.clone()).unwrap();
     wire.bus
         .send(report(
@@ -611,6 +612,7 @@ async fn v1_turn_usage_deduplicates_requests_and_rejects_retired_turn_reports() 
     assert_eq!(usage.cache_write_input_tokens, Some(45));
     assert_eq!(usage.reasoning_output_tokens, Some(7));
     assert!((usage.cost_usd.unwrap() - 0.03).abs() < 1e-12);
+    assert_eq!(usage.generation, None);
 
     wire.steering
         .as_ref()
@@ -645,151 +647,6 @@ async fn v1_turn_usage_deduplicates_requests_and_rejects_retired_turn_reports() 
         .await
         .unwrap()
         .unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn both_protocols_report_generation_estimates_without_tool_or_child_time() {
-    for v2 in [false, true] {
-        let server = Server::attached("http://127.0.0.1:1".into());
-        let (event_tx, mut events) = mpsc::channel(32);
-        let request_input: Arc<RequestInput> = Arc::new(Box::new(|_| {
-            let (_, receiver) = tokio::sync::oneshot::channel();
-            receiver
-        }));
-        let mut main_feed = SessionFeed::default();
-        let mut children = HashMap::new();
-        let mut pending_spawns = VecDeque::new();
-        let mut unbound_children = HashMap::new();
-        let mut turn = TurnState::begin(None);
-        let mut pending_usage = None;
-        let context_windows = HashMap::new();
-        let mut tool_names = HashMap::new();
-        // Exercise normalization and the production event router, with no
-        // HTTP server, subprocess, or paid provider request.
-        macro_rules! route {
-            ($event:expr) => {{
-                let wire_event = $event;
-                let normalized = if v2 {
-                    normalize_v2_frame(wire_event, &mut tool_names)
-                } else {
-                    vec![wire_event]
-                };
-                let mut usage = None;
-                for event in normalized {
-                    assert!(matches!(
-                        handle_bus_event(BusCtx {
-                            event: &event,
-                            session_id: "main",
-                            server: &server,
-                            dir: None,
-                            event_tx: &event_tx,
-                            request_input: &request_input,
-                            main_feed: &mut main_feed,
-                            children: &mut children,
-                            pending_spawns: &mut pending_spawns,
-                            unbound_children: &mut unbound_children,
-                            turn: &mut turn,
-                            pending_usage: &mut pending_usage,
-                            context_windows: &context_windows,
-                        })
-                        .await,
-                        BusOutcome::Continue
-                    ));
-                    while let Ok(event) = events.try_recv() {
-                        if let AgentEvent::TurnUsage { usage: report } = event.unwrap() {
-                            usage = Some(report);
-                        }
-                    }
-                }
-                usage
-            }};
-        }
-        let start = |message: &str| {
-            if v2 {
-                json!({"type": "session.step.started", "data": {"sessionID": "main", "assistantMessageID": message}})
-            } else {
-                json!({"type": "message.updated", "properties": {"info": {"sessionID": "main", "id": message, "role": "assistant"}}})
-            }
-        };
-        let report = |message: &str, output: u64, reasoning: u64| {
-            if v2 {
-                json!({"type": "session.step.ended", "data": {
-                    "sessionID": "main", "assistantMessageID": message, "finish": "stop", "cost": 0,
-                    "tokens": {"input": 10, "output": output, "reasoning": reasoning, "cache": {"read": 0, "write": 0}}
-                }})
-            } else {
-                json!({"type": "message.updated", "properties": {"info": {
-                    "sessionID": "main", "id": message, "role": "assistant", "time": {"completed": 1}, "cost": 0,
-                    "tokens": {"input": 10, "output": output, "reasoning": reasoning, "cache": {"read": 0, "write": 0}}
-                }}})
-            }
-        };
-        route!(start("first"));
-        tokio::time::advance(Duration::from_secs(12)).await;
-        route!(if v2 {
-            json!({"type": "session.text.delta", "data": {"sessionID": "main", "assistantMessageID": "first", "ordinal": 0, "delta": "A"}})
-        } else {
-            json!({"type": "message.part.updated", "properties": {"part": {"sessionID": "main", "messageID": "first", "id": "text", "type": "text", "text": "A"}}})
-        });
-        tokio::time::advance(Duration::from_secs(2)).await;
-        route!(if v2 {
-            json!({"type": "session.text.delta", "data": {"sessionID": "main", "assistantMessageID": "first", "ordinal": 0, "delta": "B"}})
-        } else {
-            json!({"type": "message.part.updated", "properties": {"part": {"sessionID": "main", "messageID": "first", "id": "text", "type": "text", "text": "AB"}}})
-        });
-        tokio::time::advance(Duration::from_secs(30)).await;
-        route!(if v2 {
-            json!({"type": "session.text.delta", "data": {"sessionID": "child", "assistantMessageID": "first", "ordinal": 0, "delta": "child"}})
-        } else {
-            json!({"type": "message.part.delta", "properties": {"sessionID": "child", "messageID": "first", "partID": "text", "field": "text", "delta": "child"}})
-        });
-        // Replayed final text must not extend the streaming window.
-        route!(if v2 {
-            json!({"type": "session.text.ended", "data": {"sessionID": "main", "assistantMessageID": "first", "ordinal": 0, "text": "AB"}})
-        } else {
-            json!({"type": "message.part.updated", "properties": {"part": {"sessionID": "main", "messageID": "first", "id": "text", "type": "text", "text": "AB"}}})
-        });
-        let first = route!(report("first", 100, 20))
-            .unwrap()
-            .generation
-            .unwrap();
-        assert!(first.estimated);
-        assert_eq!(first.elapsed_ms, 2000);
-        assert_eq!(first.tps(), Some(50.0));
-
-        route!(start("second"));
-        route!(if v2 {
-            json!({"type": "session.tool.input.started", "data": {"sessionID": "main", "assistantMessageID": "second", "id": "tool", "name": "bash"}})
-        } else {
-            json!({"type": "message.part.updated", "properties": {"part": {"sessionID": "main", "messageID": "second", "id": "tool", "type": "tool", "tool": "bash", "state": {"status": "pending", "raw": ""}}}})
-        });
-        tokio::time::advance(Duration::from_secs(1)).await;
-        route!(if v2 {
-            json!({"type": "session.tool.input.delta", "data": {"sessionID": "main", "assistantMessageID": "second", "id": "tool", "delta": "{\"command\":"}})
-        } else {
-            json!({"type": "message.part.updated", "properties": {"part": {"sessionID": "main", "messageID": "second", "id": "tool", "type": "tool", "tool": "bash", "state": {"status": "pending", "raw": "{\"command\":"}}}})
-        });
-        tokio::time::advance(Duration::from_secs(1)).await;
-        route!(if v2 {
-            json!({"type": "session.tool.called", "data": {"sessionID": "main", "assistantMessageID": "second", "id": "tool", "input": {"command": "pwd"}}})
-        } else {
-            json!({"type": "message.part.updated", "properties": {"part": {"sessionID": "main", "messageID": "second", "id": "tool", "type": "tool", "tool": "bash", "state": {"status": "running", "input": {"command": "pwd"}}}}})
-        });
-        tokio::time::advance(Duration::from_secs(30)).await;
-        route!(if v2 {
-            json!({"type": "session.tool.success", "data": {"sessionID": "main", "assistantMessageID": "second", "id": "tool", "content": [{"text": "/project"}]}})
-        } else {
-            json!({"type": "message.part.updated", "properties": {"part": {"sessionID": "main", "messageID": "second", "id": "tool", "type": "tool", "tool": "bash", "state": {"status": "completed", "output": "/project"}}}})
-        });
-        let total = route!(report("second", 80, 0)).unwrap();
-        assert_eq!(total.output_tokens, Some(200));
-        let generation = total.generation.unwrap();
-        assert_eq!(generation.output_tokens, 80);
-        assert_eq!(generation.elapsed_ms, 2000);
-        assert_eq!(generation.tps(), Some(40.0));
-        assert_eq!(route!(report("first", 100, 20)), None);
-        assert_eq!(turn.usage.total(), Some(total));
-    }
 }
 
 #[tokio::test]
