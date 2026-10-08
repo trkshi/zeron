@@ -79,8 +79,7 @@ impl AsyncQuestionPanel {
     pub(super) fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
             let mut input = ComposerInput::new("Custom answer", cx);
-            input.viewport_height = Some(80.0);
-            input.settled_viewport_height = Some(80.0);
+            input.set_question_viewport(cx);
             input
         });
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
@@ -553,6 +552,7 @@ impl Render for AsyncQuestionPanel {
                     .gap(px(8.0))
                     .child(
                         div()
+                            .flex_none()
                             .flex()
                             .items_start()
                             .gap(px(8.0))
@@ -580,6 +580,7 @@ impl Render for AsyncQuestionPanel {
                         div()
                             .id("async-question-options")
                             .role(Role::RadioGroup)
+                            .flex_none()
                             .flex()
                             .flex_col()
                             .gap(px(2.0))
@@ -587,6 +588,8 @@ impl Render for AsyncQuestionPanel {
                     )
                     .child(
                         div()
+                            .id("async-question-answer")
+                            .flex_none()
                             .border_t_1()
                             .border_color(theme.border)
                             .pt(px(8.0))
@@ -735,6 +738,67 @@ mod tests {
         );
         entries[0] = entry("older", true, true);
         assert_eq!(pending_requests(&entries)[0].0, "newer");
+    }
+
+    #[gpui::test]
+    fn custom_answers_do_not_shrink_inside_the_scrollable_question_body(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_dir, _composer) = super::super::tests::composer_focus_window(cx);
+        let handle = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            state.update(cx, |state, _| {
+                state.selected_chat = Some("chat".into());
+                state.transcript = vec![entry("question", true, false)];
+            });
+            let mut panel = AsyncQuestionPanel::new(state, cx);
+            let draft = panel
+                .drafts
+                .get_mut(panel.current.as_ref().unwrap())
+                .unwrap();
+            draft.wizard.questions[0].options =
+                (0..3).map(|index| format!("Option {index}")).collect();
+            panel
+        });
+        let long_answer = "Another answer line\n".repeat(20);
+        for width in [360.0, 768.0] {
+            for text in ["Short answer", "First line\nSecond line", long_answer.as_str()] {
+                handle
+                    .update(cx, |panel, window, cx| {
+                        window.resize(gpui::size(px(width), px(800.0)));
+                        panel.input.update(cx, |input, cx| input.set_text(text, cx));
+                    })
+                    .unwrap();
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear();
+                })
+                .unwrap();
+                handle
+                    .read_with(cx, |panel, cx| {
+                        let input = panel.input.read(cx);
+                        let expected = input
+                            .content_height
+                            .min(super::super::QUESTION_INPUT_MAX_HEIGHT);
+                        let visible = f32::from(input.last_bounds.unwrap().size.height);
+                        assert!(
+                            (visible - expected).abs() <= 1.0,
+                            "answer was compressed at width {width}"
+                        );
+                        if text == "First line\nSecond line" {
+                            assert!(
+                                (visible - 2.0 * super::super::INPUT_LINE_HEIGHT).abs() <= 1.0
+                            );
+                            assert_eq!(input.scroll_top, 0.0);
+                        }
+                        if text == long_answer.as_str() {
+                            assert!(input.content_height > visible);
+                            assert!(input.scroll_top > 0.0);
+                        }
+                    })
+                    .unwrap();
+            }
+        }
     }
 
     #[gpui::test]

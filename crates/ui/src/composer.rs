@@ -108,6 +108,7 @@ pub const MIN_COMPACT_INPUT_WIDTH: f32 = 200.0;
 /// Input text metrics: `text-[14px] leading-relaxed` = 14 × 1.625 = 22.75.
 pub const INPUT_LINE_HEIGHT: f32 = 22.75;
 pub const INPUT_TEXT_SIZE: f32 = 14.0;
+const QUESTION_INPUT_MAX_HEIGHT: f32 = 6.0 * INPUT_LINE_HEIGHT;
 /// A compact ramp; the glyph-ascent inset keeps the clip edge invisible.
 const INPUT_FADE_BAND: f32 = 12.0;
 /// Single-select questions auto-advance after this long.
@@ -2492,6 +2493,22 @@ impl ComposerInput {
 
     pub fn measured_content_height(&self) -> f32 {
         self.content_height
+    }
+
+    /// Question fields auto-grow independently of the shared composer's animations.
+    fn set_question_viewport(&mut self, cx: &mut Context<Self>) {
+        let height = Some(QUESTION_INPUT_MAX_HEIGHT);
+        if self.viewport_height != height
+            || self.settled_viewport_height != height
+            || self.resizing
+            || self.overflow_top_padding != 0.0
+        {
+            self.viewport_height = height;
+            self.settled_viewport_height = height;
+            self.resizing = false;
+            self.overflow_top_padding = 0.0;
+            cx.notify();
+        }
     }
 
     pub fn set_placeholder(
@@ -9760,6 +9777,8 @@ impl Composer {
         let Some(question) = wizard.current().cloned() else {
             return gpui::Empty.into_any_element();
         };
+        self.input
+            .update(cx, |input, cx| input.set_question_viewport(cx));
         let page = wizard.page;
         let last = page + 1 >= wizard.questions.len();
         let typed_empty = self.input.read(cx).is_empty();
@@ -9921,6 +9940,8 @@ impl Composer {
                     // input entity).
                     .child(
                         div()
+                            .id("wizard-answer")
+                            .flex_none()
                             .mt(px(12.0))
                             .border_t_1()
                             .border_color(crate::theme::hairline(0.06))
@@ -15876,6 +15897,72 @@ mod tests {
             vec!["custom answer"],
             "typed overrides picked, trimmed"
         );
+    }
+
+    #[gpui::test]
+    fn wizard_answers_grow_instead_of_inheriting_the_compact_viewport(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (_dir, handle) = composer_focus_window(cx);
+        let wrapped = "A custom answer that wraps naturally in a narrow question panel. ".repeat(20);
+        let multiline = "Another answer line\n".repeat(20);
+        for width in [360.0, 768.0] {
+            handle
+                .update(cx, |composer, window, cx| {
+                    window.resize(size(px(width), px(800.0)));
+                    composer.wizard = Some(Wizard::new(
+                        "question".into(),
+                        vec![question("Custom answer?", &["First", "Second"], false)],
+                    ));
+                    composer.input.update(cx, |input, _| {
+                        input.viewport_height = Some(INPUT_LINE_HEIGHT);
+                        input.settled_viewport_height = Some(INPUT_LINE_HEIGHT);
+                        input.resizing = true;
+                        input.overflow_top_padding = 16.0;
+                    });
+                })
+                .unwrap();
+            for text in ["Short answer", "First line\nSecond line", &wrapped, &multiline] {
+                handle
+                    .update(cx, |composer, _, cx| {
+                        composer
+                            .input
+                            .update(cx, |input, cx| input.set_text(text, cx));
+                    })
+                    .unwrap();
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear();
+                })
+                .unwrap();
+                handle
+                    .read_with(cx, |composer, cx| {
+                        let input = composer.input.read(cx);
+                        assert_eq!(input.viewport_height, Some(QUESTION_INPUT_MAX_HEIGHT));
+                        assert_eq!(input.settled_viewport_height, input.viewport_height);
+                        assert!(!input.resizing);
+                        assert_eq!(input.overflow_top_padding, 0.0);
+                        let visible = f32::from(input.last_bounds.unwrap().size.height);
+                        let expected = input.content_height.min(QUESTION_INPUT_MAX_HEIGHT);
+                        assert!(
+                            (visible - expected).abs() <= 1.0,
+                            "answer was clipped at width {width}"
+                        );
+                        if text == "First line\nSecond line" {
+                            assert!((visible - 2.0 * INPUT_LINE_HEIGHT).abs() <= 1.0);
+                            assert_eq!(input.scroll_top, 0.0);
+                        }
+                        if text == wrapped.as_str() || text == multiline.as_str() {
+                            assert!(input.content_height > QUESTION_INPUT_MAX_HEIGHT);
+                            assert!(
+                                input.scroll_top > 0.0,
+                                "the last answer line must stay visible"
+                            );
+                        }
+                    })
+                    .unwrap();
+            }
+        }
     }
 
     #[gpui::test]
