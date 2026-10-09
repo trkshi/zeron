@@ -552,8 +552,7 @@ impl AccountUsage {
         let context_chip = crate::context_usage::detailed_chip(
             context,
             self.popup.get() == Some(&FooterCard::Context),
-            self.available_width >= 640.0,
-            self.available_width >= 480.0,
+            self.available_width,
             theme,
         )
         .aria_label(format!(
@@ -581,7 +580,16 @@ impl AccountUsage {
             .gap_x(px(8.0));
         let mut readings = Vec::new();
         if let Some(account) = account.filter(|account| !account.usage_windows.is_empty()) {
-            for window in &account.usage_windows {
+            let bar_width = if self.available_width >= 640.0 {
+                48.0
+            } else if self.available_width >= 360.0 {
+                32.0
+            } else if self.available_width >= 240.0 {
+                24.0
+            } else {
+                12.0
+            };
+            for (index, window) in account.usage_windows.iter().enumerate() {
                 readings.push(usage_window_reading(window, now));
                 let color = if window.used_fraction.is_finite()
                     && usage_level(window.used_fraction) != UsageLevel::Normal
@@ -607,6 +615,15 @@ impl AccountUsage {
                                 .min_w_0()
                                 .truncate()
                                 .child(usage_window_label(window).to_owned()),
+                        )
+                        .child(
+                            crate::context_usage::segmented_bar(
+                                Some(f64::from(window.used_fraction)),
+                                bar_width,
+                                color,
+                                theme,
+                            )
+                            .id(SharedString::from(format!("account-usage-bar-{index}"))),
                         )
                         .child(div().flex_none().child(percent)),
                 );
@@ -989,7 +1006,7 @@ mod tests {
             }
         });
         for width in [
-            720.0, 640.0, 639.0, 480.0, 479.0, 360.0, 359.0, 280.0, 720.0,
+            900.0, 720.0, 719.0, 640.0, 639.0, 480.0, 479.0, 360.0, 359.0, 280.0, 220.0, 720.0,
         ] {
             fixture.update(cx, |fixture, cx| {
                 fixture.width = width;
@@ -1011,9 +1028,17 @@ mod tests {
             assert!(context.right() <= account.left());
             assert_eq!(
                 cx.debug_bounds("context-usage-counts").is_some(),
-                width >= 640.0
+                width >= 720.0
             );
             assert_eq!(cx.debug_bounds("context-usage-bar").is_some(), width >= 480.0);
+            for id in ["account-usage-bar-0", "account-usage-bar-1"] {
+                let bar = cx.debug_bounds(id).unwrap();
+                assert_eq!(bar.size.height, px(10.0));
+                assert!(bar.size.width >= px(12.0));
+                assert!(bar.left() >= account.left());
+                assert!(bar.right() <= account.right());
+                assert_eq!(bar.center().y, account.center().y);
+            }
         }
         cx.update(|_, cx| {
             crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
@@ -1026,6 +1051,7 @@ mod tests {
         assert!(cx.debug_bounds("account-usage").is_some());
         assert!(cx.debug_bounds("token-usage").is_some());
         assert!(cx.debug_bounds("context-usage-detailed").is_none());
+        assert!(cx.debug_bounds("account-usage-bar-0").is_none());
     }
 
     #[test]

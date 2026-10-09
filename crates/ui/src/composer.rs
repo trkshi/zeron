@@ -11532,10 +11532,27 @@ impl Render for Composer {
             session_chrome
         };
         let container = if bottom_slot > 0.0 {
-            let footer = (session_chrome_opacity > 0.0 && !self.side_chat).then(|| {
-                self.pickers
-                    .update(cx, |pickers, cx| pickers.render_footer(cx))
-            });
+            let footer = (session_chrome_opacity > 0.0 && !self.side_chat)
+                .then(|| {
+                    self.pickers
+                        .update(cx, |pickers, cx| pickers.render_footer(cx))
+                })
+                .flatten();
+            let detailed_usage =
+                crate::settings::usage_display(cx) == crate::settings::UsageDisplay::Detailed;
+            let usage_width = if detailed_usage {
+                // Reserve room for checkout/branch before choosing usage density.
+                // The trailing wrapper contributes 4px + 10px of padding.
+                let available = (surface_width - 14.0).max(0.0);
+                let workspace = if footer.is_some() {
+                    (available * 0.28).clamp(80.0, 240.0).min(available)
+                } else {
+                    0.0
+                };
+                available - workspace
+            } else {
+                surface_width
+            };
             if session_chrome_opacity > 0.0 {
                 let harness = (!self.side_chat)
                     .then(|| self.pickers.read(cx).resolved(cx).harness)
@@ -11548,83 +11565,60 @@ impl Render for Composer {
                         .filter(|device| state.local_device_id.as_ref() != Some(device))
                 };
                 self.account_usage.update(cx, |usage, cx| {
-                    usage.track(harness, target, surface_width, cx)
+                    usage.track(harness, target, usage_width, cx)
                 });
             }
-            if crate::settings::usage_display(cx) == crate::settings::UsageDisplay::Detailed
-                && session_chrome_opacity > 0.0
-            {
-                // Keep the single usage row in flow, below workspace controls,
-                // instead of overlapping the composer or transcript.
-                container.child(
-                    div()
-                        .id("detailed-session-footer")
-                        .w_full()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .mb(px(-Theme::SPACE_SM * bottom_slot))
-                        .opacity(session_chrome_opacity)
-                        .children(footer.flatten().map(|footer| {
+            container.child(
+                div()
+                    .w_full()
+                    .h(px(SESSION_FOOTER_HEIGHT * bottom_slot))
+                    .mt(px(-Theme::SPACE_SM * (1.0 - bottom_slot)))
+                    .mb(px(-Theme::SPACE_SM * bottom_slot))
+                    .relative()
+                    .when(new_thread_chrome_opacity > 0.0, |slot| {
+                        slot.child(
                             div()
-                                .w_full()
-                                .min_w_0()
-                                .min_h(px(SESSION_FOOTER_HEIGHT))
-                                .child(footer)
-                        }))
-                        .child(
+                                .absolute()
+                                .inset_0()
+                                .px(px(10.0))
+                                .flex()
+                                .items_center()
+                                .opacity(new_thread_chrome_opacity)
+                                .children(new_thread_git_selectors),
+                        )
+                    })
+                    .when(session_chrome_opacity > 0.0, |slot| {
+                        slot.child(
                             div()
+                                .id("session-footer-row")
+                                .absolute()
+                                .inset_0()
                                 .w_full()
-                                .min_w_0()
-                                .px(px(4.0))
-                                .child(self.account_usage.clone()),
-                        ),
-                )
-            } else {
-                container.child(
-                    div()
-                        .w_full()
-                        .h(px(SESSION_FOOTER_HEIGHT * bottom_slot))
-                        .mt(px(-Theme::SPACE_SM * (1.0 - bottom_slot)))
-                        .mb(px(-Theme::SPACE_SM * bottom_slot))
-                        .relative()
-                        .when(new_thread_chrome_opacity > 0.0, |slot| {
-                            slot.child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .px(px(10.0))
-                                    .flex()
-                                    .items_center()
-                                    .opacity(new_thread_chrome_opacity)
-                                    .children(new_thread_git_selectors),
-                            )
-                        })
-                        .when(session_chrome_opacity > 0.0, |slot| {
-                            slot.child(
-                                div()
-                                    .absolute()
-                                    .inset_0()
-                                    .w_full()
-                                    .h(px(SESSION_FOOTER_HEIGHT))
-                                    .flex()
-                                    .items_center()
-                                    .opacity(session_chrome_opacity)
-                                    .child(div().flex_1().min_w_0().children(footer.flatten()))
-                                    .child(
-                                        // The footer row's own 4px gap: the PR badge
-                                        // ends flush with the row, so the rings keep
-                                        // their distance here.
-                                        div()
-                                            .flex_none()
-                                            .pl(px(4.0))
-                                            .pr(px(10.0))
-                                            .child(self.account_usage.clone()),
-                                    ),
-                            )
-                        }),
-                )
-            }
+                                .h(px(SESSION_FOOTER_HEIGHT))
+                                .flex()
+                                .items_center()
+                                .opacity(session_chrome_opacity)
+                                .child(
+                                    div()
+                                        .id("session-workspace-footer")
+                                        .flex_1()
+                                        .min_w_0()
+                                        .children(footer),
+                                )
+                                .child(
+                                    // Match the workspace row's gap and trailing inset.
+                                    div()
+                                        .flex_none()
+                                        .pl(px(4.0))
+                                        .pr(px(10.0))
+                                        .when(detailed_usage, |slot| {
+                                            slot.w(px(usage_width + 14.0))
+                                        })
+                                        .child(self.account_usage.clone()),
+                                ),
+                        )
+                    }),
+            )
         } else {
             container
         };
@@ -11704,6 +11698,104 @@ mod tests {
                     .update(cx, |input, cx| test(input, window, cx));
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn detailed_usage_shares_one_footer_row_with_git(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::app_menus::init(cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+            crate::settings::init(
+                crate::settings::UiSettings {
+                    usage_display: crate::settings::UsageDisplay::Detailed,
+                    ..Default::default()
+                },
+                dir.path(),
+                cx,
+            );
+        });
+        let (composer, cx) = cx.add_window_view(|_, cx| {
+            let state = cx.new(|_| {
+                let mut state = AppState::new();
+                state.local_device_id = Some("local".into());
+                state.selected_space = Some("repo".into());
+                state.selected_chat = Some("chat".into());
+                state.spaces.push(zeron_proto::Space {
+                    id: "repo".into(),
+                    device_id: "local".into(),
+                    path: "/repo".into(),
+                    name: None,
+                    git_detected: true,
+                    git_checked_at: None,
+                    checkout_id: None,
+                    repository_id: None,
+                    created_at: chrono::Utc::now(),
+                });
+                state.chats.push(
+                    serde_json::from_value(serde_json::json!({
+                        "id": "chat",
+                        "deviceId": "local",
+                        "spaceId": "repo",
+                        "cwd": "/repo",
+                        "branch": "feature/a-long-branch-name-that-must-not-push-usage-to-another-row",
+                        "archived": false,
+                        "createdAt": chrono::Utc::now(),
+                    }))
+                    .unwrap(),
+                );
+                state.context_usage = Some(zeron_proto::ContextUsage {
+                    tokens: Some(85_000),
+                    window: Some(1_000_000),
+                });
+                state
+            });
+            let mut composer = Composer::new(state, cx);
+            composer.set_dock_frame(crate::composer_dock::DockFrame::settled(true), cx);
+            composer
+        });
+        for git in [true, false] {
+            for width in [436.0, 592.0, 768.0, 1232.0] {
+                composer.update(cx, |composer, cx| {
+                    composer.set_available_width(width, cx);
+                    composer.state.update(cx, |state, cx| {
+                        state.spaces[0].git_detected = git;
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+                cx.update(|window, cx| {
+                    window.resize(size(px(width), px(800.0)));
+                    window.draw(cx).clear();
+                });
+                let row = cx.debug_bounds("session-footer-row").unwrap();
+                let workspace = cx.debug_bounds("session-workspace-footer").unwrap();
+                let tokens = cx.debug_bounds("token-usage").unwrap();
+                let context = cx.debug_bounds("context-usage-detailed").unwrap();
+                let account = cx.debug_bounds("account-usage-detailed").unwrap();
+                assert_eq!(row.size.height, px(SESSION_FOOTER_HEIGHT));
+                assert!(workspace.right() <= tokens.left());
+                if git {
+                    assert!(workspace.size.width >= px(80.0));
+                    assert_eq!(workspace.center().y, row.center().y);
+                }
+                for bounds in [tokens, context, account] {
+                    assert_eq!(bounds.top(), row.top());
+                    assert_eq!(bounds.bottom(), row.bottom());
+                    assert!(bounds.right() <= row.right());
+                }
+                assert!(tokens.right() <= context.left());
+                assert!(context.right() <= account.left());
+            }
+        }
     }
 
     #[gpui::test]

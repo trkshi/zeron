@@ -63,38 +63,18 @@ fn detailed_label(usage: Option<ContextUsage>) -> String {
 pub(crate) fn detailed_chip(
     usage: Option<ContextUsage>,
     open: bool,
-    show_counts: bool,
-    show_bar: bool,
+    available_width: f32,
     theme: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
+    let show_counts = available_width >= 720.0;
+    let show_bar = available_width >= 480.0;
+    let show_label = available_width >= 240.0;
     let fraction = usage.and_then(ContextUsage::fraction);
     let color = match fraction {
         Some(fraction) if fraction >= 0.9 => theme.danger,
         Some(fraction) if fraction >= 0.75 => theme.warning,
         _ => theme.text_muted,
     };
-    let mut bar = div()
-        .id("context-usage-bar")
-        .w(px(if show_counts { 80.0 } else { 48.0 }))
-        .h(px(10.0))
-        .flex_none()
-        .flex()
-        .gap(px(2.0));
-    let segments = if show_counts { 20 } else { 12 };
-    for segment in 0..segments {
-        let fill = (fraction.unwrap_or(0.0).clamp(0.0, 1.0) * segments as f64 - segment as f64)
-            .clamp(0.0, 1.0) as f32;
-        bar = bar.child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .h_full()
-                .bg(theme.text_faint.opacity(0.25))
-                .when(fill > 0.0, |segment| {
-                    segment.child(div().h_full().w(gpui::relative(fill)).bg(color))
-                }),
-        );
-    }
     div()
         .id("context-usage-detailed")
         .flex_none()
@@ -111,8 +91,15 @@ pub(crate) fn detailed_chip(
         .cursor_pointer()
         .when(open, |chip| chip.bg(crate::theme::ink(0.05)))
         .hover(|chip| chip.bg(crate::theme::ink(0.05)))
-        .child(if show_bar { "Context" } else { "Ctx" })
-        .when(show_bar, |chip| chip.child(bar))
+        .when(show_label, |chip| {
+            chip.child(if show_bar { "Context" } else { "Ctx" })
+        })
+        .when(show_bar, |chip| {
+            chip.child(
+                segmented_bar(fraction, if show_counts { 80.0 } else { 48.0 }, color, theme)
+                    .id("context-usage-bar"),
+            )
+        })
         .child(if show_counts {
             div().id("context-usage-counts").child(detailed_label(usage))
         } else {
@@ -122,6 +109,37 @@ pub(crate) fn detailed_chip(
                     .unwrap_or_else(|| "N/A".into()),
             )
         })
+}
+
+/// Shared geometry for context occupancy and provider rate-limit windows.
+pub(crate) fn segmented_bar(
+    fraction: Option<f64>,
+    width: f32,
+    color: gpui::Hsla,
+    theme: &Theme,
+) -> gpui::Div {
+    let fraction = fraction
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
+    let segments = (width / 4.0).round().max(1.0) as usize;
+    div()
+        .w(px(width))
+        .h(px(10.0))
+        .flex_none()
+        .flex()
+        .gap(px(2.0))
+        .children((0..segments).map(|segment| {
+            let fill = (fraction * segments as f64 - segment as f64).clamp(0.0, 1.0) as f32;
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .bg(theme.text_faint.opacity(0.25))
+                .when(fill > 0.0, |segment| {
+                    segment.child(div().h_full().w(gpui::relative(fill)).bg(color))
+                })
+        }))
 }
 
 /// Account and context rings retain the same hit target as the TPS chip.
