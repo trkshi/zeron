@@ -124,9 +124,11 @@ Zeron release.
   patched Ubuntu engine; provider backoff and last-good usage caches remain.
 - Choose **Circles** (default) or **Detailed** in **Settings > Appearance >
   Fonts and layout > Usage display**. Detailed mode shows TPS, a context bar
-  with reported tokens/capacity, and provider usage windows with reset
-  countdowns. Readings wrap on narrow layouts, retain their popovers, and
-  show unavailable data honestly. Countdown repaints do not increase polling.
+  with reported tokens/capacity, and provider usage percentages on one line.
+  Hover usage for reset countdowns; click any indicator for its full popover.
+  Narrow layouts hide context counts first, then the bar and finally the TPS
+  label, while retaining usage percentages and near-limit warning colors.
+  Missing data stays explicit. Countdown repaints do not increase polling.
 - Restore a checkpoint's conversation, files, or both from a user message.
   Preserve the original thread; preview file changes and create a recovery
   backup before restoring. Busy runtimes, background tasks, and changed Git

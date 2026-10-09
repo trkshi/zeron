@@ -55,20 +55,32 @@ fn reset_countdown(
     format!("resets in {duration}")
 }
 
-fn usage_window_reading(window: &AgentUsageWindow, now: chrono::DateTime<chrono::Utc>) -> String {
+fn usage_window_label(window: &AgentUsageWindow) -> &str {
     // Preserve pool/month/model-specific labels instead of inventing a weekly quota.
-    let label = match window.label.as_str() {
+    match window.label.as_str() {
         "5h" | "Session" => "Session",
         "7d" | "Week" | "Weekly" => "Weekly",
         label => label,
-    };
-    let used = if window.used_fraction.is_finite() {
-        format!("{:.1}%", window.used_fraction.clamp(0.0, 1.0) * 100.0)
+    }
+}
+
+fn usage_window_percent(window: &AgentUsageWindow) -> String {
+    if !window.used_fraction.is_finite() {
+        return "Unavailable".into();
+    }
+    let percent = (window.used_fraction.clamp(0.0, 1.0) * 1000.0).round() / 10.0;
+    if percent.fract() == 0.0 {
+        format!("{percent:.0}%")
     } else {
-        "Unavailable".into()
-    };
+        format!("{percent:.1}%")
+    }
+}
+
+fn usage_window_reading(window: &AgentUsageWindow, now: chrono::DateTime<chrono::Utc>) -> String {
     format!(
-        "{label}: {used} \u{00b7} {}",
+        "{}: {} \u{00b7} {}",
+        usage_window_label(window),
+        usage_window_percent(window),
         reset_countdown(window.resets_at, now)
     )
 }
@@ -160,6 +172,7 @@ pub struct AccountUsage {
     popup_focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
     chat_id: Option<String>,
+    available_width: f32,
     compact: bool,
     icons_only: bool,
     _poll: Task<()>,
@@ -234,6 +247,7 @@ impl AccountUsage {
             popup_focus: cx.focus_handle(),
             previous_focus: None,
             chat_id: None,
+            available_width: f32::INFINITY,
             compact: false,
             icons_only: false,
             _poll: poll,
@@ -284,7 +298,8 @@ impl AccountUsage {
         // Preserve the single-row footer: drop secondary readings before
         // shrinking its hit targets or crowding the workspace controls.
         let density = (available_width < 520.0, available_width < 360.0);
-        if (self.compact, self.icons_only) != density {
+        if self.available_width != available_width {
+            self.available_width = available_width;
             (self.compact, self.icons_only) = density;
             cx.notify();
         }
@@ -506,6 +521,7 @@ impl AccountUsage {
             return chip.into_any_element();
         }
         let content = content(self, cx)
+            .whitespace_normal()
             .track_focus(&self.popup_focus)
             .on_key_down(cx.listener(|usage, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
@@ -536,11 +552,16 @@ impl AccountUsage {
         let context_chip = crate::context_usage::detailed_chip(
             context,
             self.popup.get() == Some(&FooterCard::Context),
+            self.available_width >= 640.0,
+            self.available_width >= 480.0,
             theme,
         )
-        .aria_label("Context window usage")
-        .tooltip(crate::settings::widgets::text_tooltip(
-            "Context tokens used / reported capacity",
+        .aria_label(format!(
+            "Context window: {}",
+            crate::context_usage::details(context)
+        ))
+        .tooltip(crate::settings::widgets::text_tooltip_above(
+            crate::context_usage::details(context),
         ));
         let context_chip = self.trigger(
             context_chip,
@@ -556,11 +577,12 @@ impl AccountUsage {
             .min_w_0()
             .max_w_full()
             .flex()
-            .flex_wrap()
             .items_center()
-            .gap_x(px(12.0));
+            .gap_x(px(8.0));
+        let mut readings = Vec::new();
         if let Some(account) = account.filter(|account| !account.usage_windows.is_empty()) {
             for window in &account.usage_windows {
+                readings.push(usage_window_reading(window, now));
                 let color = if window.used_fraction.is_finite()
                     && usage_level(window.used_fraction) != UsageLevel::Normal
                 {
@@ -568,39 +590,56 @@ impl AccountUsage {
                 } else {
                     theme.text_muted
                 };
+                let percent = if self.available_width < 640.0 && !window.used_fraction.is_finite() {
+                    "N/A".into()
+                } else {
+                    usage_window_percent(window)
+                };
                 windows = windows.child(
                     div()
                         .min_w_0()
-                        .max_w_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
                         .text_color(color)
-                        .child(usage_window_reading(window, now)),
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(usage_window_label(window).to_owned()),
+                        )
+                        .child(div().flex_none().child(percent)),
                 );
             }
             if account.usage_error.is_some() {
-                windows = windows.child(div().text_color(theme.text_muted).child("Cached"));
+                readings.push("Cached usage; the latest refresh failed".into());
             }
         } else {
-            windows = windows.child("Usage: Unavailable");
+            readings.push("Usage unavailable from this provider".into());
+            windows = windows.child(div().min_w_0().truncate().child("Usage unavailable"));
         }
+        let tooltip = format!(
+            "{}\nProvider rate-limit usage, not this conversation",
+            readings.join("\n")
+        );
         let reading = div()
             .id("account-usage-detailed")
             .min_w_0()
             .max_w_full()
-            .min_h(px(24.0))
+            .h(px(24.0))
             .px(px(6.0))
             .rounded(px(6.0))
             .text_size(px(11.0))
             .line_height(px(24.0))
+            .whitespace_nowrap()
             .text_color(theme.text_muted)
             .cursor_pointer()
             .when(self.popup.get() == Some(&FooterCard::Accounts), |chip| {
                 chip.bg(crate::theme::ink(0.05))
             })
             .hover(|chip| chip.bg(crate::theme::ink(0.05)))
-            .aria_label("Account usage and reset times")
-            .tooltip(crate::settings::widgets::text_tooltip(
-                "Percentages used in provider rate-limit windows, not this conversation",
-            ))
+            .aria_label(tooltip.clone())
+            .tooltip(crate::settings::widgets::text_tooltip_above(tooltip))
             .child(windows);
         let reading = self.trigger(
             reading,
@@ -611,19 +650,13 @@ impl AccountUsage {
         div()
             .w_full()
             .min_w_0()
+            .h(px(24.0))
             .flex()
-            .flex_col()
-            .child(
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_x(px(4.0))
-                    .children(tokens)
-                    .child(context_chip),
-            )
+            .items_center()
+            .gap_x(px(4.0))
+            .whitespace_nowrap()
+            .children(tokens)
+            .child(context_chip)
             .child(reading)
     }
 
@@ -847,14 +880,14 @@ impl Render for AccountUsage {
                 crate::icons::SPEEDOMETER,
                 theme.text_muted,
                 theme.text_muted,
-                if self.icons_only && !detailed {
+                if self.icons_only {
                     String::new()
                 } else {
                     label.clone()
                 },
                 self.popup.get() == Some(&FooterCard::Tokens),
             )
-            .when(!self.icons_only || detailed, |chip| chip.min_w(px(96.0)))
+            .when(!self.icons_only, |chip| chip.min_w(px(96.0)))
             .aria_label(format!(
                 "Token usage, {}: {label}",
                 stats.rate_description()
@@ -894,7 +927,10 @@ mod tests {
     }
 
     impl Render for UsageFixture {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.usage.update(cx, |usage, cx| {
+                usage.track(Some(HarnessId::Codex), None, self.width, cx)
+            });
             div()
                 .id("usage-fixture")
                 .w(px(self.width))
@@ -903,7 +939,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn detailed_footer_wraps_and_can_return_to_circles(cx: &mut gpui::TestAppContext) {
+    fn detailed_footer_stays_on_one_line_and_can_return_to_circles(cx: &mut gpui::TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
             gpui_base::init(cx);
@@ -943,6 +979,7 @@ mod tests {
             let usage = cx.new(|cx| {
                 let mut usage = AccountUsage::new(state, cx);
                 usage.harness = Some(HarnessId::Codex);
+                usage.loaded = true;
                 usage.last_forced = Some(Instant::now());
                 usage
             });
@@ -951,7 +988,9 @@ mod tests {
                 width: 720.0,
             }
         });
-        for width in [720.0, 280.0] {
+        for width in [
+            720.0, 640.0, 639.0, 480.0, 479.0, 360.0, 359.0, 280.0, 720.0,
+        ] {
             fixture.update(cx, |fixture, cx| {
                 fixture.width = width;
                 cx.notify();
@@ -964,12 +1003,17 @@ mod tests {
             for bounds in [context, account, tokens] {
                 assert!(bounds.right() <= host.right() + px(1.0));
                 assert!(bounds.left() >= host.left() - px(1.0));
+                assert_eq!(bounds.top(), host.top());
+                assert_eq!(bounds.size.height, px(24.0));
             }
-            assert!(account.top() >= context.bottom());
-            assert!(account.top() >= tokens.bottom());
-            if width < 300.0 {
-                assert!(account.size.height >= px(48.0));
-            }
+            assert_eq!(host.size.height, px(24.0));
+            assert!(tokens.right() <= context.left());
+            assert!(context.right() <= account.left());
+            assert_eq!(
+                cx.debug_bounds("context-usage-counts").is_some(),
+                width >= 640.0
+            );
+            assert_eq!(cx.debug_bounds("context-usage-bar").is_some(), width >= 480.0);
         }
         cx.update(|_, cx| {
             crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
@@ -1013,14 +1057,14 @@ mod tests {
         };
         assert_eq!(
             usage_window_reading(&window, now),
-            "Weekly: 98.0% \u{00b7} resets in 6h 26m"
+            "Weekly: 98% \u{00b7} resets in 6h 26m"
         );
         window.label = "Session".into();
         window.used_fraction = 0.04;
         window.resets_at = Some(now + chrono::Duration::minutes(26));
         assert_eq!(
             usage_window_reading(&window, now),
-            "Session: 4.0% \u{00b7} resets in 26m"
+            "Session: 4% \u{00b7} resets in 26m"
         );
         window.label = "Month".into();
         assert!(usage_window_reading(&window, now).starts_with("Month:"));
@@ -1030,6 +1074,27 @@ mod tests {
             usage_window_reading(&window, now),
             "Month: Unavailable \u{00b7} reset unavailable"
         );
+    }
+
+    #[test]
+    fn inline_usage_percentages_are_short_and_keep_fractional_precision() {
+        let mut window = AgentUsageWindow {
+            label: "5h".into(),
+            used_fraction: 0.04,
+            resets_at: None,
+        };
+        assert_eq!(usage_window_label(&window), "Session");
+        assert_eq!(usage_window_percent(&window), "4%");
+        window.used_fraction = 0.043;
+        assert_eq!(usage_window_percent(&window), "4.3%");
+        window.used_fraction = 0.0;
+        assert_eq!(usage_window_percent(&window), "0%");
+        window.used_fraction = 1.2;
+        assert_eq!(usage_window_percent(&window), "100%");
+        window.used_fraction = f32::NAN;
+        assert_eq!(usage_window_percent(&window), "Unavailable");
+        window.used_fraction = f32::INFINITY;
+        assert_eq!(usage_window_percent(&window), "Unavailable");
     }
 
     #[test]

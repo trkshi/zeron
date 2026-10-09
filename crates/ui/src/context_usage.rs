@@ -63,6 +63,8 @@ fn detailed_label(usage: Option<ContextUsage>) -> String {
 pub(crate) fn detailed_chip(
     usage: Option<ContextUsage>,
     open: bool,
+    show_counts: bool,
+    show_bar: bool,
     theme: &Theme,
 ) -> gpui::Stateful<gpui::Div> {
     let fraction = usage.and_then(ContextUsage::fraction);
@@ -72,14 +74,16 @@ pub(crate) fn detailed_chip(
         _ => theme.text_muted,
     };
     let mut bar = div()
-        .w(px(80.0))
+        .id("context-usage-bar")
+        .w(px(if show_counts { 80.0 } else { 48.0 }))
         .h(px(10.0))
         .flex_none()
         .flex()
         .gap(px(2.0));
-    for segment in 0..20 {
-        let fill = (fraction.unwrap_or(0.0).clamp(0.0, 1.0) * 20.0 - segment as f64).clamp(0.0, 1.0)
-            as f32;
+    let segments = if show_counts { 20 } else { 12 };
+    for segment in 0..segments {
+        let fill = (fraction.unwrap_or(0.0).clamp(0.0, 1.0) * segments as f64 - segment as f64)
+            .clamp(0.0, 1.0) as f32;
         bar = bar.child(
             div()
                 .flex_1()
@@ -93,24 +97,31 @@ pub(crate) fn detailed_chip(
     }
     div()
         .id("context-usage-detailed")
-        .min_w_0()
-        .max_w_full()
-        .min_h(px(24.0))
+        .flex_none()
+        .h(px(24.0))
         .px(px(6.0))
         .rounded(px(6.0))
         .flex()
-        .flex_wrap()
         .items_center()
         .gap_x(px(8.0))
         .text_size(px(11.0))
         .line_height(px(24.0))
+        .whitespace_nowrap()
         .text_color(color)
         .cursor_pointer()
         .when(open, |chip| chip.bg(crate::theme::ink(0.05)))
         .hover(|chip| chip.bg(crate::theme::ink(0.05)))
-        .child("Context")
-        .child(bar)
-        .child(detailed_label(usage))
+        .child(if show_bar { "Context" } else { "Ctx" })
+        .when(show_bar, |chip| chip.child(bar))
+        .child(if show_counts {
+            div().id("context-usage-counts").child(detailed_label(usage))
+        } else {
+            div().id("context-usage-percentage").child(
+                fraction
+                    .map(|fraction| format!("{:.0}%", fraction * 100.0))
+                    .unwrap_or_else(|| "N/A".into()),
+            )
+        })
 }
 
 /// Account and context rings retain the same hit target as the TPS chip.
@@ -237,7 +248,7 @@ pub fn has_window(usage: Option<ContextUsage>) -> bool {
         .is_some_and(|window| window > 0)
 }
 
-fn details(usage: Option<ContextUsage>) -> String {
+pub(crate) fn details(usage: Option<ContextUsage>) -> String {
     match usage.unwrap_or_default() {
         ContextUsage {
             tokens: Some(tokens),

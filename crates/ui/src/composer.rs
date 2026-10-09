@@ -11554,8 +11554,8 @@ impl Render for Composer {
             if crate::settings::usage_display(cx) == crate::settings::UsageDisplay::Detailed
                 && session_chrome_opacity > 0.0
             {
-                // Detailed readings participate in layout so wrapped windows
-                // grow the dock instead of overlapping the composer or transcript.
+                // Keep the single usage row in flow, below workspace controls,
+                // instead of overlapping the composer or transcript.
                 container.child(
                     div()
                         .id("detailed-session-footer")
