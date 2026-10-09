@@ -1016,7 +1016,7 @@ impl SessionsEngine {
                     h.routed_steers.clone(),
                     h.fork_history_sent.clone(),
                     h.retiring.clone(),
-                    h.runtime_config.cwd.clone(),
+                    h.runtime_config.request.cwd.clone(),
                 )
             });
         let Some((run_id, harness_id, steer_tx, ledger, history_sent, retiring, cwd)) = target else {
