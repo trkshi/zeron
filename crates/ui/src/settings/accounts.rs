@@ -1277,7 +1277,7 @@ impl AccountsPage {
         let more_id: SharedString = format!("account-more-{}", account.id).into();
         let mut more = widgets::action_button(theme, widgets::ActionTone::Quiet)
             .id(more_id.clone())
-            .debug_selector(move || more_id.clone())
+            .debug_selector(move || more_id.to_string())
             .w(px(28.0))
             .px_0()
             .justify_center()
@@ -1323,7 +1323,7 @@ impl AccountsPage {
                     menu.child(
                         popover::menu_row(&popup, false, switch_id.clone())
                             .id(switch_id.clone())
-                            .debug_selector(move || switch_id.clone())
+                            .debug_selector(move || switch_id.to_string())
                             .on_click(cx.listener(move |page, _, _, cx| {
                                 cx.stop_propagation();
                                 page.close_row_menu(cx);
@@ -1373,7 +1373,7 @@ impl AccountsPage {
         let row_id: SharedString = format!("account-row-{}", account.id).into();
         let body = div()
             .id(row_id.clone())
-            .debug_selector(move || row_id.clone())
+            .debug_selector(move || row_id.to_string())
             .mx(px(-10.0))
             .px(px(10.0))
             .py(px(10.0))
