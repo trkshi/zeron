@@ -312,6 +312,7 @@ pub struct AppearancePage {
     surface_select: widgets::SelectState,
     background_effect_select: widgets::SelectState,
     reduce_motion_select: widgets::SelectState,
+    usage_display_select: widgets::SelectState,
     import_dialog: Option<ImportDialog>,
     background_adjustment_dialog: Option<BackgroundAdjustmentDialog>,
     review_entry: Option<String>,
@@ -576,6 +577,7 @@ impl AppearancePage {
             surface_select: widgets::SelectState::default(),
             background_effect_select: widgets::SelectState::default(),
             reduce_motion_select: widgets::SelectState::default(),
+            usage_display_select: widgets::SelectState::default(),
             import_dialog: None,
             background_adjustment_dialog: None,
             review_entry: None,
@@ -3953,6 +3955,41 @@ impl Render for AppearancePage {
             );
         }
         font_rows = font_rows.child(self.render_transcript_width(&theme, window, cx));
+        let usage_display = crate::settings::usage_display(cx);
+        let usage_control = widgets::select(
+            "usage-display",
+            "Usage display",
+            &theme,
+            |page: &mut Self| &mut page.usage_display_select,
+        )
+        .options(
+            crate::settings::UsageDisplay::ALL
+                .into_iter()
+                .map(|display| widgets::SelectOption::new(display.label())),
+            crate::settings::UsageDisplay::ALL
+                .into_iter()
+                .position(|display| display == usage_display)
+                .unwrap_or_default(),
+        )
+        .width(128.0)
+        .on_select(|_, index, _, cx| {
+            crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+                settings.usage_display = crate::settings::UsageDisplay::ALL[index];
+            });
+            cx.refresh_windows();
+            cx.notify();
+        })
+        .render(&self.usage_display_select, cx);
+        font_rows = font_rows.child(
+            widgets::card_row(&theme, false)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(160.0))
+                        .child(widgets::row_title(&theme, "Usage display")),
+                )
+                .child(usage_control),
+        );
         let mut font_section = widgets::section(&theme, "Fonts and layout", font_rows);
         for kind in FontKind::ALL {
             let (requested, effective) = (kind.requested(cx), kind.effective(cx));

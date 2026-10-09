@@ -12,7 +12,7 @@ use gpui::{
     Context, Entity, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString, Subscription,
     Task, Window, div, prelude::*, px,
 };
-use zeron_proto::{AgentAccount, AgentAccountsSnapshot, HarnessId};
+use zeron_proto::{AgentAccount, AgentAccountsSnapshot, AgentUsageWindow, HarnessId};
 use zeron_rpc::methods;
 
 use crate::popover;
@@ -27,6 +27,51 @@ use crate::theme::Theme;
 const FORCE_MIN_INTERVAL: Duration = Duration::from_secs(30);
 const ACTIVE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+fn reset_countdown(
+    reset: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let Some(reset) = reset else {
+        return "reset unavailable".into();
+    };
+    let seconds = reset.signed_duration_since(now).num_seconds();
+    if seconds <= 0 {
+        return "awaiting refresh".into();
+    }
+    let minutes = (seconds + 59) / 60;
+    let duration = if minutes >= 24 * 60 {
+        format!(
+            "{}d {}h {}m",
+            minutes / (24 * 60),
+            minutes / 60 % 24,
+            minutes % 60
+        )
+    } else if minutes >= 60 {
+        format!("{}h {}m", minutes / 60, minutes % 60)
+    } else {
+        format!("{minutes}m")
+    };
+    format!("resets in {duration}")
+}
+
+fn usage_window_reading(window: &AgentUsageWindow, now: chrono::DateTime<chrono::Utc>) -> String {
+    // Preserve pool/month/model-specific labels instead of inventing a weekly quota.
+    let label = match window.label.as_str() {
+        "5h" | "Session" => "Session",
+        "7d" | "Week" | "Weekly" => "Weekly",
+        label => label,
+    };
+    let used = if window.used_fraction.is_finite() {
+        format!("{:.1}%", window.used_fraction.clamp(0.0, 1.0) * 100.0)
+    } else {
+        "Unavailable".into()
+    };
+    format!(
+        "{label}: {used} \u{00b7} {}",
+        reset_countdown(window.resets_at, now)
+    )
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UsageRefresh {
@@ -121,6 +166,7 @@ pub struct AccountUsage {
     _cache: Subscription,
     _state: Subscription,
     _activation: Option<Subscription>,
+    _settings: Subscription,
 }
 
 impl AccountUsage {
@@ -129,14 +175,30 @@ impl AccountUsage {
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 let Ok(delay) = this.update(cx, |usage, cx| {
+                    let countdown = usage.window_active
+                        && crate::settings::usage_display(cx)
+                            == crate::settings::UsageDisplay::Detailed;
+                    if countdown {
+                        cx.notify();
+                    }
                     if usage.harness.is_none() {
-                        return BACKGROUND_POLL_INTERVAL;
+                        return if countdown {
+                            Duration::from_secs(30)
+                        } else {
+                            BACKGROUND_POLL_INTERVAL
+                        };
                     }
                     if usage.next_refresh_delay().is_zero() {
                         let refresh = usage.pending_refresh.unwrap_or(UsageRefresh::Active);
                         usage.load(refresh, cx);
                     }
-                    usage.next_refresh_delay()
+                    let delay = usage.next_refresh_delay();
+                    // Repaint countdowns locally without increasing provider polling.
+                    if countdown {
+                        delay.min(Duration::from_secs(30))
+                    } else {
+                        delay
+                    }
                 }) else {
                     break;
                 };
@@ -178,6 +240,10 @@ impl AccountUsage {
             // Settings → Accounts writes the same cache.
             _cache: cx.observe_global::<AccountsSnapshotCache>(|_, cx| cx.notify()),
             _activation: None,
+            _settings: cx.observe_global::<crate::settings::SettingsStore>(|usage, cx| {
+                let _ = usage.poll_wake.unbounded_send(());
+                cx.notify();
+            }),
         }
     }
 
@@ -254,13 +320,12 @@ impl AccountUsage {
     /// Plain list first when nothing is cached (the engine's persisted usage
     /// paints at once), then the forced probe replaces it.
     fn load(&mut self, refresh: UsageRefresh, cx: &mut Context<Self>) {
-        let refresh = if refresh != UsageRefresh::Cached
-            && self.pending_refresh == Some(UsageRefresh::All)
-        {
-            UsageRefresh::All
-        } else {
-            refresh
-        };
+        let refresh =
+            if refresh != UsageRefresh::Cached && self.pending_refresh == Some(UsageRefresh::All) {
+                UsageRefresh::All
+            } else {
+                refresh
+            };
         let force_usage = refresh != UsageRefresh::Cached;
         if force_usage {
             if self
@@ -461,6 +526,107 @@ impl AccountUsage {
         .into_any_element()
     }
 
+    fn detailed_footer(
+        &self,
+        context: Option<zeron_proto::ContextUsage>,
+        tokens: Option<gpui::AnyElement>,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let context_chip = crate::context_usage::detailed_chip(
+            context,
+            self.popup.get() == Some(&FooterCard::Context),
+            theme,
+        )
+        .aria_label("Context window usage")
+        .tooltip(crate::settings::widgets::text_tooltip(
+            "Context tokens used / reported capacity",
+        ));
+        let context_chip = self.trigger(
+            context_chip,
+            FooterCard::Context,
+            move |_, cx| crate::context_usage::card(context, &Theme::of(cx).for_popup()),
+            cx,
+        );
+        let now = chrono::Utc::now();
+        let account = self
+            .harness
+            .and_then(|harness| active_account(self.snapshot(cx)?, harness));
+        let mut windows = div()
+            .min_w_0()
+            .max_w_full()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_x(px(12.0));
+        if let Some(account) = account.filter(|account| !account.usage_windows.is_empty()) {
+            for window in &account.usage_windows {
+                let color = if window.used_fraction.is_finite()
+                    && usage_level(window.used_fraction) != UsageLevel::Normal
+                {
+                    usage_color(usage_level(window.used_fraction), theme)
+                } else {
+                    theme.text_muted
+                };
+                windows = windows.child(
+                    div()
+                        .min_w_0()
+                        .max_w_full()
+                        .text_color(color)
+                        .child(usage_window_reading(window, now)),
+                );
+            }
+            if account.usage_error.is_some() {
+                windows = windows.child(div().text_color(theme.text_muted).child("Cached"));
+            }
+        } else {
+            windows = windows.child("Usage: Unavailable");
+        }
+        let reading = div()
+            .id("account-usage-detailed")
+            .min_w_0()
+            .max_w_full()
+            .min_h(px(24.0))
+            .px(px(6.0))
+            .rounded(px(6.0))
+            .text_size(px(11.0))
+            .line_height(px(24.0))
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .when(self.popup.get() == Some(&FooterCard::Accounts), |chip| {
+                chip.bg(crate::theme::ink(0.05))
+            })
+            .hover(|chip| chip.bg(crate::theme::ink(0.05)))
+            .aria_label("Account usage and reset times")
+            .tooltip(crate::settings::widgets::text_tooltip(
+                "Percentages used in provider rate-limit windows, not this conversation",
+            ))
+            .child(windows);
+        let reading = self.trigger(
+            reading,
+            FooterCard::Accounts,
+            |usage, cx| usage.accounts_card(cx),
+            cx,
+        );
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x(px(4.0))
+                    .children(tokens)
+                    .child(context_chip),
+            )
+            .child(reading)
+    }
+
     fn accounts_card(&self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = &Theme::of(cx).for_popup();
         let harness = self.harness;
@@ -596,6 +762,8 @@ impl Render for AccountUsage {
             self.chat_id = chat_id;
         }
         let theme = Theme::of(cx).clone();
+        let detailed =
+            crate::settings::usage_display(cx) == crate::settings::UsageDisplay::Detailed;
         let (context, stats) = {
             let state = self.state.read(cx);
             let working = state.selected_chat.as_deref().is_some_and(|chat| {
@@ -615,40 +783,43 @@ impl Render for AccountUsage {
                 ),
             )
         };
-        let account = self.fraction(cx).map(|fraction| {
-            let level = usage_level(fraction);
-            let chip = crate::context_usage::ring_chip(
-                "account-usage",
-                fraction,
-                usage_color(level, &theme),
-                match level {
-                    UsageLevel::Normal => theme.text_muted,
-                    _ => usage_color(level, &theme),
-                },
-                if self.compact {
-                    String::new()
-                } else {
-                    format!("{}%", (fraction * 100.0).round() as u32)
-                },
-                self.popup.get() == Some(&FooterCard::Accounts),
-                &theme,
-            )
-            .aria_label(format!(
-                "Account usage, {}%",
-                (fraction * 100.0).round() as u32
-            ))
-            .tooltip(crate::settings::widgets::text_tooltip(format!(
-                "Account usage: {}% (most-used rate-limit window)",
-                (fraction * 100.0).round() as u32
-            )));
-            self.trigger(
-                chip,
-                FooterCard::Accounts,
-                |usage, cx| usage.accounts_card(cx),
-                cx,
-            )
-        });
-        let context = crate::context_usage::has_window(context).then(|| {
+        let account = (!detailed)
+            .then(|| self.fraction(cx))
+            .flatten()
+            .map(|fraction| {
+                let level = usage_level(fraction);
+                let chip = crate::context_usage::ring_chip(
+                    "account-usage",
+                    fraction,
+                    usage_color(level, &theme),
+                    match level {
+                        UsageLevel::Normal => theme.text_muted,
+                        _ => usage_color(level, &theme),
+                    },
+                    if self.compact {
+                        String::new()
+                    } else {
+                        format!("{}%", (fraction * 100.0).round() as u32)
+                    },
+                    self.popup.get() == Some(&FooterCard::Accounts),
+                    &theme,
+                )
+                .aria_label(format!(
+                    "Account usage, {}%",
+                    (fraction * 100.0).round() as u32
+                ))
+                .tooltip(crate::settings::widgets::text_tooltip(format!(
+                    "Account usage: {}% (most-used rate-limit window)",
+                    (fraction * 100.0).round() as u32
+                )));
+                self.trigger(
+                    chip,
+                    FooterCard::Accounts,
+                    |usage, cx| usage.accounts_card(cx),
+                    cx,
+                )
+            });
+        let context_chip = (!detailed && crate::context_usage::has_window(context)).then(|| {
             let chip = crate::context_usage::chip(
                 context,
                 self.popup.get() == Some(&FooterCard::Context),
@@ -676,14 +847,14 @@ impl Render for AccountUsage {
                 crate::icons::SPEEDOMETER,
                 theme.text_muted,
                 theme.text_muted,
-                if self.icons_only {
+                if self.icons_only && !detailed {
                     String::new()
                 } else {
                     label.clone()
                 },
                 self.popup.get() == Some(&FooterCard::Tokens),
             )
-            .when(!self.icons_only, |chip| chip.min_w(px(96.0)))
+            .when(!self.icons_only || detailed, |chip| chip.min_w(px(96.0)))
             .aria_label(format!(
                 "Token usage, {}: {label}",
                 stats.rate_description()
@@ -699,13 +870,16 @@ impl Render for AccountUsage {
                 cx,
             )
         });
+        if detailed {
+            return self.detailed_footer(context, tokens, &theme, cx);
+        }
         div()
             .flex()
             .items_center()
             .gap(px(4.0))
             .children(tokens)
             .children(account)
-            .children(context)
+            .children(context_chip)
     }
 }
 
@@ -713,6 +887,150 @@ impl Render for AccountUsage {
 mod tests {
     use super::*;
     use zeron_proto::AgentUsageWindow;
+
+    struct UsageFixture {
+        usage: Entity<AccountUsage>,
+        width: f32,
+    }
+
+    impl Render for UsageFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("usage-fixture")
+                .w(px(self.width))
+                .child(self.usage.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn detailed_footer_wraps_and_can_return_to_circles(cx: &mut gpui::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            crate::settings::init(
+                crate::settings::UiSettings {
+                    usage_display: crate::settings::UsageDisplay::Detailed,
+                    ..Default::default()
+                },
+                dir.path(),
+                cx,
+            );
+            let mut active = account(HarnessId::Codex, true, &[0.04, 0.98]);
+            active.usage_windows[0].label = "Session".into();
+            active.usage_windows[1].label = "Week".into();
+            for window in &mut active.usage_windows {
+                window.resets_at = Some(chrono::Utc::now() + chrono::Duration::minutes(386));
+            }
+            cx.default_global::<AccountsSnapshotCache>().0.insert(
+                None,
+                AgentAccountsSnapshot {
+                    accounts: vec![active],
+                    warnings: vec![],
+                },
+            );
+        });
+        let (fixture, cx) = cx.add_window_view(|_, cx| {
+            let state = cx.new(|_| {
+                let mut state = AppState::new();
+                state.selected_chat = Some("fixture-chat".into());
+                state.context_usage = Some(zeron_proto::ContextUsage {
+                    tokens: Some(110_000),
+                    window: Some(1_000_000),
+                });
+                state
+            });
+            let usage = cx.new(|cx| {
+                let mut usage = AccountUsage::new(state, cx);
+                usage.harness = Some(HarnessId::Codex);
+                usage.last_forced = Some(Instant::now());
+                usage
+            });
+            UsageFixture {
+                usage,
+                width: 720.0,
+            }
+        });
+        for width in [720.0, 280.0] {
+            fixture.update(cx, |fixture, cx| {
+                fixture.width = width;
+                cx.notify();
+            });
+            cx.update(|window, cx| window.draw(cx).clear());
+            let host = cx.debug_bounds("usage-fixture").unwrap();
+            let context = cx.debug_bounds("context-usage-detailed").unwrap();
+            let account = cx.debug_bounds("account-usage-detailed").unwrap();
+            let tokens = cx.debug_bounds("token-usage").unwrap();
+            for bounds in [context, account, tokens] {
+                assert!(bounds.right() <= host.right() + px(1.0));
+                assert!(bounds.left() >= host.left() - px(1.0));
+            }
+            assert!(account.top() >= context.bottom());
+            assert!(account.top() >= tokens.bottom());
+            if width < 300.0 {
+                assert!(account.size.height >= px(48.0));
+            }
+        }
+        cx.update(|_, cx| {
+            crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+                settings.usage_display = crate::settings::UsageDisplay::Circles;
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear());
+        assert!(cx.debug_bounds("context-usage").is_some());
+        assert!(cx.debug_bounds("account-usage").is_some());
+        assert!(cx.debug_bounds("token-usage").is_some());
+        assert!(cx.debug_bounds("context-usage-detailed").is_none());
+    }
+
+    #[test]
+    fn detailed_reset_countdowns_handle_minutes_days_and_expiry() {
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let reset = |seconds| Some(now + chrono::Duration::seconds(seconds));
+        assert_eq!(reset_countdown(reset(26 * 60), now), "resets in 26m");
+        assert_eq!(
+            reset_countdown(reset((6 * 60 + 26) * 60), now),
+            "resets in 6h 26m"
+        );
+        assert_eq!(
+            reset_countdown(reset((2 * 24 * 60 + 65) * 60), now),
+            "resets in 2d 1h 5m"
+        );
+        assert_eq!(reset_countdown(reset(1), now), "resets in 1m");
+        assert_eq!(reset_countdown(reset(0), now), "awaiting refresh");
+        assert_eq!(reset_countdown(reset(-60), now), "awaiting refresh");
+        assert_eq!(reset_countdown(None, now), "reset unavailable");
+    }
+
+    #[test]
+    fn detailed_usage_preserves_non_weekly_limits() {
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let mut window = AgentUsageWindow {
+            label: "Week".into(),
+            used_fraction: 0.98,
+            resets_at: Some(now + chrono::Duration::minutes(386)),
+        };
+        assert_eq!(
+            usage_window_reading(&window, now),
+            "Weekly: 98.0% \u{00b7} resets in 6h 26m"
+        );
+        window.label = "Session".into();
+        window.used_fraction = 0.04;
+        window.resets_at = Some(now + chrono::Duration::minutes(26));
+        assert_eq!(
+            usage_window_reading(&window, now),
+            "Session: 4.0% \u{00b7} resets in 26m"
+        );
+        window.label = "Month".into();
+        assert!(usage_window_reading(&window, now).starts_with("Month:"));
+        window.used_fraction = f32::NAN;
+        window.resets_at = None;
+        assert_eq!(
+            usage_window_reading(&window, now),
+            "Month: Unavailable \u{00b7} reset unavailable"
+        );
+    }
 
     #[test]
     fn polling_uses_foreground_and_background_intervals() {

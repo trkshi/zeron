@@ -66,6 +66,25 @@ pub const FILES_AUTOSAVE_DELAY_MAX_MS: u64 = 10_000;
 const FILE_NAME: &str = "ui-settings.json";
 const NEW_THREAD_BACKGROUND_DIR: &str = "new-thread-backgrounds";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageDisplay {
+    #[default]
+    Circles,
+    Detailed,
+}
+
+impl UsageDisplay {
+    pub const ALL: [Self; 2] = [Self::Circles, Self::Detailed];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Circles => "Circles",
+            Self::Detailed => "Detailed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewThreadComposerBackground {
@@ -355,6 +374,12 @@ pub fn current(cx: &App) -> UiSettings {
 pub fn compact_model_picker(cx: &App) -> bool {
     cx.try_global::<SettingsStore>()
         .is_some_and(|store| store.current.compact_model_picker)
+}
+
+pub fn usage_display(cx: &App) -> UsageDisplay {
+    cx.try_global::<SettingsStore>()
+        .map(|store| store.current.usage_display)
+        .unwrap_or_default()
 }
 
 /// Copy a selected image into Zeron's device-local data directory and make it
@@ -943,6 +968,8 @@ pub struct UiSettings {
     /// the narration between them) fold into one collapsed accordion, so only
     /// the reply text stays visible.
     pub transcript_compact_mode: bool,
+    /// Composer footer: compact rings or explicit counts and reset countdowns.
+    pub usage_display: UsageDisplay,
     /// Save edited workspace files automatically after the configured delay.
     pub files_autosave_enabled: bool,
     /// Idle time before an edited workspace file is saved automatically.
@@ -971,6 +998,12 @@ pub struct UiSettings {
     pub reduce_motion: crate::motion::ReduceMotion,
     /// Also snap animations while the main window is not focused.
     pub pause_animations_in_background: bool,
+    /// Stable native Codex voice id only; devices and microphone state are never persisted.
+    #[serde(default)]
+    pub codex_voice: Option<String>,
+    /// Local preference: never transfers an active call or credentials.
+    #[serde(default)]
+    pub codex_voice_device: Option<String>,
     /// Pre-theme settings used `accentColor`. Read it once, migrate to
     /// [`Self::accent`], and never write it again.
     #[serde(default, rename = "accentColor", skip_serializing)]
@@ -1045,6 +1078,7 @@ impl Default for UiSettings {
             transcript_width: TRANSCRIPT_WIDTH_DEFAULT,
             open_web_links_in_zeron: true,
             transcript_compact_mode: false,
+            usage_display: UsageDisplay::Circles,
             files_autosave_enabled: false,
             files_autosave_delay_ms: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
             files_word_wrap: false,
@@ -1060,6 +1094,8 @@ impl Default for UiSettings {
             new_thread_background_effect: NewThreadBackgroundEffect::None,
             reduce_motion: crate::motion::ReduceMotion::System,
             pause_animations_in_background: false,
+            codex_voice: None,
+            codex_voice_device: None,
             legacy_accent_color: None,
         }
     }
@@ -1694,6 +1730,7 @@ impl UiSettings {
             transcript_width,
             open_web_links_in_zeron,
             transcript_compact_mode,
+            usage_display,
             files_autosave_enabled,
             files_autosave_delay_ms,
             files_word_wrap,
@@ -1709,6 +1746,8 @@ impl UiSettings {
             new_thread_background_effect,
             reduce_motion,
             pause_animations_in_background,
+            codex_voice,
+            codex_voice_device,
             legacy_accent_color,
         );
         current
@@ -2000,6 +2039,24 @@ mod tests {
         let loaded = UiSettings::load(dir.path());
         assert!(!loaded.start_with_new_chat);
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn usage_display_defaults_to_circles_and_survives_stale_settings_merges() {
+        let legacy: UiSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.usage_display, UsageDisplay::Circles);
+        let selected = UiSettings {
+            usage_display: UsageDisplay::Detailed,
+            ..legacy.clone()
+        };
+        let saved = serde_json::to_string(&selected).unwrap();
+        let loaded: UiSettings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.usage_display, UsageDisplay::Detailed);
+        let mut edited = legacy.clone();
+        edited.sidebar_collapsed = true;
+        let merged = UiSettings::merge_changes(&legacy, &edited, loaded);
+        assert_eq!(merged.usage_display, UsageDisplay::Detailed);
+        assert!(merged.sidebar_collapsed);
     }
 
     #[test]
@@ -2699,6 +2756,8 @@ mod tests {
             dictation_enabled: false,
             dictation_input: Some("coreaudio:usb-mic".into()),
             window_geometry: None,
+            codex_voice: Some("ember".into()),
+            codex_voice_device: Some("fedora".into()),
             sidebar_width: 300.0,
             sidebar_collapsed: true,
             sidebar_grouped: true,
@@ -2800,6 +2859,7 @@ mod tests {
             transcript_width: 960.0,
             open_web_links_in_zeron: false,
             transcript_compact_mode: true,
+            usage_display: UsageDisplay::Detailed,
             files_autosave_enabled: true,
             files_autosave_delay_ms: 1_500,
             files_word_wrap: true,

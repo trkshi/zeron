@@ -69,7 +69,7 @@ impl WorkspaceFiles {
         }
     }
 
-    pub(super) fn mutation_gate(&self, checkout: &str) -> Arc<tokio::sync::RwLock<()>> {
+    pub(crate) fn mutation_gate(&self, checkout: &str) -> Arc<tokio::sync::RwLock<()>> {
         let mut gates = lock(&self.inner.mutation_gates);
         gates.retain(|_, gate| gate.strong_count() > 0);
         if let Some(gate) = gates.get(checkout).and_then(Weak::upgrade) {

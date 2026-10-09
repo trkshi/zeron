@@ -20,8 +20,10 @@ pub mod auth;
 pub mod change_requests;
 pub mod chat2_host;
 mod chat_persistence;
+pub mod checkpoints;
 pub mod diff_sync;
 pub mod doc_host;
+mod fs_watch;
 pub mod harness_updates;
 mod http_error;
 pub mod instance_lock;
@@ -40,6 +42,7 @@ pub mod terminals;
 pub mod titles;
 mod transcript_history;
 pub mod uploads;
+pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
 
@@ -47,7 +50,7 @@ pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
 pub use diff_sync::{
-    CheckoutDiffSync, DiffFileTextPair, DiffSidecar, DiffSnapshot, TurnSnapshot,
+    CheckoutDiffSync, DiffFileTextPair, DiffSidecar, DiffSnapshot, TreeSnapshot, TurnSnapshot,
     capture_commit_diff, capture_diff, capture_diff_against, capture_turn_diff,
     discard_working_tree, merge_base, read_diff_file_text, snapshot_tree, working_diff_base,
 };
@@ -137,6 +140,7 @@ pub struct EngineCore {
     pub previews: zeron_preview::PreviewService,
     pub change_requests: CheckoutChangeRequests,
     pub diff_sync: CheckoutDiffSync,
+    pub checkpoints: checkpoints::Checkpoints,
     pub spaces_sync: SpacesSync,
     pub uploads: Uploads,
     pub agent_accounts: AgentAccounts,
@@ -241,16 +245,12 @@ impl EngineCore {
                 org_id: profile.org_id().to_string(),
                 user_id: profile.user_id().to_string(),
                 edge: edge.clone(),
+                local_only: matches!(profile.scope(), WorkspaceScope::Local),
             },
         )?;
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
-        match sessions.recover_stale() {
-            Ok(0) => {}
-            Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
-            Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
-        }
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
         let repos = Repos::new(data_dir, &device_id);
         doc_host.set_repos(repos.clone());
@@ -312,12 +312,24 @@ impl EngineCore {
             repos.clone(),
         ));
         let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
+        let checkpoints = checkpoints::Checkpoints::new(
+            profile.store_root(),
+            repos.clone(),
+            workspace_files.clone(),
+        );
+        sessions.set_checkpoints(checkpoints.clone());
         // Turn starts snapshot the checkout tree — the "Latest turn" diff base.
         let turn_diff = diff_sync.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
             turn_diff.note_turn_start(chat_id, cwd);
         }));
         let spaces_sync = SpacesSync::start(repos.clone(), workspace.clone(), &device_id);
+        // Recovery may dispatch immediately; install checkpoint admission first.
+        match sessions.recover_stale() {
+            Ok(0) => {}
+            Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
+            Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
+        }
         Ok(Self {
             sessions,
             doc_host,
@@ -330,6 +342,7 @@ impl EngineCore {
             previews,
             change_requests,
             diff_sync,
+            checkpoints,
             spaces_sync,
             uploads,
             agent_accounts,
@@ -467,6 +480,7 @@ impl EngineCore {
             self.workspace_scope,
         )
         .with_auth(self.auth())
+        .with_checkpoints(self.checkpoints.clone())
         .with_previews(self.previews.clone())
         .with_harness_updates(self.harness_updates.clone());
         if let Some(links) = self.links() {

@@ -402,6 +402,43 @@ impl SessionDoc {
         Ok(())
     }
 
+    /// Restored top-level threads also owe their history to a fresh provider session.
+    pub fn restored_from_chat(&self) -> Option<String> {
+        match self.doc.get_map("meta").get("restoredFromChat") {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
+            _ => None,
+        }
+    }
+
+    pub fn set_restored_from_chat(&self, chat_id: &str) -> Result<(), DocError> {
+        self.doc.get_map("meta").insert("restoredFromChat", chat_id)?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// Parked runtimes may still own background work; scan only lifecycle fields.
+    pub fn has_running_subagents(&self) -> bool {
+        use loro::{Container, ValueOrContainer};
+        let messages = self.doc.get_list("messages");
+        (0..messages.len()).rev().any(|index| {
+            let Some(ValueOrContainer::Container(Container::Map(entry))) = messages.get(index)
+            else {
+                return false;
+            };
+            let Some(ValueOrContainer::Container(Container::List(parts))) = entry.get("parts")
+            else {
+                return false;
+            };
+            (0..parts.len()).rev().any(|index| {
+                let Some(ValueOrContainer::Container(Container::Map(part))) = parts.get(index)
+                else {
+                    return false;
+                };
+                matches!(part.get("subagentStatus"), Some(ValueOrContainer::Value(LoroValue::String(status))) if status.as_str() == "running")
+            })
+        })
+    }
+
     pub fn chat_id(&self) -> Option<String> {
         match self.doc.get_map("meta").get("chatId") {
             Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
@@ -1494,6 +1531,31 @@ pub fn materialize_tail(
 mod tests {
     use super::*;
     use crate::parts::fold_event_into_parts;
+
+    #[test]
+    fn checkpoint_metadata_and_shallow_lifecycle_queries() {
+        let doc = SessionDoc::init("restored").unwrap();
+        assert!(doc.restored_from_chat().is_none());
+        assert!(!doc.has_running_subagents());
+        doc.set_restored_from_chat("original").unwrap();
+        let messages = doc.doc().get_list("messages");
+        let entry = messages.push_container(LoroMap::new()).unwrap();
+        entry.insert("id", "user").unwrap();
+        let parts = entry.insert_container("parts", LoroList::new()).unwrap();
+        let part = parts.push_container(LoroMap::new()).unwrap();
+        part.insert("kind", "tool").unwrap();
+        part.insert("subagentStatus", "running").unwrap();
+        assert!(doc.has_running_subagents());
+        part.insert("subagentStatus", "completed").unwrap();
+        assert!(!doc.has_running_subagents());
+        doc.doc().commit();
+        let imported = LoroDoc::new();
+        imported.import(&doc.export_snapshot().unwrap()).unwrap();
+        assert_eq!(
+            SessionDoc::from_doc(imported).restored_from_chat().as_deref(),
+            Some("original"),
+        );
+    }
 
     #[test]
     fn fork_seam_round_trips_through_the_doc() {

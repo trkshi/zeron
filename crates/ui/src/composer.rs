@@ -8392,7 +8392,9 @@ impl Composer {
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
         {
             let state = self.state.read(cx);
-            let now = chrono::Utc::now();
+            // AppState also notifies at clock-only transitions, so a run that
+            // goes stale drops its interrupt at the cutoff.
+            let now = crate::state::clock_now();
             retain_live_interrupts(&mut self.interrupting, |chat_id| {
                 matches!(
                     state.indicator_for(chat_id, now),
@@ -11545,52 +11547,84 @@ impl Render for Composer {
                         .map(|chat| chat.device_id.clone())
                         .filter(|device| state.local_device_id.as_ref() != Some(device))
                 };
-                self.account_usage
-                    .update(cx, |usage, cx| usage.track(harness, target, surface_width, cx));
+                self.account_usage.update(cx, |usage, cx| {
+                    usage.track(harness, target, surface_width, cx)
+                });
             }
-            container.child(
-                div()
-                    .w_full()
-                    .h(px(SESSION_FOOTER_HEIGHT * bottom_slot))
-                    .mt(px(-Theme::SPACE_SM * (1.0 - bottom_slot)))
-                    .mb(px(-Theme::SPACE_SM * bottom_slot))
-                    .relative()
-                    .when(new_thread_chrome_opacity > 0.0, |slot| {
-                        slot.child(
+            if crate::settings::usage_display(cx) == crate::settings::UsageDisplay::Detailed
+                && session_chrome_opacity > 0.0
+            {
+                // Detailed readings participate in layout so wrapped windows
+                // grow the dock instead of overlapping the composer or transcript.
+                container.child(
+                    div()
+                        .id("detailed-session-footer")
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .mb(px(-Theme::SPACE_SM * bottom_slot))
+                        .opacity(session_chrome_opacity)
+                        .children(footer.flatten().map(|footer| {
                             div()
-                                .absolute()
-                                .inset_0()
-                                .px(px(10.0))
-                                .flex()
-                                .items_center()
-                                .opacity(new_thread_chrome_opacity)
-                                .children(new_thread_git_selectors),
-                        )
-                    })
-                    .when(session_chrome_opacity > 0.0, |slot| {
-                        slot.child(
-                            div()
-                                .absolute()
-                                .inset_0()
                                 .w_full()
-                                .h(px(SESSION_FOOTER_HEIGHT))
-                                .flex()
-                                .items_center()
-                                .opacity(session_chrome_opacity)
-                                .child(div().flex_1().min_w_0().children(footer.flatten()))
-                                .child(
-                                    // The footer row's own 4px gap: the PR badge
-                                    // ends flush with the row, so the rings keep
-                                    // their distance here.
-                                    div()
-                                        .flex_none()
-                                        .pl(px(4.0))
-                                        .pr(px(10.0))
-                                        .child(self.account_usage.clone()),
-                                ),
-                        )
-                    }),
-            )
+                                .min_w_0()
+                                .min_h(px(SESSION_FOOTER_HEIGHT))
+                                .child(footer)
+                        }))
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .px(px(4.0))
+                                .child(self.account_usage.clone()),
+                        ),
+                )
+            } else {
+                container.child(
+                    div()
+                        .w_full()
+                        .h(px(SESSION_FOOTER_HEIGHT * bottom_slot))
+                        .mt(px(-Theme::SPACE_SM * (1.0 - bottom_slot)))
+                        .mb(px(-Theme::SPACE_SM * bottom_slot))
+                        .relative()
+                        .when(new_thread_chrome_opacity > 0.0, |slot| {
+                            slot.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .px(px(10.0))
+                                    .flex()
+                                    .items_center()
+                                    .opacity(new_thread_chrome_opacity)
+                                    .children(new_thread_git_selectors),
+                            )
+                        })
+                        .when(session_chrome_opacity > 0.0, |slot| {
+                            slot.child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .w_full()
+                                    .h(px(SESSION_FOOTER_HEIGHT))
+                                    .flex()
+                                    .items_center()
+                                    .opacity(session_chrome_opacity)
+                                    .child(div().flex_1().min_w_0().children(footer.flatten()))
+                                    .child(
+                                        // The footer row's own 4px gap: the PR badge
+                                        // ends flush with the row, so the rings keep
+                                        // their distance here.
+                                        div()
+                                            .flex_none()
+                                            .pl(px(4.0))
+                                            .pr(px(10.0))
+                                            .child(self.account_usage.clone()),
+                                    ),
+                            )
+                        }),
+                )
+            }
         } else {
             container
         };
@@ -12612,6 +12646,48 @@ mod tests {
         // written its frame into the channel by the time the executor parks.
         cx.run_until_parked();
         assert!(server_in.try_recv().is_err());
+    }
+
+    /// A run that goes stale purely by the clock (no state frame) drops its
+    /// pending interrupt at the staleness cutoff, not at some later
+    /// unrelated state change.
+    #[gpui::test]
+    fn interrupt_drops_when_its_run_goes_stale_by_clock_alone(cx: &mut gpui::TestAppContext) {
+        use chrono::TimeDelta;
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-19T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let clock = crate::state::TestClock::start(now);
+        let updated = now - TimeDelta::seconds(10);
+        let state = cx.new(|cx| {
+            let mut state = AppState::new();
+            state.sessions = vec![zeron_proto::Session {
+                last_completed_turn: None,
+                chat_id: "c".into(),
+                device_id: "remote".into(),
+                status: zeron_proto::SessionStatus::Working,
+                started_at: Some(updated),
+                updated_at: updated,
+                running_subagents: 0,
+            }];
+            state.selected_chat = Some("c".into());
+            state.watch_clock_transitions(cx);
+            state
+        });
+        let composer = cx.new(|cx| Composer::new(state, cx));
+        composer.update(cx, |composer, _| {
+            assert!(begin_interrupt(&mut composer.interrupting, "c"));
+        });
+        let cutoff = updated + TimeDelta::milliseconds(crate::state::SESSION_STALE_MS + 1);
+        let before = cutoff - TimeDelta::milliseconds(1);
+        clock.set(before);
+        cx.executor()
+            .advance_clock((before - now).to_std().unwrap());
+        assert!(composer.read_with(cx, |composer, _| composer.is_interrupting("c")));
+        clock.set(cutoff);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(1));
+        assert!(!composer.read_with(cx, |composer, _| composer.is_interrupting("c")));
     }
 
     #[gpui::test]

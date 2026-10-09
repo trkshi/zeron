@@ -83,6 +83,32 @@ impl FilesSurface {
         self.pending_mutation.is_some()
     }
 
+    pub(crate) fn checkpoint_restore_blocker(&self) -> Option<&'static str> {
+        if self.pending_mutation.is_some() || self.mutation_hold.is_some() {
+            Some("Wait for the current file operation to finish before restoring files.")
+        } else if self
+            .preview
+            .documents
+            .values()
+            .any(|document| document.pending_save.is_some())
+        {
+            Some("Wait for pending file saves to finish, then refresh the preview.")
+        } else if self.has_unsaved_changes() {
+            Some("Save or close edited files before restoring a checkpoint.")
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn finish_checkpoint_restore(&mut self, cx: &mut Context<Self>) {
+        self.hold_mutation(None, cx);
+        let paths = self.preview.documents.keys().cloned().collect::<Vec<_>>();
+        for path in paths {
+            self.reconcile_document(path, cx);
+        }
+        self.refresh(cx);
+    }
+
     pub(crate) fn prepare_mutation(&mut self, intent: MutationIntent, cx: &mut Context<Self>) {
         self.pending_mutation = Some(intent);
         for (path, document) in &mut self.preview.documents {
@@ -118,7 +144,7 @@ impl FilesSurface {
         if self
             .mutation_hold
             .as_deref()
-            .is_some_and(|hold| contains_path(hold, path))
+            .is_some_and(|hold| hold.is_empty() || contains_path(hold, path))
         {
             return true;
         }

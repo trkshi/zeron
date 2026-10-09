@@ -5326,7 +5326,7 @@ impl Shell {
             .iter()
             // Spawned children stay out of the Archived section too — the
             // same top-level rule as `visible_chats`.
-            .filter(|c| c.archived && c.parent_chat_id.is_none())
+            .filter(|c| c.archived && c.is_top_level())
             .filter(|chat| in_filter(chat))
             .cloned()
             .collect();

@@ -22,17 +22,17 @@ path = "tests/fixtures/pi_rpc.rs"
 required-features = ["native-fixture"]
 
 [dependencies]
+zeron-voice-media.workspace = true
 zeron-proto.workspace = true
 base64 = "0.22"
 reqwest.workspace = true
 tokio.workspace = true
-tokio-util = { workspace = true, features = ["io-util"] }
+tokio-util = { workspace = true, features = ["io-util", "codec"] }
 uuid.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml = "0.8"
 deser-hjson.workspace = true
 serde_yaml_ng = "0.10"
 anyhow.workspace = true

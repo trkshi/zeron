@@ -36,6 +36,83 @@ pub fn chip(
     )
 }
 
+fn compact_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{}k", tokens / 1_000)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn detailed_label(usage: Option<ContextUsage>) -> String {
+    let usage = usage.unwrap_or_default();
+    let tokens = usage.tokens.map(compact_tokens);
+    let window = usage.window.filter(|size| *size > 0).map(compact_tokens);
+    match (tokens, window, usage.fraction()) {
+        (Some(tokens), Some(window), Some(fraction)) => {
+            format!("{tokens}/{window} ({:.0}%)", fraction * 100.0)
+        }
+        (Some(tokens), _, _) => format!("{tokens} / limit unavailable"),
+        (_, Some(window), _) => format!("Unavailable / {window}"),
+        _ => "Unavailable".into(),
+    }
+}
+
+pub(crate) fn detailed_chip(
+    usage: Option<ContextUsage>,
+    open: bool,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    let fraction = usage.and_then(ContextUsage::fraction);
+    let color = match fraction {
+        Some(fraction) if fraction >= 0.9 => theme.danger,
+        Some(fraction) if fraction >= 0.75 => theme.warning,
+        _ => theme.text_muted,
+    };
+    let mut bar = div()
+        .w(px(80.0))
+        .h(px(10.0))
+        .flex_none()
+        .flex()
+        .gap(px(2.0));
+    for segment in 0..20 {
+        let fill = (fraction.unwrap_or(0.0).clamp(0.0, 1.0) * 20.0 - segment as f64).clamp(0.0, 1.0)
+            as f32;
+        bar = bar.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .bg(theme.text_faint.opacity(0.25))
+                .when(fill > 0.0, |segment| {
+                    segment.child(div().h_full().w(gpui::relative(fill)).bg(color))
+                }),
+        );
+    }
+    div()
+        .id("context-usage-detailed")
+        .min_w_0()
+        .max_w_full()
+        .min_h(px(24.0))
+        .px(px(6.0))
+        .rounded(px(6.0))
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_x(px(8.0))
+        .text_size(px(11.0))
+        .line_height(px(24.0))
+        .text_color(color)
+        .cursor_pointer()
+        .when(open, |chip| chip.bg(crate::theme::ink(0.05)))
+        .hover(|chip| chip.bg(crate::theme::ink(0.05)))
+        .child("Context")
+        .child(bar)
+        .child(detailed_label(usage))
+}
+
 /// Account and context rings retain the same hit target as the TPS chip.
 pub(crate) fn ring_chip(
     id: &'static str,
@@ -212,6 +289,46 @@ pub fn card(usage: Option<ContextUsage>, theme: &Theme) -> gpui::Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detailed_context_uses_reported_capacity_and_distinguishes_missing_data() {
+        assert_eq!(
+            detailed_label(Some(ContextUsage {
+                tokens: Some(110_000),
+                window: Some(1_000_000),
+            })),
+            "110k/1.0M (11%)"
+        );
+        assert_eq!(
+            detailed_label(Some(ContextUsage {
+                tokens: Some(0),
+                window: Some(256_000),
+            })),
+            "0/256k (0%)"
+        );
+        assert_eq!(detailed_label(None), "Unavailable");
+        assert_eq!(
+            detailed_label(Some(ContextUsage {
+                tokens: None,
+                window: Some(1_000_000),
+            })),
+            "Unavailable / 1.0M"
+        );
+        assert_eq!(
+            detailed_label(Some(ContextUsage {
+                tokens: Some(12_000),
+                window: Some(0),
+            })),
+            "12k / limit unavailable"
+        );
+        assert_eq!(
+            detailed_label(Some(ContextUsage {
+                tokens: Some(300_000),
+                window: Some(200_000),
+            })),
+            "300k/200k (150%)"
+        );
+    }
+
     #[test]
     fn indicator_needs_a_reported_window() {
         assert!(!has_window(None));

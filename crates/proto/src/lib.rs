@@ -5,6 +5,7 @@
 
 pub mod agent;
 pub mod attachment_mentions;
+pub mod checkpoints;
 pub mod entities;
 pub mod file_mentions;
 pub mod invocation;
@@ -12,9 +13,11 @@ pub mod motion;
 pub mod preview;
 pub mod sidebar_pins;
 pub mod view;
+pub mod voice;
 pub mod workspace;
 
 pub use agent::*;
+pub use checkpoints::*;
 pub use entities::*;
 pub use preview::*;
 pub use sidebar_pins::*;

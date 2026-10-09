@@ -3,7 +3,7 @@
 This public fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) keeps the
 app named Zeron. The `patched-windows` branch starts from upstream `v0.2.101`
 (`b42fc2b8fbf247dd92796c2917f277535cea91ac`) and incorporates upstream `main`
-through `d5c1cdc1` (version `v0.2.104`). It is a personal build, not an official
+through `1074bc54` (version `v0.2.107`). It is a personal build, not an official
 Zeron release.
 
 ## Changes
@@ -23,12 +23,10 @@ Zeron release.
   when the Markdown parser produces identical content. Preserve indentation,
   spaces on nonblank lines, internal paragraph breaks, and meaningful code or
   raw-HTML whitespace. Failed sends still restore the original draft.
-- Discard the interrupted Claude turn's held completion once a steer is
-  confirmed, so quiet tools in the new turn cannot trigger a stale end or
-  prematurely drain queued messages. Preserve the fallback for steers the
-  CLI never confirms and let active tools finish normally. Remote chats need
-  this fix on the engine running Claude; a Windows rebuild alone does not
-  update the Ubuntu engine.
+- Retain upstream's Claude/Codex lifecycle-based steering and stop handling.
+  Reset measured message segments only at confirmed steering boundaries, not
+  when a prompt is merely written to the provider. Quiet tools cannot release
+  an old turn's completion. Remote chats need the updated engine too.
 - Show structured asynchronous Codex questions in a separate panel with choices
   and custom answers, without replacing the normal chat draft. The panel uses
   the composer's theme-aware frosted-glass material. Questions stay answerable
@@ -94,31 +92,17 @@ Zeron release.
   not alert again. Windows uses the question chime because upstream's Windows
   desktop-toast handler is not implemented. This is a UI-only change; the
   Ubuntu engine does not need an update.
-- Prefer the latest request's measured generation TPS in the footer when
-  codex-lb reports it. Match its dashboard formula: output minus reasoning,
-  divided by elapsed time minus time to first token. Keep whole-turn average
-  TPS in the token popover, and retain the existing, clearly labeled average
-  for providers without request timing. Hold readings between reports.
-  The host must explicitly opt in through
-  `$CODEX_HOME/zeron-codex-lb-usage.toml` (`~/.codex` by default) with
-  `enabled = true` and `origin = "http://your-codex-lb:2455"`.
-  The selected `codex-lb` provider must use `CODEX_LB_API_KEY` and exactly that
-  origin. Requires codex-lb's read-only
-  `GET /v1/responses/{response_id}/metrics` integration endpoint. Lookup uses
-  the same API key and exact response IDs from this thread's Codex rollout,
-  never another conversation's latest request. Only bounded new rollout data
-  is read; prompts and keys are never sent to the metrics endpoint or persisted
-  in token statistics. Redirects are disabled, lookups have short timeouts,
-  and telemetry failures do not fail the chat. Persist generation measurements
-  with the turn for reconnects and device sync. Unsupported/older Codex
-  rollouts keep the prior average display; existing history is not remeasured.
-  Reported cost is unchanged and is not inferred from codex-lb pricing.
+- Remove Zeron's codex-lb-specific metrics lookup and private pool-usage
+  adapter. No rollout tailing, proxy-metrics polling, or proxy-specific account
+  is needed for token statistics. Codex's configured provider and credentials
+  are unchanged, as is the standalone proxy service. Historical recorded
+  statistics remain readable; new Codex turns use the normal whole-turn average.
 - Use the earlier whole-turn average TPS for Claude Code and OpenCode, not
   client-arrival generation estimates: buffered CLI output is not a reliable
   measure of model-generation time. Ignore previously saved client estimates
   in both live and completed-turn displays, without changing stored chats or
-  token/cache/cost totals. Keep codex-lb's server-measured generation TPS,
-  bounded Claude request tracking, and cached footer statistics. Remote use
+  token/cache/cost totals. Keep bounded Claude request tracking and cached
+  footer statistics. Remote use
   requires an updated Ubuntu engine as well as the Windows app.
 - Retain upstream's `Shift+Backspace` fix: holding Shift while pressing
   Backspace still deletes backward or removes the selected text in the
@@ -138,6 +122,17 @@ Zeron release.
   probe only the current harness's active accounts; opening the account picker
   still refreshes all saved accounts. Remote scoped polling requires the
   patched Ubuntu engine; provider backoff and last-good usage caches remain.
+- Choose **Circles** (default) or **Detailed** in **Settings > Appearance >
+  Fonts and layout > Usage display**. Detailed mode shows TPS, a context bar
+  with reported tokens/capacity, and provider usage windows with reset
+  countdowns. Readings wrap on narrow layouts, retain their popovers, and
+  show unavailable data honestly. Countdown repaints do not increase polling.
+- Restore a checkpoint's conversation, files, or both from a user message.
+  Preserve the original thread; preview file changes and create a recovery
+  backup before restoring. Busy runtimes, background tasks, and changed Git
+  state prevent unsafe file restores. See [checkpoint restore](docs/checkpoint-restore.md)
+  for limits and compatibility with older turns. The engine needs this feature
+  as well as the client; upstream's temporary diff snapshots remain separate.
 - Keep the app name, version, installer identity, account handling, and
   conversation storage unchanged.
 
