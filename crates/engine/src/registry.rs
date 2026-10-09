@@ -93,6 +93,7 @@ struct HarnessPrefsFile {
     /// on without a trip to Settings.
     disabled: Vec<HarnessId>,
     titles: TitleSettings,
+    account_auto_switch: AccountAutoSwitchPrefs,
     /// The allow-list written back when enablement was a fixed default set.
     /// Read once, folded into `disabled`, and never written again.
     #[serde(skip_serializing)]
@@ -107,6 +108,24 @@ pub struct TitleSettings {
     pub harness: Option<HarnessId>,
     /// None selects the cheapest model offered by the selected harness.
     pub model: Option<String>,
+}
+
+/// Opt-in, per-device quota rotation for saved OAuth accounts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AccountAutoSwitchPrefs {
+    pub claude_code: bool,
+    pub codex: bool,
+}
+
+impl AccountAutoSwitchPrefs {
+    pub fn enabled(self, harness: HarnessId) -> bool {
+        match harness {
+            HarnessId::ClaudeCode => self.claude_code,
+            HarnessId::Codex => self.codex,
+            _ => false,
+        }
+    }
 }
 
 type Factory = Box<dyn Fn() -> Result<Arc<dyn Harness>, HarnessError> + Send + Sync>;
@@ -432,6 +451,27 @@ impl HarnessRegistry {
 
     pub fn title_settings(&self) -> TitleSettings {
         self.prefs().titles.clone()
+    }
+
+    pub fn account_auto_switch(&self) -> AccountAutoSwitchPrefs {
+        self.prefs().account_auto_switch
+    }
+
+    pub fn set_account_auto_switch(&self, harness: HarnessId, enabled: bool) -> Result<(), String> {
+        {
+            let mut prefs = self.prefs();
+            match harness {
+                HarnessId::ClaudeCode => prefs.account_auto_switch.claude_code = enabled,
+                HarnessId::Codex => prefs.account_auto_switch.codex = enabled,
+                _ => {
+                    return Err(
+                        "Automatic account switching supports only Claude Code and Codex".into(),
+                    );
+                }
+            }
+        }
+        self.persist_prefs();
+        Ok(())
     }
 
     pub fn set_title_settings(&self, mut settings: TitleSettings) -> Result<(), String> {
@@ -1284,6 +1324,28 @@ mod title_tests {
         let prefs: HarnessPrefsFile = serde_json::from_str(r#"{"disabled":["codex"]}"#).unwrap();
         assert_eq!(prefs.titles, TitleSettings::default());
         assert_eq!(prefs.disabled, vec![HarnessId::Codex]);
+        assert_eq!(prefs.account_auto_switch, AccountAutoSwitchPrefs::default());
+    }
+
+    #[test]
+    fn account_auto_switch_is_opt_in_per_provider_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = HarnessRegistry::new();
+        registry.load_prefs(dir.path());
+        assert!(!registry.account_auto_switch().enabled(HarnessId::Codex));
+        assert!(!registry.account_auto_switch().enabled(HarnessId::ClaudeCode));
+        registry.set_account_auto_switch(HarnessId::Codex, true).unwrap();
+        assert!(!registry.account_auto_switch().enabled(HarnessId::ClaudeCode));
+        registry.set_account_auto_switch(HarnessId::ClaudeCode, true).unwrap();
+        assert!(registry.set_account_auto_switch(HarnessId::Opencode, true).is_err());
+        let reloaded = HarnessRegistry::new();
+        reloaded.load_prefs(dir.path());
+        assert!(reloaded.account_auto_switch().enabled(HarnessId::Codex));
+        assert!(reloaded.account_auto_switch().enabled(HarnessId::ClaudeCode));
+        reloaded.set_account_auto_switch(HarnessId::Codex, false).unwrap();
+        registry.load_prefs(dir.path());
+        assert!(!registry.account_auto_switch().enabled(HarnessId::Codex));
+        assert!(registry.account_auto_switch().enabled(HarnessId::ClaudeCode));
     }
 }
 

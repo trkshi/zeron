@@ -207,7 +207,7 @@ async fn scoped_usage_refresh_preserves_other_accounts_and_full_refresh_behavior
     }
 
     accounts
-        .refresh_usage(&targets, Some(HarnessId::Codex))
+        .refresh_usage(&targets, UsageProbeScope::ActiveHarness(HarnessId::Codex))
         .await;
     assert_eq!(server.hits("GET /backend-api/wham/usage"), 1);
     let active_key = usage_key(HarnessId::Codex, &active.account_key);
@@ -239,7 +239,7 @@ async fn scoped_usage_refresh_preserves_other_accounts_and_full_refresh_behavior
         .get_mut(&active_key)
         .unwrap()
         .checked_at = stale_at;
-    accounts.refresh_usage(&targets, None).await;
+    accounts.refresh_usage(&targets, UsageProbeScope::All).await;
     assert_eq!(server.hits("GET /backend-api/wham/usage"), 3);
     assert!(
         lock(&accounts.inner.usage)[&inactive_key]

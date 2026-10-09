@@ -23,7 +23,7 @@ use gpui::{
     px,
 };
 
-use zeron_engine::registry::{HarnessDescriptor, descriptor_enabled};
+use zeron_engine::registry::{AccountAutoSwitchPrefs, HarnessDescriptor, descriptor_enabled};
 
 use zeron_proto::{HarnessId, HarnessUpdatePhase, HarnessUpdatePolicy, HarnessUpdateStatus};
 
@@ -189,6 +189,10 @@ pub struct HarnessesPage {
     accounts_page: Option<Entity<AccountsPage>>,
     update_task: Option<Task<()>>,
     update_action_task: Option<Task<()>>,
+    account_auto_switch: Loadable<AccountAutoSwitchPrefs>,
+    auto_switch_pending: bool,
+    auto_switch_load_task: Option<Task<()>>,
+    auto_switch_action_task: Option<Task<()>>,
 }
 
 impl HarnessesPage {
@@ -211,6 +215,10 @@ impl HarnessesPage {
             accounts_page: None,
             update_task: None,
             update_action_task: None,
+            account_auto_switch: Loadable::Idle,
+            auto_switch_pending: false,
+            auto_switch_load_task: None,
+            auto_switch_action_task: None,
         };
         page.load(cx);
         page
@@ -264,12 +272,123 @@ impl HarnessesPage {
             .gap(px(20.0))
             .child(self.render_completion_for(harness, theme, cx))
             .children(self.render_updates_for(harness, theme, cx))
+            .children(self.render_account_auto_switch_for(harness, theme, cx))
             .when_some(accounts, |details, accounts| details.child(accounts));
         if motion::reduced_motion(cx) {
             content.into_any_element()
         } else {
             motion::menu_in(format!("agent-details-{harness:?}"), content).into_any_element()
         }
+    }
+
+    fn render_account_auto_switch_for(
+        &self,
+        harness: HarnessId,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !matches!(harness, HarnessId::ClaudeCode | HarnessId::Codex) {
+            return None;
+        }
+        let enabled = self
+            .account_auto_switch
+            .ready()
+            .is_some_and(|prefs| prefs.enabled(harness));
+        let interactive = self.account_auto_switch.ready().is_some()
+            && !self.auto_switch_pending
+            && self.state.read(cx).engine().is_some();
+        let label = "Auto-switch account";
+        let note = if self.account_auto_switch.error().is_some() {
+            "Update or reconnect this device's engine to load account switching settings."
+        } else {
+            "At 100% session or weekly usage, switch before the next idle turn."
+        };
+        let switch = widgets::toggle_switch(
+            theme,
+            enabled,
+            format!("account-auto-switch-{harness:?}"),
+        )
+        .id(format!("account-auto-switch-{harness:?}"))
+        .role(gpui::Role::Switch)
+        .aria_label(label)
+        .aria_toggled(if enabled {
+            gpui::Toggled::True
+        } else {
+            gpui::Toggled::False
+        })
+        .when(!interactive, |el| el.opacity(0.5))
+        .when(interactive, |el| {
+            el.cursor_pointer()
+                .tab_index(0)
+                .focus_visible(|style| style.border_2().border_color(theme.accent))
+                .on_click(cx.listener(move |page, _, _, cx| {
+                    cx.stop_propagation();
+                    page.set_account_auto_switch(harness, !enabled, cx);
+                }))
+        });
+        Some(
+            div()
+                .min_h(px(48.0))
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(widgets::row_title(theme, label))
+                        .child(widgets::meta_line(
+                            theme,
+                            vec![div().child(note).into_any_element()],
+                        )),
+                )
+                .child(switch)
+                .into_any_element(),
+        )
+    }
+
+    fn set_account_auto_switch(
+        &mut self,
+        harness: HarnessId,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.auto_switch_pending || self.account_auto_switch.ready().is_none() {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.error = Some("Engine not connected. Reconnect and try again.".into());
+            cx.notify();
+            return;
+        };
+        let target = self.target_device.clone();
+        let params = self.with_target(serde_json::json!({"harness": harness, "enabled": enabled}));
+        self.auto_switch_pending = true;
+        self.error = None;
+        self.auto_switch_action_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::SET_ACCOUNT_AUTO_SWITCH, params)
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|value| {
+                    serde_json::from_value::<AccountAutoSwitchPrefs>(value)
+                        .map_err(|error| error.to_string())
+                });
+            this.update(cx, |page, cx| {
+                if page.target_device != target {
+                    return;
+                }
+                page.auto_switch_pending = false;
+                match result {
+                    Ok(prefs) => page.account_auto_switch = Loadable::Ready(prefs),
+                    Err(error) => page.error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// The expanded provider's Updates section: the update policy, short
@@ -404,6 +523,10 @@ impl HarnessesPage {
         self.updates = Loadable::Idle;
         self.update_task = None;
         self.update_action_task = None;
+        self.auto_switch_load_task = None;
+        self.auto_switch_action_task = None;
+        self.auto_switch_pending = false;
+        self.account_auto_switch = Loadable::Idle;
         self.load(cx);
         cx.notify();
     }
@@ -416,6 +539,31 @@ impl HarnessesPage {
         };
         let params = self.with_target(serde_json::json!({}));
         let update_params = params.clone();
+        let auto_switch_params = params.clone();
+        let auto_switch_target = self.target_device.clone();
+        let auto_switch_engine = engine.clone();
+        self.account_auto_switch = Loadable::Loading;
+        self.auto_switch_load_task = Some(cx.spawn(async move |this, cx| {
+            let result = auto_switch_engine
+                .client()
+                .call(methods::GET_ACCOUNT_AUTO_SWITCH, auto_switch_params)
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|value| {
+                    serde_json::from_value::<AccountAutoSwitchPrefs>(value)
+                        .map_err(|error| error.to_string())
+                });
+            this.update(cx, |page, cx| {
+                if page.target_device == auto_switch_target {
+                    page.account_auto_switch = match result {
+                        Ok(prefs) => Loadable::Ready(prefs),
+                        Err(error) => Loadable::Error(error),
+                    };
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
         let supports_updates = self.supports_updates(cx);
 
         self.harnesses = Loadable::Loading;
@@ -1264,6 +1412,23 @@ mod tests {
         };
         window
             .update(cx, |page, _, cx| {
+                page.account_auto_switch = super::Loadable::Ready(super::AccountAutoSwitchPrefs {
+                    claude_code: true,
+                    codex: true,
+                });
+                let theme = crate::theme::Theme::of(cx).for_settings_surface();
+                assert!(
+                    page.render_account_auto_switch_for(zeron_proto::HarnessId::ClaudeCode, &theme, cx)
+                        .is_some()
+                );
+                assert!(
+                    page.render_account_auto_switch_for(zeron_proto::HarnessId::Codex, &theme, cx)
+                        .is_some()
+                );
+                assert!(
+                    page.render_account_auto_switch_for(zeron_proto::HarnessId::Opencode, &theme, cx)
+                        .is_none()
+                );
                 page.harnesses = super::Loadable::Ready(vec![
                     descriptor(zeron_proto::HarnessId::ClaudeCode, "Claude Code"),
                     descriptor(zeron_proto::HarnessId::Codex, "Codex"),

@@ -94,6 +94,7 @@ use zeron_proto::{
 use crate::repos::home_dir;
 use crate::{EngineError, new_id, now_ms};
 
+mod auto_switch;
 mod oauth;
 #[cfg(test)]
 mod provider_tests;
@@ -767,6 +768,13 @@ pub struct AgentAccounts {
     inner: Arc<Inner>,
 }
 
+#[derive(Clone, Copy)]
+enum UsageProbeScope {
+    All,
+    ActiveHarness(HarnessId),
+    Harness(HarnessId),
+}
+
 impl AgentAccounts {
     pub fn new(config: AgentAccountsConfig) -> Self {
         Self::with_endpoints(config, ProbeEndpoints::default(), Default::default())
@@ -876,19 +884,21 @@ impl AgentAccounts {
         usage_harness: Option<HarnessId>,
     ) -> Result<AgentAccountsSnapshot, EngineError> {
         let _ops = self.inner.ops.lock().await;
-        self.list_locked_with_usage_scope(force_usage, usage_harness)
+        let scope = usage_harness.map_or(UsageProbeScope::All, UsageProbeScope::ActiveHarness);
+        self.list_locked_with_usage_scope(force_usage, scope)
             .await
     }
 
     /// Caller holds [`Inner::ops`].
     async fn list_locked(&self, force_usage: bool) -> Result<AgentAccountsSnapshot, EngineError> {
-        self.list_locked_with_usage_scope(force_usage, None).await
+        self.list_locked_with_usage_scope(force_usage, UsageProbeScope::All)
+            .await
     }
 
     async fn list_locked_with_usage_scope(
         &self,
         force_usage: bool,
-        usage_harness: Option<HarnessId>,
+        scope: UsageProbeScope,
     ) -> Result<AgentAccountsSnapshot, EngineError> {
         let mut warnings: Vec<AgentAccountWarning> = Vec::new();
         // Per agent, the live logins' account keys — one for single-login
@@ -993,7 +1003,7 @@ impl AgentAccounts {
                     })
                 })
                 .collect();
-            self.refresh_usage(&targets, usage_harness).await;
+            self.refresh_usage(&targets, scope).await;
             // A probe can teach a slot who it is (Devin's key file names no
             // one): show that in this very list.
             for (harness, slots) in providers.iter_mut() {
@@ -1101,6 +1111,15 @@ impl AgentAccounts {
             ));
         }
         let _ops = self.inner.ops.lock().await;
+        self.activate_locked(harness, account_id).await
+    }
+
+    /// Caller holds the credential operation lock.
+    async fn activate_locked(
+        &self,
+        harness: HarnessId,
+        account_id: &str,
+    ) -> Result<AgentAccountsSnapshot, EngineError> {
         // The pre-swap snapshot must hold the CURRENT tokens (the CLI may have
         // rotated its refresh token seconds ago) — never a cached read.
         *lock(&self.inner.claude_credentials) = None;
@@ -2598,7 +2617,7 @@ impl AgentAccounts {
     async fn refresh_usage(
         &self,
         targets: &[(HarnessId, &Slot, bool)],
-        usage_harness: Option<HarnessId>,
+        scope: UsageProbeScope,
     ) {
         let now = now_ms();
         let mut probes = Vec::new();
@@ -2607,7 +2626,12 @@ impl AgentAccounts {
             let usage = lock(&self.inner.usage);
             let mut inflight = lock(&self.inner.inflight_probes);
             for &(harness, slot, active) in targets {
-                if usage_harness.is_some_and(|selected| selected != harness || !active) {
+                let skip = match scope {
+                    UsageProbeScope::All => false,
+                    UsageProbeScope::ActiveHarness(selected) => selected != harness || !active,
+                    UsageProbeScope::Harness(selected) => selected != harness,
+                };
+                if skip {
                     continue;
                 }
                 let key = usage_key(harness, &slot.account_key);

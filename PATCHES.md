@@ -122,12 +122,28 @@ Zeron release.
   probe only the current harness's active accounts; opening the account picker
   still refreshes all saved accounts. Remote scoped polling requires the
   patched Ubuntu engine; provider backoff and last-good usage caches remain.
+- Give each saved account a stable, unique UI row ID so different providers
+  cannot consume each other's Switch clicks. Retargeting Accounts clears old
+  rows, menus, and pending UI tasks. Disconnected switches show an error;
+  account actions cannot be overwritten by an earlier list refresh.
+- Opt into **Auto-switch account** in the expanded Codex or Claude Code
+  provider settings, separately for each device. Before a new idle turn,
+  switch an exhausted session/weekly OAuth login to the saved account with
+  the most remaining quota. Require recent, successful usage for both logins;
+  unknown, expired, and exhausted alternatives are skipped. Refresh inactive
+  accounts only when the current account is exhausted, honoring existing
+  provider cooldowns and backoff. Active turns, questions, voice, and background
+  work prevent rotation. Retire only idle runtimes of the affected provider
+  before replacing credentials, retaining native conversation IDs. Never
+  replay a failed turn. Off by default; requires
+  the updated engine as well as the client. API-key logins are not rotated.
 - Choose **Circles** (default) or **Detailed** in **Settings > Appearance >
-  Fonts and layout > Usage display**. Detailed mode shows TPS, a context bar
-  with reported tokens/capacity, and provider usage percentages on one line.
+  Fonts and layout > Usage display**. Detailed mode keeps checkout/branch,
+  TPS, context, and provider usage together on one footer line. Context and
+  Session/Weekly usage use matching segmented bars with percentages.
   Hover usage for reset countdowns; click any indicator for its full popover.
-  Narrow layouts hide context counts first, then the bar and finally the TPS
-  label, while retaining usage percentages and near-limit warning colors.
+  Narrow layouts hide context counts first, then its bar and the TPS label;
+  provider bars shorten while retaining percentages and warning colors.
   Missing data stays explicit. Countdown repaints do not increase polling.
 - Restore a checkpoint's conversation, files, or both from a user message.
   Preserve the original thread; preview file changes and create a recovery

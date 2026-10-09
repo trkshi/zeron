@@ -236,6 +236,7 @@ struct Inner {
     /// for the Changes pane's "Latest turn" scope. Absent in bare tests.
     turn_listener: OnceLock<TurnListener>,
     checkpoints: OnceLock<crate::checkpoints::Checkpoints>,
+    agent_accounts: OnceLock<crate::agent_accounts::AgentAccounts>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -277,6 +278,7 @@ impl SessionsEngine {
                 generated_images: OnceLock::new(),
                 turn_listener: OnceLock::new(),
                 checkpoints: OnceLock::new(),
+                agent_accounts: OnceLock::new(),
             }),
         }
     }
@@ -333,6 +335,64 @@ impl SessionsEngine {
 
     pub fn set_checkpoints(&self, checkpoints: crate::checkpoints::Checkpoints) {
         let _ = self.inner.checkpoints.set(checkpoints);
+    }
+
+    pub fn set_agent_accounts(&self, accounts: crate::agent_accounts::AgentAccounts) {
+        let _ = self.inner.agent_accounts.set(accounts);
+    }
+
+    /// Called under checkpoint admission, which also orders sends and steers.
+    /// No failed or interrupted turn is automatically replayed.
+    async fn prepare_account_auto_switch(&self, harness: HarnessId) {
+        let Some(accounts) = self.inner.agent_accounts.get() else {
+            return;
+        };
+        if !self.inner.registry.account_auto_switch().enabled(harness) || self.checkpoint_busy() {
+            return;
+        }
+        let plan = match accounts.plan_auto_switch(harness).await {
+            Ok(Some(plan)) => plan,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(provider = ?harness, %error, "automatic account check failed");
+                return;
+            }
+        };
+        if !self.inner.registry.account_auto_switch().enabled(harness) || self.checkpoint_busy() {
+            return;
+        }
+        // Parked processes cache their login and can rotate its refresh token.
+        // Retire those processes before swapping credentials, but retain the
+        // harness session IDs so the next turn resumes the same conversations.
+        let chats: Vec<_> = lock(&self.inner.runs)
+            .iter()
+            .filter(|(_, run)| run.runtime_config.harness_id == plan.harness)
+            .map(|(chat, _)| chat.clone())
+            .collect();
+        for chat in chats {
+            if self.checkpoint_busy() {
+                return;
+            }
+            if let Err(error) = self.terminate(&chat).await {
+                tracing::warn!(provider = ?harness, %error, "account switch could not retire idle runtime");
+                return;
+            }
+        }
+        if lock(&self.inner.runs)
+            .values()
+            .any(|run| run.runtime_config.harness_id == harness)
+        {
+            return;
+        }
+        // Discovery and automatic title jobs also use the CLI login. Wait for
+        // their ordinary execution leases before writing the new credentials.
+        let _lease = self.inner.registry.update_lease(harness).await;
+        if !self.inner.registry.account_auto_switch().enabled(harness) || self.checkpoint_busy() {
+            return;
+        }
+        if let Err(error) = accounts.apply_auto_switch(&plan).await {
+            tracing::warn!(provider = ?harness, %error, "automatic account switch failed");
+        }
     }
 
     async fn checkpoint_admission(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
@@ -650,6 +710,9 @@ impl SessionsEngine {
         zeron_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
         let mut admission = self.checkpoint_admission().await;
+        if !idle && admission.is_some() {
+            self.prepare_account_auto_switch(harness_id).await;
+        }
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
             (
                 h.run_id.clone(),
@@ -1005,6 +1068,12 @@ impl SessionsEngine {
         issued_at: i64,
     ) -> Result<SteerOutcome, EngineError> {
         let mut admission = self.checkpoint_admission().await;
+        let harness = lock(&self.inner.runs)
+            .get(chat_id)
+            .map(|run| run.runtime_config.harness_id);
+        if admission.is_some() && let Some(harness) = harness {
+            self.prepare_account_auto_switch(harness).await;
+        }
         let target = lock(&self.inner.runs)
             .get(chat_id)
             .filter(|h| h.steerable && !h.retiring.load(std::sync::atomic::Ordering::Acquire))
@@ -4107,6 +4176,39 @@ mod tests {
     #[tokio::test]
     async fn voice_idle_startup_remembers_thread_without_creating_messages() {
         idle_startup_case(false).await;
+    }
+
+    #[tokio::test]
+    async fn disabled_or_busy_account_rotation_does_not_inspect_or_change_credentials() {
+        for status in [
+            None,
+            Some(SessionStatus::Working),
+            Some(SessionStatus::AwaitingInput),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = crate::agent_accounts::AgentAccountsConfig::isolated(dir.path());
+            std::fs::create_dir_all(&config.codex_home).unwrap();
+            let auth = config.codex_home.join("auth.json");
+            let original = br#"{"OPENAI_API_KEY":"test-fixture-key"}"#;
+            std::fs::write(&auth, original).unwrap();
+            let slots = config.data_dir.join("agent-accounts/codex");
+            let registry = Arc::new(HarnessRegistry::new());
+            if status.is_some() {
+                registry.set_account_auto_switch(HarnessId::Codex, true).unwrap();
+            }
+            let sessions = SessionsEngine::new(
+                "test-device".into(),
+                Arc::new(RunJournal::open(dir.path().join("journals")).unwrap()),
+                registry,
+            );
+            sessions.set_agent_accounts(crate::agent_accounts::AgentAccounts::new(config));
+            if let Some(status) = status {
+                sessions.set_status("busy-chat", status, false);
+            }
+            sessions.prepare_account_auto_switch(HarnessId::Codex).await;
+            assert!(!slots.exists(), "a disabled or busy check must not snapshot a login");
+            assert_eq!(std::fs::read(auth).unwrap(), original.as_slice());
+        }
     }
 
     #[test]

@@ -1421,6 +1421,8 @@ fn forwardable(method: &str) -> bool {
             | methods::GET_TITLE_SETTINGS
             | methods::SET_TITLE_SETTINGS
             | methods::SET_HARNESS_ENABLED
+            | methods::GET_ACCOUNT_AUTO_SWITCH
+            | methods::SET_ACCOUNT_AUTO_SWITCH
             | methods::LIST_MODELS
             | methods::LIST_SKILLS
             | methods::LIST_COMMANDS
@@ -1837,6 +1839,16 @@ impl RpcService for EngineRpc {
                 // Fresh catalog in the reply: the page repaints from it in one
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors())
+            }
+            methods::GET_ACCOUNT_AUTO_SWITCH => {
+                RpcReply::value(&self.registry.account_auto_switch())
+            }
+            methods::SET_ACCOUNT_AUTO_SWITCH => {
+                let p: SetHarnessEnabledParams = parse_params(params)?;
+                self.registry
+                    .set_account_auto_switch(p.harness, p.enabled)
+                    .map_err(RpcError::Failed)?;
+                RpcReply::value(&self.registry.account_auto_switch())
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
@@ -4060,6 +4072,10 @@ mod tests {
         assert!(!forwardable(methods::ENGINE_INFO));
         assert!(!forwardable(methods::ENGINE_READY));
         assert!(forwardable(methods::QUEUE_COMMAND));
+        assert!(forwardable(methods::GET_ACCOUNT_AUTO_SWITCH));
+        assert!(forwardable(methods::SET_ACCOUNT_AUTO_SWITCH));
+        assert!(!is_stream_method(methods::GET_ACCOUNT_AUTO_SWITCH));
+        assert!(!is_stream_method(methods::SET_ACCOUNT_AUTO_SWITCH));
         assert!(forwardable(methods::GET_SESSION_COMMAND));
         assert!(forwardable(methods::SEARCH_FILES));
         assert!(forwardable(methods::SEARCH_GIT_HISTORY));
