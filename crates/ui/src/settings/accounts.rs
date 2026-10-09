@@ -576,6 +576,12 @@ impl AccountsPage {
         // A different device = a different accounts world: drop in-flight
         // login/action state and reload with a forced usage probe (the new
         // device's cache is cold).
+        self.load_task = None;
+        self.action_task = None;
+        self.poll_task = None;
+        self.snapshot = Loadable::Idle;
+        self.refreshing = false;
+        self.row_menu = popover::Popup::default();
         self.login = None;
         self.busy_account = None;
         self.error = None;
@@ -772,9 +778,17 @@ impl AccountsPage {
         account: &AgentAccount,
         cx: &mut Context<Self>,
     ) {
+        if self.busy_account.is_some() {
+            return;
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.error = Some("Engine not connected. Reconnect and try again.".into());
+            cx.notify();
             return;
         };
+        // A list started before the action must not repaint the old active row.
+        self.load_task = None;
+        self.refreshing = false;
         let previous = self.snapshot.ready().cloned();
         if let Loadable::Ready(snapshot) = &mut self.snapshot {
             if method == methods::ACTIVATE_AGENT_ACCOUNT {
@@ -1147,7 +1161,6 @@ impl AccountsPage {
     fn render_account_row(
         &self,
         account: &AgentAccount,
-        ix: usize,
         first: bool,
         theme: &Theme,
         now: DateTime<Utc>,
@@ -1202,7 +1215,7 @@ impl AccountsPage {
                 .collect::<Vec<_>>()
                 .join(" · ");
             div()
-                .id(("account-usage", ix))
+                .id(format!("account-usage-{}", account.id))
                 .w(px(USAGE_COLUMN_WIDTH))
                 .flex_none()
                 .flex()
@@ -1261,8 +1274,10 @@ impl AccountsPage {
         let menu_open = self.row_menu.get() == Some(&account.id);
         let menu_account = account.clone();
         let menu_trigger_id = account.id.clone();
+        let more_id: SharedString = format!("account-more-{}", account.id).into();
         let mut more = widgets::action_button(theme, widgets::ActionTone::Quiet)
-            .id(("account-more", ix))
+            .id(more_id.clone())
+            .debug_selector(move || more_id.clone())
             .w(px(28.0))
             .px_0()
             .justify_center()
@@ -1298,6 +1313,7 @@ impl AccountsPage {
             let popup = Theme::of(cx).for_popup();
             let switch_from_menu = account.clone();
             let forget_account = account.clone();
+            let switch_id: SharedString = format!("account-menu-switch-{}", account.id).into();
             let menu = popover::popover_card(&popup)
                 .w(px(208.0))
                 .flex()
@@ -1305,9 +1321,11 @@ impl AccountsPage {
                 .on_mouse_down_out(cx.listener(|page, _, _, cx| page.close_row_menu(cx)))
                 .when(can_switch, |menu| {
                     menu.child(
-                        popover::menu_row(&popup, false, format!("account-menu-switch-{ix}"))
-                            .id(("account-menu-switch", ix))
+                        popover::menu_row(&popup, false, switch_id.clone())
+                            .id(switch_id.clone())
+                            .debug_selector(move || switch_id.clone())
                             .on_click(cx.listener(move |page, _, _, cx| {
+                                cx.stop_propagation();
                                 page.close_row_menu(cx);
                                 page.account_action(
                                     methods::ACTIVATE_AGENT_ACCOUNT,
@@ -1320,23 +1338,28 @@ impl AccountsPage {
                 })
                 .when(account.switchable, |menu| {
                     menu.child(
-                        popover::menu_row(&popup, false, format!("account-menu-remove-{ix}"))
-                            .id(("account-menu-remove", ix))
-                            .text_color(popup.danger_muted)
-                            .on_click(cx.listener(move |page, _, _, cx| {
-                                page.close_row_menu(cx);
-                                page.account_action(
-                                    methods::FORGET_AGENT_ACCOUNT,
-                                    &forget_account,
-                                    cx,
-                                );
-                            }))
-                            .child(SharedString::from("Remove account")),
+                        popover::menu_row(
+                            &popup,
+                            false,
+                            format!("account-menu-remove-{}", account.id),
+                        )
+                        .id(format!("account-menu-remove-{}", account.id))
+                        .text_color(popup.danger_muted)
+                        .on_click(cx.listener(move |page, _, _, cx| {
+                            cx.stop_propagation();
+                            page.close_row_menu(cx);
+                            page.account_action(
+                                methods::FORGET_AGENT_ACCOUNT,
+                                &forget_account,
+                                cx,
+                            );
+                        }))
+                        .child(SharedString::from("Remove account")),
                     )
                 })
                 .into_any_element();
             more = more.relative().child(popover::anchored_menu_below_end(
-                format!("account-menu-{ix}"),
+                format!("account-menu-{}", account.id),
                 menu,
                 self.row_menu.closing_since(),
             ));
@@ -1345,8 +1368,12 @@ impl AccountsPage {
         // Antigravity's single login) keep the slot for alignment only.
         let has_actions = account.switchable;
 
+        // Provider-local indices collide on the all-providers page. GPUI shares
+        // click state by element ID, so every saved login needs its own row ID.
+        let row_id: SharedString = format!("account-row-{}", account.id).into();
         let body = div()
-            .id(("account-row", ix))
+            .id(row_id.clone())
+            .debug_selector(move || row_id.clone())
             .mx(px(-10.0))
             .px(px(10.0))
             .py(px(10.0))
@@ -1357,7 +1384,7 @@ impl AccountsPage {
             .items_center()
             .gap(px(14.0))
             .when(can_switch, |row| {
-                let hover_key = format!("account-row-{ix}-hover");
+                let hover_key = format!("account-row-{}-hover", account.id);
                 row.cursor_pointer()
                     .bg(crate::motion::hover_blend(
                         &hover_key,
@@ -1747,7 +1774,7 @@ impl AccountsPage {
                         .into_iter()
                         .enumerate()
                         .map(|(ix, account)| {
-                            self.render_account_row(account, ix, ix == 0, theme, now, cx)
+                            self.render_account_row(account, ix == 0, theme, now, cx)
                         })
                         .collect();
                     let empty = rows.is_empty();
@@ -2023,7 +2050,7 @@ impl Render for AccountsPage {
                             .iter()
                             .enumerate()
                             .map(|(ix, account)| {
-                                self.render_account_row(account, ix, ix == 0, &theme, now, cx)
+                                self.render_account_row(account, ix == 0, &theme, now, cx)
                             })
                             .collect();
                         let add_id: SharedString = format!("add-account-{name}").into();
@@ -2449,6 +2476,128 @@ mod tests {
             url: url.map(str::to_string),
             callback_port: None,
         }
+    }
+
+    fn saved_account(id: &str, harness: HarnessId) -> AgentAccount {
+        AgentAccount {
+            id: id.into(),
+            harness,
+            email: Some(format!("{id}@example.com")),
+            plan_label: None,
+            active: false,
+            usage_windows: vec![],
+            usage_fetched_at: None,
+            usage_error: None,
+            display_name: None,
+            organization: None,
+            auth_kind: Some(zeron_proto::AgentAuthKind::Oauth),
+            switchable: true,
+            saved_at: None,
+            provider: None,
+        }
+    }
+
+    #[gpui::test]
+    fn provider_rows_and_switch_menus_do_not_share_click_state(cx: &mut gpui::TestAppContext) {
+        let window = page(cx);
+        window
+            .update(cx, |page, _, cx| {
+                page.embedded = false;
+                page.snapshot = Loadable::Ready(AgentAccountsSnapshot {
+                    accounts: vec![
+                        saved_account("claude", HarnessId::ClaudeCode),
+                        saved_account("codex", HarnessId::Codex),
+                        saved_account("cursor", HarnessId::Cursor),
+                    ],
+                    warnings: vec![],
+                });
+                page.error = None;
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        let row = visual.debug_bounds("account-row-codex").unwrap();
+        visual.simulate_click(row.center(), gpui::Modifiers::default());
+        window
+            .update(&mut visual, |page, _, cx| {
+                // No engine is attached: a handled click must show an error,
+                // not consume a different provider's click or change logins.
+                assert!(
+                    page.error
+                        .as_ref()
+                        .unwrap()
+                        .contains("Engine not connected")
+                );
+                assert!(
+                    page.snapshot
+                        .ready()
+                        .unwrap()
+                        .accounts
+                        .iter()
+                        .all(|a| !a.active)
+                );
+                page.error = None;
+                cx.notify();
+            })
+            .unwrap();
+        visual
+            .update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .unwrap();
+        let more = visual.debug_bounds("account-more-codex").unwrap();
+        visual.simulate_click(more.center(), gpui::Modifiers::default());
+        window
+            .read_with(&visual, |page, _| {
+                assert_eq!(page.row_menu.as_open().map(String::as_str), Some("codex"));
+            })
+            .unwrap();
+        visual
+            .update_window(window.into(), |_, window, cx| window.draw(cx).clear())
+            .unwrap();
+        let switch = visual.debug_bounds("account-menu-switch-codex").unwrap();
+        visual.simulate_click(switch.center(), gpui::Modifiers::default());
+        window
+            .read_with(&visual, |page, _| {
+                assert!(
+                    page.error
+                        .as_ref()
+                        .unwrap()
+                        .contains("Engine not connected")
+                );
+                assert!(
+                    !page.row_menu.is_open(),
+                    "the menu action must not reopen its trigger"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn retargeting_accounts_clears_the_previous_devices_menu_and_action_state(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let window = page(cx);
+        window
+            .update(cx, |page, _, cx| {
+                page.snapshot = Loadable::Ready(AgentAccountsSnapshot {
+                    accounts: vec![saved_account("old-device", HarnessId::Codex)],
+                    warnings: vec![],
+                });
+                page.row_menu.open("old-device".into());
+                page.busy_account = Some("old-device".into());
+                page.login = Some(waiting(HarnessId::Codex, 1));
+                page.set_target_device(Some("new-device".into()), cx);
+                assert_eq!(page.target_device.as_deref(), Some("new-device"));
+                assert!(page.snapshot.ready().is_none());
+                assert!(page.row_menu.get().is_none());
+                assert!(page.busy_account.is_none());
+                assert!(page.login.is_none());
+                assert!(page.load_task.is_none());
+                assert!(page.action_task.is_none());
+                assert!(page.poll_task.is_none());
+            })
+            .unwrap();
     }
 
     #[gpui::test]

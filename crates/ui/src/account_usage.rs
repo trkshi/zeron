@@ -400,6 +400,8 @@ impl AccountUsage {
     /// and the engine's reply replaces them; a refusal restores the list.
     fn switch(&mut self, account: &AgentAccount, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
+            self.error = Some("Engine not connected. Reconnect and try again.".into());
+            cx.notify();
             return;
         };
         let key = self.target.clone();
