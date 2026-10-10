@@ -82,6 +82,7 @@ pub(crate) mod spaces;
 use side_chats::SideChatTab;
 mod tabs;
 mod voice_stage;
+mod working_now;
 use voice_stage::VOICE_STAGE_ORB_SCALE;
 
 use spaces::{AddSpaceFlow, RenameSpaceDialog};
@@ -1522,19 +1523,19 @@ enum ShellEscapeOutcome {
 }
 
 /// When the shell next has render-only clock pixels to repaint, as of `now`:
-/// every second while the selected chat is Working (the trailer's elapsed
-/// timer and its 7s flavour word), else the next wall-clock minute for
+/// every second while the selected chat is Working or Home shows a running
+/// thread's elapsed timer, else the next wall-clock minute for
 /// relative "5m"/"2h" labels. State transitions (staleness, device presence,
 /// send grace) arrive as AppState notifications instead — see
 /// [`AppState::watch_clock_transitions`]. Nothing else ticks: AwaitingInput
 /// and Errored show no clock, and the connection pill has no countdown (its
 /// spinner animates itself).
-fn shell_clock_wake(state: &AppState, now: DateTime<Utc>) -> DateTime<Utc> {
+fn shell_clock_wake(state: &AppState, now: DateTime<Utc>, home_visible: bool) -> DateTime<Utc> {
     let working = state
         .selected_chat
         .as_deref()
         .is_some_and(|id| state.indicator_for(id, now) == Indicator::Working);
-    if working {
+    if working || (home_visible && working_now::has_running_clock(state, now)) {
         return now + chrono::TimeDelta::seconds(1);
     }
     DateTime::from_timestamp((now.timestamp().div_euclid(60) + 1) * 60, 0)
@@ -11188,6 +11189,21 @@ impl Shell {
         } else {
             None
         };
+        let home_bottom_clearance = if harness_update_card.is_some() {
+            24.0 + self.eval_tween(self.harness_update_geometry[1], 38.0) + 12.0
+        } else {
+            24.0
+        };
+        let working_now =
+            (!has_selection && (has_spaces || no_project || has_appshots)).then(|| {
+                self.render_working_now(
+                    composer_width,
+                    home_bottom_clearance,
+                    dock_frame.selectors(),
+                    terminal_geometry.clone(),
+                    cx,
+                )
+            });
         let status = self.render_status_strip(composer_width, cx);
         self.chat_dropzone("chat-dropzone", self.composer.clone(), cx)
             .debug_selector(|| "chat-dropzone".into())
@@ -11331,6 +11347,7 @@ impl Shell {
                                     .opacity(composer_opacity)
                                     .mx_auto()
                                     .child(self.composer.clone())
+                                    .children(working_now)
                                     .children(if has_selection {
                                         self.render_jump_to_bottom(cx)
                                     } else {
@@ -13280,7 +13297,13 @@ impl Render for Shell {
         // the next clock-driven one; the sidebar and transcript follow this
         // view's notifications.
         let now = Utc::now();
-        let wake = shell_clock_wake(self.state.read(cx), now);
+        let state = self.state.read(cx);
+        let home_visible = matches!(self.route, Route::Chat)
+            && state.selected_chat.is_none()
+            && (!state.spaces.is_empty()
+                || state.no_project
+                || !self.composer.read(cx).staged_appshots().is_empty());
+        let wake = shell_clock_wake(state, now, home_visible);
         self.clock
             .arm(wake, now, |shell: &mut Shell| &mut shell.clock, cx);
         let active_files_key = self.panel_key(cx);
@@ -14522,7 +14545,7 @@ mod tests {
         now: DateTime<Utc>,
         expected: DateTime<Utc>,
     ) {
-        let wake = shell_clock_wake(state, now);
+        let wake = shell_clock_wake(state, now, state.selected_chat.is_none());
         assert_eq!(wake, expected);
         let (probe, redraws, _subscription) = clock_probe(cx);
         arm_probe(cx, &probe, wake, now);
@@ -14568,6 +14591,30 @@ mod tests {
         // Awaiting input shows no elapsed timer; its staleness cutoff is an
         // AppState notification, not a shell tick.
         state.sessions[0].status = zeron_proto::SessionStatus::AwaitingInput;
+        assert_redraw_at(cx, &state, now, now + chrono::TimeDelta::minutes(1));
+    }
+
+    #[gpui::test]
+    fn home_working_thread_clock_sleeps_when_the_panel_is_not_shown(cx: &mut gpui::TestAppContext) {
+        let now = clock_epoch();
+        let mut state = AppState::new();
+        let mut chat = chat_with_path(Some("/work/project"), None);
+        chat.id = "running".into();
+        state.chats = vec![chat];
+        state.sessions = vec![clock_session(
+            "running",
+            zeron_proto::SessionStatus::Working,
+            now,
+        )];
+        assert_redraw_at(cx, &state, now, now + chrono::TimeDelta::seconds(1));
+        assert_eq!(
+            shell_clock_wake(&state, now, false),
+            now + chrono::TimeDelta::minutes(1)
+        );
+        state.sessions[0].status = zeron_proto::SessionStatus::AwaitingInput;
+        assert_redraw_at(cx, &state, now, now + chrono::TimeDelta::minutes(1));
+        state.sessions[0].status = zeron_proto::SessionStatus::Working;
+        state.chats[0].archived = true;
         assert_redraw_at(cx, &state, now, now + chrono::TimeDelta::minutes(1));
     }
 

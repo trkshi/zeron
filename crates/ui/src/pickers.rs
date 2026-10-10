@@ -1164,6 +1164,17 @@ impl Pickers {
             })
     }
 
+    /// Name an existing thread's model without changing the draft or loading a catalog.
+    pub(crate) fn saved_model_label(&self, harness: HarnessId, id: &str) -> String {
+        self.models
+            .get(&harness)
+            .and_then(Loadable::ready)
+            .and_then(|models| models.iter().find(|model| model.id == id))
+            .map(|model| model.label.clone())
+            .or_else(|| self.defaults.label_for(id).map(str::to_owned))
+            .unwrap_or_else(|| id.to_owned())
+    }
+
     /// The explicit (non-default) option picks: the chat's persisted
     /// selections for existing chats, the remembered picks for the model the
     /// new-chat canvas resolves to (same id [`Self::resolved`] sends).
