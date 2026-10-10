@@ -11206,7 +11206,7 @@ impl Shell {
         let working_now =
             (!has_selection && (has_spaces || no_project || has_appshots)).then(|| {
                 self.render_working_now(
-                    composer_width,
+                    main_content_width,
                     home_bottom_clearance,
                     dock_frame.selectors(),
                     terminal_geometry.clone(),

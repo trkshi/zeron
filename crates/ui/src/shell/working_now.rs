@@ -170,7 +170,7 @@ fn project_and_branch(state: &AppState, chat: &Chat) -> String {
 impl Shell {
     pub(super) fn render_working_now(
         &self,
-        width: f32,
+        main_width: f32,
         bottom_clearance: f32,
         opacity: f32,
         terminal: crate::terminal::dock::SharedGeometry,
@@ -195,7 +195,7 @@ impl Shell {
             .count();
         let active_count = count - done_count;
         let theme = Theme::of(cx).clone();
-        let available_width = (width - 2.0 * Theme::SPACE_LG).max(0.0);
+        let available_width = (main_width - 2.0 * Theme::SPACE_LG).max(0.0);
         let panel_width = if available_width >= TWO_PANEL_MIN_WIDTH {
             (available_width.min(MAX_HOME_WIDTH) - HOME_PANEL_GAP) / 2.0
         } else {
@@ -298,6 +298,7 @@ impl Shell {
                     },
                 )),
                 desired_height,
+                available_width,
                 viewport_height: self.viewport_height,
                 bottom_clearance,
                 terminal,
@@ -500,6 +501,7 @@ impl Shell {
 fn panel_bounds(
     composer: Bounds<Pixels>,
     surface: Option<Bounds<Pixels>>,
+    available_width: f32,
     viewport_height: f32,
     bottom_clearance: f32,
     desired_height: f32,
@@ -507,15 +509,13 @@ fn panel_bounds(
 ) -> Option<Bounds<Pixels>> {
     let top = f32::from(composer.bottom()) + PANEL_GAP;
     let available = viewport_height - bottom_clearance - top;
-    let (left, width) = match surface {
-        Some(surface) => (surface.left(), f32::from(surface.size.width)),
-        None => (
-            composer.left() + px(Theme::SPACE_LG),
-            f32::from(composer.size.width) - 2.0 * Theme::SPACE_LG,
-        ),
+    let center = match surface {
+        Some(surface) if surface.size.width <= px(0.0) => return None,
+        Some(surface) => surface.center().x,
+        None => composer.center().x,
     };
-    let wide = secondary_height.is_some() && width >= TWO_PANEL_MIN_WIDTH;
-    let width = width.clamp(
+    let wide = secondary_height.is_some() && available_width >= TWO_PANEL_MIN_WIDTH;
+    let width = available_width.clamp(
         0.0,
         if wide {
             MAX_HOME_WIDTH
@@ -523,6 +523,7 @@ fn panel_bounds(
             MAX_PANEL_WIDTH
         },
     );
+    let left = center - px(width / 2.0);
     let desired_height = match secondary_height {
         Some(secondary) if wide => desired_height.max(secondary),
         Some(secondary) => desired_height + HOME_PANEL_GAP + secondary,
@@ -540,12 +541,13 @@ fn panel_bounds(
 }
 
 /// Lay out against the composer's actual prepaint bounds, including its dock
-/// motion and multiline height. Align panels with the input, not its gutters;
-/// stacked panels scroll within the remaining space below the footer.
+/// motion and multiline height. Center panels below the input, allowing a
+/// wider row within the main column; stacked panels scroll in the space left.
 struct BelowComposer {
     child: Option<AnyElement>,
     secondary: Option<(AnyElement, f32)>,
     desired_height: f32,
+    available_width: f32,
     viewport_height: f32,
     bottom_clearance: f32,
     terminal: crate::terminal::dock::SharedGeometry,
@@ -595,6 +597,7 @@ impl Element for BelowComposer {
         let bounds = panel_bounds(
             composer,
             self.surface.get(),
+            self.available_width,
             self.viewport_height,
             self.bottom_clearance + self.terminal.get().height,
             self.desired_height,
@@ -1028,45 +1031,129 @@ mod tests {
     fn panel_follows_measured_composer_and_keeps_clear_of_bottom_chrome() {
         let composer = Bounds::new(point(px(200.0), px(250.0)), size(px(600.0), px(180.0)));
         let surface = Bounds::new(point(px(224.0), px(250.0)), size(px(552.0), px(140.0)));
+        let width = f32::from(surface.size.width);
         let desired_height = HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 2.0;
-        let panel =
-            panel_bounds(composer, Some(surface), 800.0, 24.0, desired_height, None).unwrap();
-        assert_eq!(panel.left(), surface.left());
+        let panel = panel_bounds(
+            composer,
+            Some(surface),
+            width,
+            800.0,
+            24.0,
+            desired_height,
+            None,
+        )
+        .unwrap();
+        assert_eq!(panel.center().x, surface.center().x);
         assert_eq!(panel.top(), composer.bottom() + px(PANEL_GAP));
         assert_eq!(panel.size.width, px(MAX_PANEL_WIDTH));
         assert_eq!(panel.size.height, px(desired_height));
-        let panel = panel_bounds(composer, Some(surface), 800.0, 240.0, 1_000.0, None).unwrap();
+        let panel =
+            panel_bounds(composer, Some(surface), width, 800.0, 240.0, 1_000.0, None).unwrap();
         assert_eq!(panel.bottom(), px(560.0));
-        assert!(panel_bounds(composer, Some(surface), 550.0, 80.0, desired_height, None).is_none());
-        let panel = panel_bounds(composer, Some(surface), 1_200.0, 24.0, 1_000.0, None).unwrap();
+        assert!(
+            panel_bounds(
+                composer,
+                Some(surface),
+                width,
+                550.0,
+                80.0,
+                desired_height,
+                None,
+            )
+            .is_none()
+        );
+        let panel =
+            panel_bounds(composer, Some(surface), width, 1_200.0, 24.0, 1_000.0, None).unwrap();
         assert_eq!(panel.size.height, px(MAX_PANEL_HEIGHT));
     }
 
     #[test]
-    fn panel_shrinks_to_the_surface_and_fallback_respects_composer_gutters() {
+    fn panel_shrinks_to_available_width_and_centers_without_a_surface_measurement() {
         let composer = Bounds::new(point(px(20.0), px(100.0)), size(px(300.0), px(140.0)));
         let surface = Bounds::new(point(px(44.0), px(100.0)), size(px(252.0), px(100.0)));
         let desired_height = HEADER_HEIGHT + 8.0 + ROW_HEIGHT;
-        let panel =
-            panel_bounds(composer, Some(surface), 800.0, 24.0, desired_height, None).unwrap();
-        assert_eq!(panel.left(), surface.left());
-        assert_eq!(panel.size.width, surface.size.width);
-        let panel = panel_bounds(composer, None, 800.0, 24.0, desired_height, None).unwrap();
-        assert_eq!(panel.left(), composer.left() + px(Theme::SPACE_LG));
-        assert_eq!(
-            panel.size.width,
-            composer.size.width - px(2.0 * Theme::SPACE_LG)
-        );
+        let panel = panel_bounds(
+            composer,
+            Some(surface),
+            220.0,
+            800.0,
+            24.0,
+            desired_height,
+            None,
+        )
+        .unwrap();
+        assert_eq!(panel.center().x, surface.center().x);
+        assert_eq!(panel.size.width, px(220.0));
+        let panel = panel_bounds(composer, None, 220.0, 800.0, 24.0, desired_height, None).unwrap();
+        assert_eq!(panel.center().x, composer.center().x);
+        assert_eq!(panel.size.width, px(220.0));
         let empty = Bounds::new(surface.origin, size(px(0.0), surface.size.height));
-        assert!(panel_bounds(composer, Some(empty), 800.0, 24.0, desired_height, None).is_none());
+        assert!(
+            panel_bounds(
+                composer,
+                Some(empty),
+                220.0,
+                800.0,
+                24.0,
+                desired_height,
+                None
+            )
+            .is_none()
+        );
+        assert!(
+            panel_bounds(
+                composer,
+                Some(surface),
+                0.0,
+                800.0,
+                24.0,
+                desired_height,
+                None
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn home_panels_extend_past_the_composer_within_main_column_gutters() {
+        let main_width = 1_000.0;
+        let composer = Bounds::new(point(px(116.0), px(100.0)), size(px(768.0), px(160.0)));
+        let surface = Bounds::new(point(px(140.0), px(100.0)), size(px(720.0), px(120.0)));
+        let panel = panel_bounds(
+            composer,
+            Some(surface),
+            main_width - 2.0 * Theme::SPACE_LG,
+            800.0,
+            24.0,
+            126.0,
+            Some(170.0),
+        )
+        .unwrap();
+        assert_eq!(panel.center().x, surface.center().x);
+        assert_eq!(panel.size.width, px(MAX_HOME_WIDTH));
+        assert!(panel.size.width > composer.size.width);
+        assert!(panel.left() < surface.left());
+        assert!(panel.right() > surface.right());
+        assert!(panel.left() >= px(Theme::SPACE_LG));
+        assert!(panel.right() <= px(main_width - Theme::SPACE_LG));
     }
 
     #[test]
     fn home_panels_share_a_row_when_wide_and_stack_without_covering_the_composer() {
         let composer = Bounds::new(point(px(100.0), px(100.0)), size(px(960.0), px(160.0)));
         let surface = Bounds::new(point(px(124.0), px(100.0)), size(px(912.0), px(120.0)));
-        let wide = panel_bounds(composer, Some(surface), 800.0, 24.0, 126.0, Some(170.0)).unwrap();
-        assert_eq!(wide.left(), surface.left());
+        let width = f32::from(surface.size.width);
+        let wide = panel_bounds(
+            composer,
+            Some(surface),
+            width,
+            800.0,
+            24.0,
+            126.0,
+            Some(170.0),
+        )
+        .unwrap();
+        assert_eq!(wide.center().x, surface.center().x);
         assert_eq!(wide.top(), composer.bottom() + px(PANEL_GAP));
         assert_eq!(wide.size.width, px(MAX_HOME_WIDTH));
         assert_eq!(wide.size.height, px(170.0));
@@ -1075,6 +1162,7 @@ mod tests {
         let narrow = panel_bounds(
             composer,
             Some(narrow_surface),
+            300.0,
             800.0,
             24.0,
             82.0,
@@ -1083,10 +1171,29 @@ mod tests {
         .unwrap();
         assert_eq!(narrow.size.width, px(300.0));
         assert_eq!(narrow.size.height, px(82.0 + HOME_PANEL_GAP + 126.0));
-        let clipped =
-            panel_bounds(composer, Some(surface), 440.0, 24.0, 214.0, Some(400.0)).unwrap();
+        let clipped = panel_bounds(
+            composer,
+            Some(surface),
+            width,
+            440.0,
+            24.0,
+            214.0,
+            Some(400.0),
+        )
+        .unwrap();
         assert_eq!(clipped.bottom(), px(416.0));
-        assert!(panel_bounds(composer, Some(surface), 350.0, 24.0, 126.0, Some(126.0)).is_none());
+        assert!(
+            panel_bounds(
+                composer,
+                Some(surface),
+                width,
+                350.0,
+                24.0,
+                126.0,
+                Some(126.0)
+            )
+            .is_none()
+        );
     }
 
     type Measurement = std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>;
@@ -1104,6 +1211,8 @@ mod tests {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             self.panel.set(None);
             let viewport = f32::from(window.viewport_size().height);
+            let available_width =
+                (f32::from(window.viewport_size().width) - 2.0 * Theme::SPACE_LG).max(0.0);
             let now = std::time::Instant::now();
             self.dock.borrow_mut().tick(false, true, now);
             let composer_measurement = self.composer.clone();
@@ -1151,6 +1260,7 @@ mod tests {
                     child: Some(panel.into_any_element()),
                     secondary: None,
                     desired_height: HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 2.0,
+                    available_width,
                     viewport_height: viewport,
                     bottom_clearance: 24.0,
                     terminal: Default::default(),
@@ -1190,7 +1300,7 @@ mod tests {
         let input = composer.get().unwrap();
         let card = panel.get().unwrap();
         assert_eq!(card.top(), input.bottom() + px(PANEL_GAP));
-        assert_eq!(card.left(), surface.get().unwrap().left());
+        assert_eq!(card.center().x, surface.get().unwrap().center().x);
         assert_eq!(card.size.width, px(MAX_PANEL_WIDTH));
         cx.simulate_click(card.center(), gpui::Modifiers::default());
         assert_eq!(probe.read_with(cx, |probe, _| probe.clicks), 1);
