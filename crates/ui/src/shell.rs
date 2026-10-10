@@ -11196,8 +11196,10 @@ impl Shell {
         } else {
             None
         };
+        // Reserve only the collapsed notice; its expanded list overlays the
+        // panels without resizing or unmounting them during the animation.
         let home_bottom_clearance = if harness_update_card.is_some() {
-            24.0 + self.eval_tween(self.harness_update_geometry[1], 38.0) + 12.0
+            24.0 + harness_updates::CHIP_HEIGHT + 12.0
         } else {
             24.0
         };
@@ -11275,36 +11277,6 @@ impl Shell {
                         ))
                 },
             )
-            .when_some(harness_update_card, |column, chip| {
-                // Home notices stay anchored to the window bottom, behind the
-                // dock. Clip paint and hitboxes at the same measured terminal
-                // edge as the transcript, including during open/close motion;
-                // draw order alone would show them through the terminal glass.
-                column.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(crate::terminal::dock::above_terminal(
-                            div().size_full().overflow_hidden().child(
-                                div().relative().w_full().h(px(self.viewport_height)).child(
-                                    div()
-                                        .absolute()
-                                        .left_0()
-                                        .right_0()
-                                        .bottom(px(24.0 - 8.0 * (1.0 - chip_opacity)))
-                                        .opacity(chip_opacity)
-                                        .flex()
-                                        .justify_center()
-                                        .child(chip)
-                                        .when(has_selection, |el| {
-                                            el.child(div().absolute().inset_0().occlude())
-                                        }),
-                                ),
-                            ),
-                            terminal_geometry.clone(),
-                        )),
-                )
-            })
             // The glass chrome stack, floating over the transcript's bottom:
             // reserved status strip (h-6, the WorkingIndicator — the composer
             // below never shifts), composer, terminal dock. A paint-time
@@ -11368,7 +11340,36 @@ impl Shell {
                             .reserve_terminal(terminal_geometry.clone()),
                         )
                     })
-                    .child(self.render_terminal_container(terminal_geometry, window, cx))
+                    .child(self.render_terminal_container(terminal_geometry.clone(), window, cx))
+            })
+            .when_some(harness_update_card, |column, chip| {
+                // Paint Home notices above the composer and its panels. Keep
+                // paint and hitboxes clipped at the measured terminal edge,
+                // including during open/close motion.
+                column.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(crate::terminal::dock::above_terminal(
+                            div().size_full().overflow_hidden().child(
+                                div().relative().w_full().h(px(self.viewport_height)).child(
+                                    div()
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .bottom(px(24.0 - 8.0 * (1.0 - chip_opacity)))
+                                        .opacity(chip_opacity)
+                                        .flex()
+                                        .justify_center()
+                                        .child(chip)
+                                        .when(has_selection, |el| {
+                                            el.child(div().absolute().inset_0().occlude())
+                                        }),
+                                ),
+                            ),
+                            terminal_geometry.clone(),
+                        )),
+                )
             })
             .child(Self::attachment_drop_overlay(theme))
             .child(Self::mention_drop_overlay(theme))
