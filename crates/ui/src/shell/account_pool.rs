@@ -726,7 +726,8 @@ impl Render for AccountPool {
             self.disclosure_motion[index].is_some_and(|motion| self.reveal(index, cx) != motion.to)
         });
         if animating && self.visible && self.window_active {
-            motion::pulse_lease(cx.entity_id(), cx);
+            // Short disclosures need display frames, not the 30 Hz loader clock.
+            window.request_animation_frame();
         }
         let theme = Theme::of(cx).clone();
         let snapshot = self.snapshot(cx).cloned();
