@@ -41,6 +41,7 @@ enum Entry {
     NewChat,
     NewProject,
     Settings,
+    Usage,
     Theme(AppearanceMode),
     Chat(String),
 }
@@ -51,6 +52,7 @@ impl Entry {
             Self::NewChat => Some(("New chat", icons::PEN_NEW_SQUARE)),
             Self::NewProject => Some(("New project", icons::FOLDER)),
             Self::Settings => Some(("Open settings", icons::SETTINGS)),
+            Self::Usage => Some(("Open usage dashboard", icons::SPEEDOMETER)),
             Self::Theme(mode) => Some((
                 match mode {
                     AppearanceMode::System => "Switch to system theme",
@@ -74,6 +76,7 @@ fn actions_for(query: &str, is_dark: bool) -> Vec<Entry> {
         Entry::NewChat,
         Entry::NewProject,
         Entry::Settings,
+        Entry::Usage,
         Entry::Theme(if is_dark {
             AppearanceMode::Light
         } else {
@@ -208,6 +211,7 @@ impl Shell {
             Entry::NewChat => self.open_new_session(None, cx),
             Entry::NewProject => self.open_add_space(cx),
             Entry::Settings => self.open_last_settings(cx),
+            Entry::Usage => self.open_usage(cx),
             Entry::Theme(_) => unreachable!(),
             Entry::Chat(id) => self.open_chat(id, cx),
         }

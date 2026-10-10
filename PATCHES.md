@@ -8,6 +8,17 @@ Zeron release.
 
 ## Changes
 
+- Add a **Usage** dashboard from the sidebar footer, with **Cost**, **Tokens**,
+  and **Limits** views, device selection, 24-hour/7-day/30-day/90-day periods,
+  provider trends, billing-category bars, model details, and pooled account
+  limits. Persist completed-turn scalars on the host without subscribing to
+  transcripts or duplicating message text. Repeated snapshots and forked
+  history do not count twice, and checkpoint restores do not erase consumption.
+  Keep reported costs separate from standard API-value estimates; unknown
+  models and incomplete billing reports stay unpriced. Subscription quota
+  percentages are account averages, not combined token capacity. Both the UI
+  and host engine need this update. See [usage history](docs/usage-history.md)
+  for pricing, history coverage, and privacy limits.
 - Add a read-only **Shells** panel below **Working now** on Home, showing the
   selected device's Claude/Codex commands, thread, project, provider, status,
   and elapsed time. Show at most three rows on Home, with running tasks first.

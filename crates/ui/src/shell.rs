@@ -58,6 +58,7 @@ use crate::state::{
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
+use crate::usage_dashboard::UsageDashboard;
 
 mod actions_ui;
 mod chat_dropzone;
@@ -673,6 +674,7 @@ fn settings_open_route(route: &str, remembered: SettingsSection) -> Option<Setti
 pub enum Route {
     Chat,
     PullRequests,
+    Usage,
     Settings(SettingsSection),
 }
 
@@ -821,6 +823,7 @@ pub enum NavEntry {
     /// A chat route; the id of the selected chat ("" = the new-chat canvas).
     Chat(String),
     PullRequests,
+    Usage,
     /// One pull request's detail view over the board, and the device whose
     /// `gh` reads it (`None` = this device).
     PullRequest {
@@ -2011,6 +2014,7 @@ pub struct Shell {
     /// Route history behind the titlebar back/forward buttons (§ nav history).
     nav: NavHistory,
     pull_requests_page: Option<Entity<PullRequestsPage>>,
+    usage_dashboard: Option<Entity<UsageDashboard>>,
     pull_request_detail: Option<Entity<crate::pull_request_detail::PullRequestDetailPage>>,
     pull_request_detail_subscription: Option<Subscription>,
     /// A detail view a history step landed on, opened by the next render
@@ -2371,6 +2375,7 @@ impl Shell {
         let open_route = std::env::var("ZERON_OPEN_ROUTE").ok();
         let route = match open_route.as_deref() {
             Some("pull-requests") => Route::PullRequests,
+            Some("usage") => Route::Usage,
             Some(route) if route == "settings" || route.starts_with("settings/") => {
                 match settings_open_route(route, settings.settings_section) {
                     Some(section) => {
@@ -2413,6 +2418,7 @@ impl Shell {
         let nav = NavHistory::new(match route {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::PullRequests => NavEntry::PullRequests,
+            Route::Usage => NavEntry::Usage,
             Route::Settings(section) => NavEntry::Settings(section),
         });
         // Parent notifications carry presentation changes (session status,
@@ -2502,6 +2508,7 @@ impl Shell {
             settings_return_route: Route::Chat,
             nav,
             pull_requests_page: None,
+            usage_dashboard: None,
             pull_request_detail: None,
             pull_request_detail_subscription: None,
             pending_pull_request: None,
@@ -4764,6 +4771,12 @@ impl Shell {
 
     fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
         self.command_palette = None;
+        if matches!(self.route, Route::Usage)
+            && !matches!(route, Route::Usage)
+            && let Some(page) = self.usage_dashboard.as_ref()
+        {
+            page.update(cx, |page, cx| page.track(false, false, cx));
+        }
         let was_pull_requests = matches!(self.route, Route::PullRequests);
         let will_show_pull_requests = matches!(route, Route::PullRequests);
         if was_pull_requests && !will_show_pull_requests {
@@ -5231,6 +5244,21 @@ impl Shell {
         self.nav.push(NavEntry::PullRequests);
     }
 
+    fn open_usage(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.route, Route::Usage) {
+            return;
+        }
+        self.set_route(Route::Usage, cx);
+        self.settings_focus_pending = false;
+        self.close_user_menu(cx);
+        self.close_chat_menu(cx);
+        if self.usage_dashboard.is_none() {
+            self.usage_dashboard = Some(cx.new(|cx| UsageDashboard::new(self.state.clone(), cx)));
+        }
+        self.nav.push(NavEntry::Usage);
+        cx.notify();
+    }
+
     /// Show the board's route without recording a navigation.
     fn enter_pull_requests_route(&mut self, cx: &mut Context<Self>) {
         if matches!(self.route, Route::PullRequests) {
@@ -5355,6 +5383,9 @@ impl Shell {
             NavEntry::PullRequests => {
                 self.enter_pull_requests_route(cx);
                 self.dismiss_pull_request_detail(cx);
+            }
+            NavEntry::Usage => {
+                self.set_route(Route::Usage, cx);
             }
             NavEntry::PullRequest { url, device } => {
                 self.enter_pull_requests_route(cx);
@@ -9612,6 +9643,23 @@ impl Shell {
     ) -> AnyElement {
         // Pull requests sits just left of Settings, in the same action group.
         let pull_requests = self.render_pull_requests_button(theme, cx);
+        let usage = div()
+            .id("open-usage")
+            .role(gpui::Role::Button)
+            .aria_label("Usage")
+            .tab_index(0)
+            .size(px(SIDEBAR_FOOTER_ACTION_SIZE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .text_color(theme.text_muted)
+            .cursor_pointer()
+            .hover(|d| d.bg(theme.glass_hover()))
+            .focus_visible(|d| d.border_1().border_color(theme.accent))
+            .tooltip(crate::settings::widgets::text_tooltip("Usage"))
+            .child(icon(icons::SPEEDOMETER).size(px(15.0)))
+            .on_click(cx.listener(|shell, _, _, cx| shell.open_usage(cx)));
         let theme = &theme.for_popup();
         let open = self.user_menu.is_open();
         let action = account_menu_action(self.state.read(cx).workspace_scope, self.sync_flow);
@@ -9903,6 +9951,7 @@ impl Shell {
                     .items_center()
                     .gap(px(2.0))
                     .children(voice_trigger)
+                    .child(usage)
                     .child(pull_requests)
                     .child(
                         div()
@@ -10369,6 +10418,21 @@ impl Shell {
         }
         if self.harness_update_expanded {
             self.set_harness_updates_expanded(false, cx);
+            return true;
+        }
+        if matches!(self.route, Route::Usage) {
+            let dismissed = self
+                .usage_dashboard
+                .as_ref()
+                .is_some_and(|page| page.update(cx, |page, cx| page.dismiss_detail(cx)));
+            if !dismissed {
+                if let Some(entry) = self.nav.back() {
+                    self.apply_nav(entry, cx);
+                } else {
+                    self.set_route(Route::Chat, cx);
+                    self.focus_composer(cx);
+                }
+            }
             return true;
         }
         if self.chat_rename.is_some() {
@@ -10982,6 +11046,25 @@ impl Shell {
         let theme_owned = Theme::of(cx).clone();
         let theme = &theme_owned;
         let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
+
+        if matches!(self.route, Route::Usage) {
+            if self.usage_dashboard.is_none() {
+                self.usage_dashboard =
+                    Some(cx.new(|cx| UsageDashboard::new(self.state.clone(), cx)));
+            }
+            let page = self.usage_dashboard.as_ref().unwrap().clone();
+            if page.update(cx, |page, cx| {
+                page.track(true, window.is_window_active(), cx)
+            }) {
+                window.focus(&page.read(cx).focus(), cx);
+            }
+            return div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(page)
+                .into_any_element();
+        }
 
         if matches!(self.route, Route::PullRequests) {
             if let Some((url, device)) = self.pending_pull_request.take() {
@@ -13468,6 +13551,7 @@ impl Render for Shell {
                 self.browser_context = crate::browser::BrowserContext::default();
                 self.pull_request_cache = Default::default();
                 self.pull_requests_page = None;
+                self.usage_dashboard = None;
                 self.pull_request_detail = None;
                 self.pull_request_detail_subscription = None;
             }

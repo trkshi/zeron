@@ -79,6 +79,7 @@ pub mod toast;
 mod token_usage;
 pub mod transcript;
 pub mod typography;
+pub mod usage_dashboard;
 pub mod voice;
 mod workspace_links;
 
