@@ -306,6 +306,24 @@ pub enum SavePolicy {
     Immediate,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PullRequestDestination {
+    #[default]
+    Native,
+    External,
+}
+
+impl PullRequestDestination {
+    pub const ALL: [Self; 2] = [Self::Native, Self::External];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Native => "Pull request view",
+            Self::External => "Default browser",
+        }
+    }
+}
+
 /// The sole in-process owner and writer of `ui-settings.json`.
 ///
 /// Mutations land in `current` before any timer starts. Replacing a pending
@@ -847,6 +865,8 @@ pub struct UiSettings {
     pub sidebar_show_harness: bool,
     pub sidebar_show_branch: bool,
     pub sidebar_show_pull_request: bool,
+    /// The project filter row at the top of the sidebar.
+    pub sidebar_show_project_filter: bool,
     /// The sidebar's "Star on GitHub" banner was dismissed (its close button
     /// or following the link). Device-local; never shown again once set.
     pub github_star_banner_dismissed: bool,
@@ -970,6 +990,13 @@ pub struct UiSettings {
     pub transcript_compact_mode: bool,
     /// Composer footer: compact rings or explicit counts and reset countdowns.
     pub usage_display: UsageDisplay,
+    /// Destination shared by PR badges and the pull-request board.
+    pub pull_request_destination: PullRequestDestination,
+    /// Last explicitly selected PR scope, restored when no project is selected.
+    pub last_pull_request_repository: Option<String>,
+    pub last_pull_request_device: Option<String>,
+    /// Device-local bookmarks, keyed by provider/repository/PR, never GitHub mutations.
+    pub pull_request_stars: Vec<String>,
     /// Save edited workspace files automatically after the configured delay.
     pub files_autosave_enabled: bool,
     /// Idle time before an edited workspace file is saved automatically.
@@ -1027,6 +1054,7 @@ impl Default for UiSettings {
             sidebar_show_harness: true,
             sidebar_show_branch: true,
             sidebar_show_pull_request: true,
+            sidebar_show_project_filter: true,
             github_star_banner_dismissed: false,
             last_space_id: None,
             last_project_action_by_space_id: std::collections::HashMap::new(),
@@ -1079,6 +1107,10 @@ impl Default for UiSettings {
             open_web_links_in_zeron: true,
             transcript_compact_mode: false,
             usage_display: UsageDisplay::Circles,
+            pull_request_destination: PullRequestDestination::Native,
+            last_pull_request_repository: None,
+            last_pull_request_device: None,
+            pull_request_stars: Vec::new(),
             files_autosave_enabled: false,
             files_autosave_delay_ms: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
             files_word_wrap: false,
@@ -1684,6 +1716,7 @@ impl UiSettings {
             sidebar_show_harness,
             sidebar_show_branch,
             sidebar_show_pull_request,
+            sidebar_show_project_filter,
             github_star_banner_dismissed,
             last_space_id,
             last_project_action_by_space_id,
@@ -1749,6 +1782,10 @@ impl UiSettings {
             codex_voice,
             codex_voice_device,
             legacy_accent_color,
+            pull_request_destination,
+            last_pull_request_repository,
+            last_pull_request_device,
+            pull_request_stars,
         );
         current
     }
@@ -2073,12 +2110,34 @@ mod tests {
         let current = UiSettings {
             start_with_new_chat: false,
             profile_images_by_account: images.clone(),
+            usage_display: UsageDisplay::Detailed,
+            pull_request_destination: PullRequestDestination::External,
+            last_pull_request_repository: Some("acme/zeron".into()),
+            last_pull_request_device: Some("remote-device".into()),
+            pull_request_stars: vec!["https://github.com/acme/zeron/pull/123".into()],
             ..base.clone()
         };
         let merged = UiSettings::merge_changes(&base, &edited, current);
         assert_eq!(merged.sidebar_width, 300.0);
         assert!(!merged.start_with_new_chat);
         assert_eq!(merged.profile_images_by_account, images);
+        assert_eq!(merged.usage_display, UsageDisplay::Detailed);
+        assert_eq!(
+            merged.pull_request_destination,
+            PullRequestDestination::External
+        );
+        assert_eq!(
+            merged.last_pull_request_repository.as_deref(),
+            Some("acme/zeron")
+        );
+        assert_eq!(
+            merged.last_pull_request_device.as_deref(),
+            Some("remote-device")
+        );
+        assert_eq!(
+            merged.pull_request_stars,
+            vec!["https://github.com/acme/zeron/pull/123"]
+        );
     }
 
     #[test]
@@ -2103,6 +2162,25 @@ mod tests {
         assert!(!merged.start_with_new_chat);
         assert!(merged.profile_images_by_account.is_empty());
         assert!(merged.dictation_enabled);
+    }
+
+    #[test]
+    fn pull_request_destination_defaults_to_the_native_view_and_round_trips() {
+        let existing: UiSettings = serde_json::from_str(r#"{"sidebarWidth":300}"#).unwrap();
+        assert_eq!(
+            existing.pull_request_destination,
+            PullRequestDestination::Native
+        );
+        for destination in PullRequestDestination::ALL {
+            let settings = UiSettings {
+                pull_request_destination: destination,
+                ..existing.clone()
+            };
+            let loaded: UiSettings =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(loaded.pull_request_destination, destination);
+            assert_eq!(loaded.sidebar_width, 300.0);
+        }
     }
 
     #[test]
@@ -2769,6 +2847,7 @@ mod tests {
             sidebar_show_harness: false,
             sidebar_show_branch: false,
             sidebar_show_pull_request: false,
+            sidebar_show_project_filter: false,
             github_star_banner_dismissed: true,
             last_space_id: Some("space-1".into()),
             last_project_action_by_space_id: std::collections::HashMap::from([(
@@ -2860,6 +2939,10 @@ mod tests {
             open_web_links_in_zeron: false,
             transcript_compact_mode: true,
             usage_display: UsageDisplay::Detailed,
+            pull_request_destination: PullRequestDestination::External,
+            last_pull_request_repository: Some("acme/zeron".into()),
+            last_pull_request_device: Some("remote-device".into()),
+            pull_request_stars: vec!["https://github.com/acme/zeron/pull/123".into()],
             files_autosave_enabled: true,
             files_autosave_delay_ms: 1_500,
             files_word_wrap: true,
@@ -2995,10 +3078,12 @@ mod tests {
         assert!(settings.sidebar_compact);
         assert!(settings.sidebar_show_project_icon);
         assert!(settings.sidebar_show_project_label);
+        assert!(settings.sidebar_show_project_filter);
         let customized = UiSettings {
             sidebar_compact: false,
             sidebar_show_project_icon: false,
             sidebar_show_project_label: false,
+            sidebar_show_project_filter: false,
             sidebar_organization: SidebarOrganization::ByProject,
             ..settings
         };

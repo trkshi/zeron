@@ -1405,7 +1405,8 @@ impl AppState {
         if Some(chat.device_id.as_str()) == self.local_device_id.as_deref() {
             return false;
         }
-        if self.connectivity.state == S::Offline || !self.device_online(&chat.device_id, Utc::now())
+        if self.connectivity.state == S::Offline
+            || !self.device_online(&chat.device_id, Utc::now())
         {
             return true;
         }
@@ -3005,10 +3006,7 @@ impl AppState {
         cx.spawn(async move |_, _| {
             if let Err(error) = handle
                 .client()
-                .call(
-                    methods::FOCUS_CHAT,
-                    serde_json::json!({ "chatId": chat_id }),
-                )
+                .call(methods::FOCUS_CHAT, serde_json::json!({ "chatId": chat_id }))
                 .await
             {
                 tracing::debug!(%chat_id, %error, "chat focus sync hint unavailable");
@@ -6190,7 +6188,7 @@ mod tests {
     }
 }
 
-#[cfg(feature = "appshots-fixture")]
+#[cfg(any(feature = "appshots-fixture", feature = "pull-request-fixture"))]
 impl AppState {
     /// Keep fixture documents deterministic while using the real attachment RPC.
     pub fn fixture_attachment_engine(&mut self, engine: EngineHandle) {

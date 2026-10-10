@@ -3,7 +3,7 @@
 This public fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) keeps the
 app named Zeron. The `patched-windows` branch starts from upstream `v0.2.101`
 (`b42fc2b8fbf247dd92796c2917f277535cea91ac`) and incorporates upstream `main`
-through `1074bc54` (version `v0.2.107`). It is a personal build, not an official
+through `344436ef` (version `v0.2.108`). It is a personal build, not an official
 Zeron release.
 
 ## Changes
@@ -173,7 +173,7 @@ script; it does not run the upstream test suites or deployment workflows.
 1. Close the existing Windows app and back up `%LOCALAPPDATA%\Zeron`. If you
    configured `ZERON_DATA_DIR`, back up that directory instead. Keep the backup
    private: it includes account credentials and conversation data.
-2. Run `zeron-0.2.104-windows-x86_64-setup.exe` to replace the existing app in
+2. Run `zeron-0.2.108-windows-x86_64-setup.exe` to replace the existing app in
    place. There is no need to uninstall it first. Alternatively, extract the
    portable ZIP and run its `zeron.exe`, with the old app closed.
 3. Use the same Windows user, Zeron account, and data-directory configuration.

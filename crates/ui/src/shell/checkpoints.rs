@@ -267,9 +267,9 @@ impl Shell {
                         } else {
                             shell.focus_composer(cx);
                         }
-                        shell.sidebar_notice = Some(if result.backup_id.is_some() {
-                            "Checkpoint restored. A recovery backup is available in the original thread's restore dialog.".into()
-                        } else { "Conversation restored in a new thread. The original is unchanged.".into() });
+                        crate::toast::success(cx, if result.backup_id.is_some() {
+                            "Checkpoint restored. A recovery backup is available in the original thread's restore dialog."
+                        } else { "Conversation restored in a new thread. The original is unchanged." });
                     }
                     Ok(result) => {
                         flow.error = result.error;
