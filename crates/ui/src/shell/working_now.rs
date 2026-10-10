@@ -21,11 +21,10 @@ const MAX_HOME_WIDTH: f32 = MAX_PANEL_WIDTH * 2.0 + HOME_PANEL_GAP;
 const MAX_HOME_HEIGHT: f32 = 260.0;
 
 pub(super) fn panel_background(theme: &Theme) -> gpui::Hsla {
-    let wash = match theme.appearance {
-        crate::theme::Appearance::Dark => 0.12,
-        crate::theme::Appearance::Light => 0.04,
-    };
-    crate::theme::flatten(theme.wash(wash), theme.surface)
+    match theme.appearance {
+        crate::theme::Appearance::Dark => crate::theme::grey(0x14),
+        crate::theme::Appearance::Light => crate::theme::flatten(theme.wash(0.04), theme.surface),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
