@@ -51,7 +51,7 @@ impl QuotaStatus {
 fn quota_window(window: &AgentUsageWindow) -> bool {
     matches!(
         window.label.as_str(),
-        "5h" | "Session" | "7d" | "Week" | "Weekly"
+        "5h" | "Session" | "7d" | "Week" | "Weekly" | "Workspace limit" | "Usage limit"
     )
 }
 
@@ -67,6 +67,13 @@ fn quota_status(account: &AgentAccount, now: i64, online: bool) -> QuotaStatus {
     };
     if !online || !(0..=MAX_USAGE_AGE_MS).contains(&now.saturating_sub(fetched)) {
         return QuotaStatus::Stale;
+    }
+    if account.usage_windows.iter().any(|window| {
+        matches!(window.label.as_str(), "Workspace limit" | "Usage limit")
+            && window.used_fraction == 1.0
+            && window.resets_at.is_none()
+    }) {
+        return QuotaStatus::Limited;
     }
     let mut maximum: Option<f32> = None;
     for window in account
@@ -840,6 +847,25 @@ mod tests {
             account.usage_windows[index].used_fraction = 1.0;
             assert_eq!(quota_status(&account, 100_001, true), QuotaStatus::Limited);
             account.usage_windows[index].used_fraction = 0.1;
+        }
+    }
+
+    #[test]
+    fn explicit_workspace_limits_are_not_available_pool_accounts() {
+        for label in ["Workspace limit", "Usage limit"] {
+            let mut account = account();
+            account.usage_windows[0].resets_at = chrono::DateTime::from_timestamp_millis(90_000);
+            account.usage_windows.push(AgentUsageWindow {
+                label: label.into(),
+                used_fraction: 1.0,
+                resets_at: None,
+            });
+            assert_eq!(quota_status(&account, 100_001, true), QuotaStatus::Limited);
+            assert_eq!(quota_status(&account, 100_001, false), QuotaStatus::Stale);
+            assert_eq!(
+                quota_status(&account, 100_000 + MAX_USAGE_AGE_MS + 1, true),
+                QuotaStatus::Stale
+            );
         }
     }
 

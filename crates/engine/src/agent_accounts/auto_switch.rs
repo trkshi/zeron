@@ -20,6 +20,13 @@ fn quota_fraction(account: &AgentAccount, now: i64) -> Option<f32> {
     {
         return None;
     }
+    if account.usage_windows.iter().any(|window| {
+        matches!(window.label.as_str(), "Workspace limit" | "Usage limit")
+            && window.used_fraction == 1.0
+            && window.resets_at.is_none()
+    }) {
+        return Some(1.0);
+    }
     let mut fraction: Option<f32> = None;
     for window in &account.usage_windows {
         if !matches!(window.label.as_str(), "Session" | "Week" | "Weekly") {
@@ -77,6 +84,7 @@ impl AgentAccounts {
     pub(crate) async fn plan_auto_switch(
         &self,
         harness: HarnessId,
+        refresh_active: bool,
     ) -> Result<Option<AutoSwitchPlan>, EngineError> {
         if !matches!(harness, HarnessId::Codex | HarnessId::ClaudeCode) {
             return Ok(None);
@@ -88,7 +96,7 @@ impl AgentAccounts {
                 && account.active
                 && quota_fraction(account, now_ms()).is_some()
         });
-        if !fresh {
+        if refresh_active || !fresh {
             snapshot = self
                 .list_locked_with_usage_scope(true, UsageProbeScope::ActiveHarness(harness))
                 .await?;
@@ -200,6 +208,39 @@ mod tests {
     }
 
     #[test]
+    fn workspace_limits_rotate_below_full_time_windows_and_exclude_blocked_replacements() {
+        let harness = HarnessId::Codex;
+        for label in ["Workspace limit", "Usage limit"] {
+            let mut active = account("active", harness, true, 0.1, 0.2);
+            // A stale window reset cannot clear a separately reported limit.
+            active.usage_windows[0].resets_at = DateTime::from_timestamp_millis(90_000);
+            active.usage_windows.push(AgentUsageWindow {
+                label: label.into(),
+                used_fraction: 1.0,
+                resets_at: None,
+            });
+            let mut blocked = account("blocked", harness, false, 0.0, 0.0);
+            blocked
+                .usage_windows
+                .push(active.usage_windows.last().unwrap().clone());
+            let mut snapshot = AgentAccountsSnapshot {
+                accounts: vec![
+                    active,
+                    blocked,
+                    account("available", harness, false, 0.2, 0.3),
+                ],
+                warnings: vec![],
+            };
+            let plan = switch_plan(&snapshot, harness, 100_001).unwrap();
+            assert_eq!(plan.from, "active");
+            assert_eq!(plan.to, "available");
+            snapshot.accounts.pop();
+            assert!(switch_plan(&snapshot, harness, 100_001).is_none());
+            assert!(switch_plan(&snapshot, harness, 160_001).is_none());
+        }
+    }
+
+    #[test]
     fn exhausted_unknown_expired_and_other_provider_accounts_are_not_candidates() {
         let harness = HarnessId::Codex;
         let mut expired = account("expired", harness, false, 0.1, 0.1);
@@ -285,7 +326,7 @@ mod tests {
         let active = install_codex_login(&accounts, &config, "full", 0.1, 1.0);
         let before = std::fs::read(config.codex_auth_file()).unwrap();
         let plan = accounts
-            .plan_auto_switch(HarnessId::Codex)
+            .plan_auto_switch(HarnessId::Codex, false)
             .await
             .unwrap()
             .unwrap();
@@ -305,7 +346,7 @@ mod tests {
         install_codex_login(&accounts, &config, "available", 0.2, 0.3);
         install_codex_login(&accounts, &config, "full", 1.0, 0.1);
         let plan = accounts
-            .plan_auto_switch(HarnessId::Codex)
+            .plan_auto_switch(HarnessId::Codex, false)
             .await
             .unwrap()
             .unwrap();

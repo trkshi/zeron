@@ -137,7 +137,7 @@ const CLAUDE_SHARED_CREDENTIAL_KEYS: &[&str] = &[
 /// A forced list re-probes an account only when its last attempt is older
 /// than this — the page's paint-then-refresh pair and Refresh mashing must
 /// not multiply provider calls (Anthropic's usage endpoint 429s eagerly).
-const FORCED_MIN_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) const FORCED_MIN_INTERVAL: Duration = Duration::from_secs(30);
 /// How long a live Claude credential read is reused (see
 /// [`AgentAccounts::read_claude_credentials_cached`]).
 const CLAUDE_CREDENTIALS_TTL: Duration = Duration::from_secs(10);
@@ -3631,12 +3631,12 @@ fn short_duration(ms: i64) -> String {
     }
 }
 
-/// Codex `/wham/usage`: primary/secondary windows + the live plan.
+/// Codex `/wham/usage`: primary/secondary windows, explicit limit gates, and plan.
 fn codex_usage_snapshot(body: &serde_json::Value) -> Option<UsageSnapshot> {
-    let rl = body.get("rate_limit")?;
+    let rl = body.get("rate_limit");
     let mut windows = Vec::new();
     for key in ["primary_window", "secondary_window"] {
-        if let Some(w) = rl.get(key)
+        if let Some(w) = rl.and_then(|rl| rl.get(key))
             && let Some(used) = w.get("used_percent").and_then(|v| v.as_f64())
         {
             let span = w
@@ -3649,6 +3649,33 @@ fn codex_usage_snapshot(body: &serde_json::Value) -> Option<UsageSnapshot> {
                 resets_at: parse_when(w.get("reset_at")),
             });
         }
+    }
+    // Workspace credits can block a Team login independently of its time
+    // windows. An empty purchased-credit balance alone is NOT a limit.
+    let workspace_blocked = matches!(
+        body.pointer("/rate_limit_reached_type/type")
+            .and_then(serde_json::Value::as_str),
+        Some("workspace_member_credits_depleted" | "workspace_credits_depleted")
+    ) || body
+        .pointer("/spend_control/reached")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let blocked = workspace_blocked
+        || rl.is_some_and(|rl| {
+            rl.get("allowed").and_then(serde_json::Value::as_bool) == Some(false)
+                || rl.get("limit_reached").and_then(serde_json::Value::as_bool) == Some(true)
+        });
+    if blocked {
+        windows.push(AgentUsageWindow {
+            label: if workspace_blocked {
+                "Workspace limit"
+            } else {
+                "Usage limit"
+            }
+            .into(),
+            used_fraction: 1.0,
+            resets_at: None,
+        });
     }
     if windows.is_empty() {
         return None;
@@ -4246,6 +4273,81 @@ mod tests {
         assert_eq!(codex_window_label(604_800), "Week");
         // Unknown/absent span falls back to the shortest label.
         assert_eq!(codex_window_label(0), "Session");
+    }
+
+    #[test]
+    fn codex_workspace_credits_can_block_low_or_missing_time_windows() {
+        for rate_limit in [
+            serde_json::json!({
+                "allowed": false,
+                "limit_reached": true,
+                "primary_window": { "used_percent": 12, "limit_window_seconds": 18_000 },
+            }),
+            serde_json::Value::Null,
+        ] {
+            let snapshot = codex_usage_snapshot(&serde_json::json!({
+                "plan_type": "team",
+                "rate_limit": rate_limit,
+                "rate_limit_reached_type": {
+                    "type": "workspace_member_credits_depleted",
+                    "details": null,
+                },
+            }))
+            .unwrap();
+            assert_eq!(snapshot.plan_label.as_deref(), Some("ChatGPT Team"));
+            let limit = snapshot.windows.last().unwrap();
+            assert_eq!(limit.label, "Workspace limit");
+            assert_eq!(limit.used_fraction, 1.0);
+            assert_eq!(limit.resets_at, None);
+        }
+    }
+
+    #[test]
+    fn codex_explicit_usage_and_spend_limits_survive_without_percentages() {
+        for (body, label) in [
+            (
+                serde_json::json!({"rate_limit": {"allowed": false}}),
+                "Usage limit",
+            ),
+            (
+                serde_json::json!({"rate_limit": {"limit_reached": true}}),
+                "Usage limit",
+            ),
+            (
+                serde_json::json!({"spend_control": {"reached": true}}),
+                "Workspace limit",
+            ),
+        ] {
+            let snapshot = codex_usage_snapshot(&body).unwrap();
+            assert_eq!(snapshot.windows.len(), 1);
+            assert_eq!(snapshot.windows[0].label, label);
+            assert_eq!(snapshot.windows[0].used_fraction, 1.0);
+        }
+    }
+
+    #[test]
+    fn codex_no_purchased_credits_does_not_exhaust_an_available_subscription() {
+        let snapshot = codex_usage_snapshot(&serde_json::json!({
+            "plan_type": "plus",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": {"used_percent": 4, "limit_window_seconds": 18_000},
+            },
+            "credits": {"has_credits": false, "unlimited": false, "balance": "0"},
+            "spend_control": {"reached": false},
+            "rate_limit_reached_type": null,
+        }))
+        .unwrap();
+        assert_eq!(snapshot.windows.len(), 1);
+        assert_eq!(snapshot.windows[0].label, "Session");
+        assert!((snapshot.windows[0].used_fraction - 0.04).abs() < 1e-6);
+        assert!(
+            codex_usage_snapshot(&serde_json::json!({
+                "credits": {"has_credits": false, "balance": "0"},
+            }))
+            .is_none()
+        );
     }
 
     #[test]

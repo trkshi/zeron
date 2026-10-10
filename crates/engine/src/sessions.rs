@@ -343,14 +343,20 @@ impl SessionsEngine {
 
     /// Called under checkpoint admission, which also orders sends and steers.
     /// No failed or interrupted turn is automatically replayed.
-    async fn prepare_account_auto_switch(&self, harness: HarnessId) {
+    async fn prepare_account_auto_switch(&self, harness: HarnessId, refresh_active: bool) {
         let Some(accounts) = self.inner.agent_accounts.get() else {
             return;
         };
-        if !self.inner.registry.account_auto_switch().enabled(harness) || self.checkpoint_busy() {
+        if !self.inner.registry.account_auto_switch().enabled(harness)
+            || self
+                .inner
+                .shutting_down
+                .load(std::sync::atomic::Ordering::Acquire)
+            || self.checkpoint_busy()
+        {
             return;
         }
-        let plan = match accounts.plan_auto_switch(harness).await {
+        let plan = match accounts.plan_auto_switch(harness, refresh_active).await {
             Ok(Some(plan)) => plan,
             Ok(None) => return,
             Err(error) => {
@@ -711,7 +717,7 @@ impl SessionsEngine {
             .map_err(EngineError::Other)?;
         let mut admission = self.checkpoint_admission().await;
         if !idle && admission.is_some() {
-            self.prepare_account_auto_switch(harness_id).await;
+            self.prepare_account_auto_switch(harness_id, false).await;
         }
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
             (
@@ -1071,8 +1077,10 @@ impl SessionsEngine {
         let harness = lock(&self.inner.runs)
             .get(chat_id)
             .map(|run| run.runtime_config.harness_id);
-        if admission.is_some() && let Some(harness) = harness {
-            self.prepare_account_auto_switch(harness).await;
+        if admission.is_some()
+            && let Some(harness) = harness
+        {
+            self.prepare_account_auto_switch(harness, false).await;
         }
         let target = lock(&self.inner.runs)
             .get(chat_id)
@@ -3639,6 +3647,26 @@ async fn drive_run(
         .unwrap_or_default();
     inner.remove_run(&chat_id, &run_id);
     inner.set_status_with_completion(&chat_id, final_status, false, final_completed_turn);
+    if final_status == SessionStatus::Errored
+        && matches!(harness_id, HarnessId::Codex | HarnessId::ClaudeCode)
+        && inner.registry.account_auto_switch().enabled(harness_id)
+        && !inner
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+    {
+        let engine = SessionsEngine {
+            inner: inner.clone(),
+        };
+        tokio::spawn(async move {
+            // A pre-turn probe may still be fresh when inference hits its
+            // limit. Respect its cooldown, then recheck after child cleanup.
+            tokio::time::sleep(crate::agent_accounts::FORCED_MIN_INTERVAL).await;
+            let admission = engine.checkpoint_admission().await;
+            if admission.is_some() {
+                engine.prepare_account_auto_switch(harness_id, true).await;
+            }
+        });
+    }
     // A Stop cancels the messages it found waiting; one accepted after it
     // began is still the user's next message and must run.
     let orphans: Vec<RoutedSteer> = if inner
@@ -4205,7 +4233,9 @@ mod tests {
             if let Some(status) = status {
                 sessions.set_status("busy-chat", status, false);
             }
-            sessions.prepare_account_auto_switch(HarnessId::Codex).await;
+            sessions
+                .prepare_account_auto_switch(HarnessId::Codex, false)
+                .await;
             assert!(!slots.exists(), "a disabled or busy check must not snapshot a login");
             assert_eq!(std::fs::read(auth).unwrap(), original.as_slice());
         }

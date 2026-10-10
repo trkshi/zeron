@@ -27,8 +27,9 @@ Zeron release.
   refresh at most every two minutes while Home is visible and the window is
   active, with a manual refresh button and the engine's existing cooldown.
   Keep unknown, failed, expired, and offline readings out of available counts.
-  Use theme-aware gray home panels and stack them on narrow windows. Account
-  switching stays in Providers; no engine update is required.
+  Use `#141414` home panels in dark mode, retain light-theme surfaces, and
+  stack them on narrow windows. Account switching stays in Providers; the
+  panel itself needs no engine update.
 - Open the new-chat canvas by default after the chat list loads. Turn off
   **Start with a new chat** in **Settings > General** to open the most recently
   active conversation instead on the next startup. Sidebar selections,
@@ -150,8 +151,13 @@ Zeron release.
 - Opt into **Auto-switch account** in the expanded Codex or Claude Code
   provider settings, separately for each device. Before a new idle turn,
   switch an exhausted session/weekly OAuth login to the saved account with
-  the most remaining quota. Require recent, successful usage for both logins;
-  unknown, expired, and exhausted alternatives are skipped. Refresh inactive
+  the most remaining quota. Require recent, successful usage for both logins.
+  Honor Codex's explicit workspace-credit and usage-limit gates even when
+  session/weekly percentages are below 100%. Do not interpret an empty
+  purchased-credit balance as an exhausted subscription. After a failed turn,
+  recheck once after the usage-probe cooldown and rotate only if the host is
+  idle; otherwise the next idle send checks again. Never replay that failure.
+  Unknown, expired, and exhausted alternatives are skipped. Refresh inactive
   accounts only when the current account is exhausted, honoring existing
   provider cooldowns and backoff. Active turns, questions, voice, and background
   work prevent rotation. Retire only idle runtimes of the affected provider
