@@ -780,6 +780,7 @@ impl Render for AccountPool {
                     )
                     .children(note.map(|note| {
                         div()
+                            .id("account-pool-status-note")
                             .h(px(28.0))
                             .px(px(8.0))
                             .flex()
