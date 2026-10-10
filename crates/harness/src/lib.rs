@@ -77,6 +77,7 @@ impl SteerMessage {
 pub struct TurnControl {
     stop: std::sync::Arc<tokio::sync::Notify>,
     background: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub shells: shells::ShellMonitor,
 }
 
 impl TurnControl {
@@ -304,6 +305,7 @@ pub mod pi;
 pub mod process;
 mod scratch;
 pub mod shell_env;
+pub mod shells;
 pub(crate) mod skills;
 #[cfg(windows)]
 pub mod windows_process;

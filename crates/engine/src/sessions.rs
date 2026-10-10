@@ -179,6 +179,15 @@ struct RunHandle {
     retiring: Arc<std::sync::atomic::AtomicBool>,
 }
 
+#[derive(Clone)]
+struct ShellRuntime {
+    chat_id: String,
+    run_id: String,
+    harness: HarnessId,
+    monitor: zeron_harness::shells::ShellMonitor,
+    ended_at: Option<std::time::Instant>,
+}
+
 /// One accepted-but-unconfirmed steer: enough to re-dispatch it verbatim.
 #[derive(Debug, Clone)]
 struct RoutedSteer {
@@ -216,6 +225,7 @@ struct Inner {
     doc_host: Mutex<Option<DocHost>>,
     /// chat_id → live run.
     runs: Mutex<HashMap<String, RunHandle>>,
+    recent_shells: Mutex<std::collections::VecDeque<ShellRuntime>>,
     /// chat_id → broadcast hub (retained across runs so subscribers survive turns).
     hubs: Mutex<HashMap<String, broadcast::Sender<JournaledEvent>>>,
     statuses: Mutex<HashMap<String, Session>>,
@@ -269,6 +279,7 @@ impl SessionsEngine {
                 registry,
                 doc_host: Mutex::new(None),
                 runs: Mutex::new(HashMap::new()),
+                recent_shells: Mutex::new(std::collections::VecDeque::new()),
                 hubs: Mutex::new(HashMap::new()),
                 statuses: Mutex::new(HashMap::new()),
                 sessions_tx,
@@ -486,6 +497,87 @@ impl SessionsEngine {
     /// Status watch: the full session list, re-sent on every transition.
     pub fn watch_sessions(&self) -> watch::Receiver<Vec<Session>> {
         self.inner.sessions_tx.subscribe()
+    }
+
+    fn shell_monitors(&self) -> Vec<ShellRuntime> {
+        let runs = lock(&self.inner.runs);
+        let mut recent = lock(&self.inner.recent_shells);
+        recent.retain(|runtime| {
+            runtime
+                .ended_at
+                .is_none_or(|at| at.elapsed() < std::time::Duration::from_secs(120))
+        });
+        let mut monitors: Vec<_> = runs
+            .iter()
+            .map(|(chat_id, run)| ShellRuntime {
+                chat_id: chat_id.clone(),
+                run_id: run.run_id.clone(),
+                harness: run.runtime_config.harness_id,
+                monitor: run.turn.shells.clone(),
+                ended_at: None,
+            })
+            .collect();
+        monitors.extend(recent.iter().cloned());
+        monitors
+    }
+
+    pub(crate) fn shell_tasks(&self) -> zeron_proto::ShellTasksSnapshot {
+        let mut snapshot = zeron_proto::ShellTasksSnapshot::default();
+        for runtime in self.shell_monitors() {
+            let (entries, truncated) = runtime.monitor.snapshot();
+            if runtime.ended_at.is_none()
+                && entries.iter().any(|task| {
+                    matches!(task.status, zeron_proto::ShellTaskStatus::Running | zeron_proto::ShellTaskStatus::Unknown)
+                })
+            {
+                runtime.monitor.request_refresh();
+            }
+            snapshot.truncated |= truncated;
+            for task in entries {
+                snapshot.tasks.push(zeron_proto::ShellTask {
+                    id: format!("{}:{}", runtime.run_id, task.id),
+                    chat_id: runtime.chat_id.clone(),
+                    device_id: self.inner.device_id.clone(),
+                    harness: runtime.harness,
+                    command: task.command,
+                    status: task.status,
+                    started_at: task.started_at,
+                    start_estimated: task.start_estimated,
+                    finished_at: task.finished_at,
+                    exit_code: task.exit_code,
+                    output_available: task.output_available,
+                });
+            }
+        }
+        snapshot.tasks.sort_by(|a, b| {
+            (a.status != zeron_proto::ShellTaskStatus::Running)
+                .cmp(&(b.status != zeron_proto::ShellTaskStatus::Running))
+                .then_with(|| b.started_at.cmp(&a.started_at))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        snapshot.truncated |= snapshot.tasks.len() > 128;
+        snapshot.tasks.truncate(128);
+        snapshot
+    }
+
+    pub(crate) fn shell_output(
+        &self,
+        params: &zeron_proto::ShellTaskOutputParams,
+    ) -> zeron_proto::ShellTaskOutput {
+        for runtime in self.shell_monitors() {
+            if runtime.chat_id != params.chat_id {
+                continue;
+            }
+            if let Some(id) = params.task_id.strip_prefix(&format!("{}:", runtime.run_id))
+                && let Some(output) = runtime.monitor.output(id)
+            {
+                return output;
+            }
+        }
+        zeron_proto::ShellTaskOutput {
+            error: Some("Shell task is no longer available".into()),
+            ..Default::default()
+        }
     }
 
     pub fn session_status(&self, chat_id: &str) -> Option<Session> {
@@ -1898,7 +1990,22 @@ impl Inner {
     fn remove_run(&self, chat_id: &str, run_id: &str) {
         let mut runs = lock(&self.runs);
         if runs.get(chat_id).is_some_and(|h| h.run_id == run_id) {
-            runs.remove(chat_id);
+            if let Some(run) = runs.remove(chat_id) {
+                run.turn.shells.runtime_ended();
+                if !run.turn.shells.snapshot().0.is_empty() {
+                    let mut recent = lock(&self.recent_shells);
+                    if recent.len() == 8 {
+                        recent.pop_front();
+                    }
+                    recent.push_back(ShellRuntime {
+                        chat_id: chat_id.into(),
+                        run_id: run.run_id,
+                        harness: run.runtime_config.harness_id,
+                        monitor: run.turn.shells,
+                        ended_at: Some(std::time::Instant::now()),
+                    });
+                }
+            }
         }
     }
 }

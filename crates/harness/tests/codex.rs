@@ -517,6 +517,10 @@ async fn open_commands_report_background_work_and_killed_ones_do_not() {
     }
     assert_eq!(until_done(&mut stream, |_| {}).await, DoneStatus::Completed);
     assert!(turn.background_live(), "the dev server outlives its turn");
+    let tasks = turn.shells.snapshot().0;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, "bg");
+    assert_eq!(tasks[0].status, zeron_proto::ShellTaskStatus::Running);
 
     steer
         .send(SteerMessage::text("run the tests"))
@@ -533,6 +537,16 @@ async fn open_commands_report_background_work_and_killed_ones_do_not() {
     // The killed foreground command's process is gone once the grace passes.
     tokio::time::sleep(Duration::from_millis(3500)).await;
     assert!(turn.background_live(), "the dev server still runs");
+    assert_eq!(
+        turn.shells
+            .snapshot()
+            .0
+            .iter()
+            .find(|task| task.id == "fg")
+            .unwrap()
+            .status,
+        zeron_proto::ShellTaskStatus::Stopped
+    );
 
     steer
         .send(SteerMessage::text("stop the server"))
@@ -540,6 +554,64 @@ async fn open_commands_report_background_work_and_killed_ones_do_not() {
         .unwrap();
     assert_eq!(until_done(&mut stream, |_| {}).await, DoneStatus::Completed);
     assert!(!turn.background_live(), "nothing left running");
+    assert_eq!(
+        turn.shells
+            .snapshot()
+            .0
+            .iter()
+            .find(|task| task.id == "bg")
+            .unwrap()
+            .status,
+        zeron_proto::ShellTaskStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn shell_inventory_and_output_are_separate_from_turn_completion() {
+    use zeron_harness::TurnControl;
+    use zeron_proto::ShellTaskStatus;
+    let (mut controls, steer, token) = controls("Yes");
+    let turn = TurnControl::default();
+    controls.turn = turn.clone();
+    let mut stream = harness()
+        .run(request("scenario:shell-inventory"), controls)
+        .await
+        .unwrap();
+    for expected in [ShellTaskStatus::Unknown, ShellTaskStatus::Failed] {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(event) = stream.next().await {
+                if let AgentEvent::Done { status, .. } = event.unwrap() {
+                    assert_eq!(status, DoneStatus::Completed);
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(turn.shells.snapshot().0[0].status, expected);
+        if expected == ShellTaskStatus::Unknown {
+            assert_eq!(turn.shells.output("bg").unwrap().text, "listening\n");
+            turn.shells.request_refresh();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while turn.shells.snapshot().0[0].status != ShellTaskStatus::Running {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            steer
+                .send(SteerMessage::text("finish server"))
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(turn.shells.output("bg").unwrap().text, "listening\nfailed");
+    token.cancel();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while stream.next().await.is_some() {}
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

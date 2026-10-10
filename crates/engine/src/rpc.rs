@@ -1061,6 +1061,8 @@ impl EngineRpc {
                     | methods::WATCH_CHECKOUT_CHANGE_REQUEST
                     | methods::WATCH_WORKSPACE_GIT_STATUS
                     | methods::WATCH_HARNESS_UPDATES
+                    | methods::WATCH_SHELL_TASKS
+                    | methods::WATCH_SHELL_TASK_OUTPUT
             ) {
                 let rx = match client.subscribe_checked(method, params).await {
                     Ok(rx) => rx,
@@ -1439,6 +1441,8 @@ fn forwardable(method: &str) -> bool {
     matches!(
         method,
         methods::FORK_SIDE_CHAT
+            | methods::WATCH_SHELL_TASKS
+            | methods::WATCH_SHELL_TASK_OUTPUT
             | methods::PREVIEW_CHECKPOINT
             | methods::RESTORE_CHECKPOINT
             | methods::LIST_HARNESSES
@@ -1550,6 +1554,8 @@ fn is_stream_method(method: &str) -> bool {
     matches!(
         method,
         methods::WATCH_DOC_MESSAGES
+            | methods::WATCH_SHELL_TASKS
+            | methods::WATCH_SHELL_TASK_OUTPUT
             | methods::WATCH_QUEUE
             | methods::SUBSCRIBE_TERMINAL
             | methods::WATCH_CHECKOUT_DIFFS
@@ -2467,6 +2473,60 @@ impl RpcService for EngineRpc {
                     .workspace
                     .merged_sessions_watch(self.sessions.watch_sessions());
                 Ok(RpcReply::Stream(watch_stream(merged)))
+            }
+            methods::WATCH_SHELL_TASKS => {
+                let sessions = self.sessions.clone();
+                let stream =
+                    futures::stream::unfold((sessions, None), |(sessions, mut last)| async move {
+                        loop {
+                            if last.is_some() {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            }
+                            let snapshot = sessions.shell_tasks();
+                            if last.as_ref() != Some(&snapshot) {
+                                let value = serde_json::to_value(&snapshot).unwrap_or_default();
+                                last = Some(snapshot);
+                                return Some((value, (sessions, last)));
+                            }
+                        }
+                    });
+                Ok(RpcReply::Stream(Box::pin(stream)))
+            }
+            methods::WATCH_SHELL_TASK_OUTPUT => {
+                let params: zeron_proto::ShellTaskOutputParams = parse_params(params)?;
+                let chat = self
+                    .workspace
+                    .chat(&params.chat_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?
+                    .ok_or_else(|| RpcError::Failed("chat not found".into()))?;
+                if chat.device_id != self.doc_host.device_id() {
+                    return Err(RpcError::Failed(
+                        "shell task belongs to another device".into(),
+                    ));
+                }
+                let sessions = self.sessions.clone();
+                let stream = futures::stream::unfold(
+                    (sessions, params, None),
+                    |(sessions, params, mut last)| async move {
+                        loop {
+                            if last.is_some() {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            }
+                            let engine = sessions.clone();
+                            let query = params.clone();
+                            let output =
+                                tokio::task::spawn_blocking(move || engine.shell_output(&query))
+                                    .await
+                                    .ok()?;
+                            if last.as_ref() != Some(&output) {
+                                let value = serde_json::to_value(&output).unwrap_or_default();
+                                last = Some(output);
+                                return Some((value, (sessions, params, last)));
+                            }
+                        }
+                    },
+                );
+                Ok(RpcReply::Stream(Box::pin(stream)))
             }
             methods::LOCAL_DEVICE => {
                 RpcReply::value(&serde_json::json!({ "deviceId": self.doc_host.device_id() }))
@@ -3702,6 +3762,66 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn shell_watch_starts_empty_and_output_requires_a_hosted_chat() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = crate::EngineCore::assemble_with_profile(
+            crate::EngineProfile::local(temp.path()).unwrap(),
+            std::sync::Arc::new(HarnessRegistry::new()),
+            HarnessId::Codex,
+            None,
+        )
+        .unwrap();
+        let rpc = core.rpc_service();
+        let RpcReply::Stream(mut stream) = rpc
+            .handle(methods::WATCH_SHELL_TASKS, serde_json::json!({}))
+            .await
+            .unwrap()
+        else {
+            panic!("shell inventory must be a stream");
+        };
+        let snapshot: zeron_proto::ShellTasksSnapshot =
+            serde_json::from_value(stream.next().await.unwrap()).unwrap();
+        assert!(snapshot.tasks.is_empty());
+        assert!(!snapshot.truncated);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), stream.next())
+                .await
+                .is_err()
+        );
+        drop(stream);
+        assert!(
+            rpc.handle(
+                methods::WATCH_SHELL_TASK_OUTPUT,
+                serde_json::json!({"chatId":"missing", "taskId":"/etc/passwd"})
+            )
+            .await
+            .is_err()
+        );
+        core.workspace
+            .create_chat("shell-chat", None, Some(&core.device_id), None, None)
+            .unwrap();
+        let RpcReply::Stream(mut output) = rpc
+            .handle(
+                methods::WATCH_SHELL_TASK_OUTPUT,
+                serde_json::json!({"chatId":"shell-chat", "taskId":"/etc/passwd"}),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("shell output must be a stream");
+        };
+        let value: zeron_proto::ShellTaskOutput =
+            serde_json::from_value(output.next().await.unwrap()).unwrap();
+        assert!(value.text.is_empty());
+        assert_eq!(
+            value.error.as_deref(),
+            Some("Shell task is no longer available")
+        );
+        drop(output);
+        core.sessions.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn voice_owner_is_shared_across_services_and_shutdown_retires_it() {
         let temp = tempfile::tempdir().unwrap();
         let core = crate::EngineCore::assemble_with_profile(
@@ -4237,6 +4357,10 @@ mod tests {
         assert!(is_stream_method(methods::WATCH_WORKSPACE_GIT_STATUS));
         assert!(forwardable(methods::WATCH_HARNESS_UPDATES));
         assert!(is_stream_method(methods::WATCH_HARNESS_UPDATES));
+        assert!(forwardable(methods::WATCH_SHELL_TASKS));
+        assert!(is_stream_method(methods::WATCH_SHELL_TASKS));
+        assert!(forwardable(methods::WATCH_SHELL_TASK_OUTPUT));
+        assert!(is_stream_method(methods::WATCH_SHELL_TASK_OUTPUT));
         assert!(forwardable(methods::CHECK_HARNESS_UPDATES));
         assert!(forwardable(methods::APPLY_HARNESS_UPDATE));
         assert!(forwardable(methods::LIST_CHANGE_REQUEST_PAGE));

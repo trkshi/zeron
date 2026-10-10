@@ -120,6 +120,8 @@ pub mod methods {
     pub const WATCH_SIDEBAR_PREFERENCES: &str = "WatchSidebarPreferences";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
+    pub const WATCH_SHELL_TASKS: &str = "WatchShellTasks";
+    pub const WATCH_SHELL_TASK_OUTPUT: &str = "WatchShellTaskOutput";
     /// Spaces registry (device+folder pairs) from the workspace doc.
     pub const WATCH_SPACES: &str = "WatchSpaces";
     /// Entity mutations against the workspace doc (feature-inventory §2 DataRpc).

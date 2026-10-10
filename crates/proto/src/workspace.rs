@@ -17,6 +17,7 @@ pub mod capabilities {
     pub const HARNESS_UPDATES_V1: &str = "harness-updates-v1";
     pub const ASYNC_QUESTIONS_V1: &str = "async-questions-v1";
     pub const CHECKPOINTS_V1: &str = "checkpoints-v1";
+    pub const SHELL_MONITOR_V1: &str = "shell-monitor-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -29,6 +30,7 @@ pub mod capabilities {
         ASYNC_QUESTIONS_V1,
         crate::voice::remote::CAPABILITY,
         CHECKPOINTS_V1,
+        SHELL_MONITOR_V1,
     ];
 
     pub fn current() -> Vec<String> {
@@ -111,7 +113,8 @@ mod tests {
                     "harness-updates-v1",
                     "async-questions-v1",
                     "voice-client-media-v1",
-                    "checkpoints-v1"
+                    "checkpoints-v1",
+                    "shell-monitor-v1"
                 ],
             })
         );

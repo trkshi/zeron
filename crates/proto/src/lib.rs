@@ -13,6 +13,7 @@ pub mod file_mentions;
 pub mod invocation;
 pub mod motion;
 pub mod preview;
+pub mod shells;
 pub mod sidebar_pins;
 pub mod view;
 pub mod voice;
@@ -22,6 +23,7 @@ pub use agent::*;
 pub use checkpoints::*;
 pub use entities::*;
 pub use preview::*;
+pub use shells::*;
 pub use sidebar_pins::*;
 pub use workspace::*;
 

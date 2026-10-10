@@ -47,6 +47,7 @@
 pub(crate) mod catalog;
 mod normalize;
 pub mod realtime;
+mod shells;
 mod subagents;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1362,6 +1363,12 @@ async fn run_session(session: Session) {
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut torn_down: Vec<i32> = Vec::new();
 
+    let mut shell_query: Option<
+        futures::future::BoxFuture<'static, Result<Vec<Value>, HarnessError>>,
+    > = None;
+    let mut shell_inventory_supported = true;
+    let mut shell_refreshed_at: Option<tokio::time::Instant> = None;
+
     'main: loop {
         tokio::select! {
             inc = incoming.recv() => match inc {
@@ -1390,6 +1397,7 @@ async fn run_session(session: Session) {
                         }
                     }
                 }
+                shells::observe(&turn.shells, &method, &params);
                 match method.as_str() {
                     "turn/started" => {
                         let id = turn_id(&params);
@@ -1953,11 +1961,32 @@ async fn run_session(session: Session) {
                 prune_at.as_ref().map_or_else(tokio::time::Instant::now, |(at, _)| *at)
             ), if prune_at.is_some() => {
                 let (_, stopped) = prune_at.take().expect("guarded by if");
-                open_commands.retain(|_, (pid, started_in)| {
-                    started_in.as_deref() != Some(stopped.as_str())
-                        || pid.as_deref().is_some_and(process_alive)
+                open_commands.retain(|id, (pid, started_in)| {
+                    let keep = started_in.as_deref() != Some(stopped.as_str())
+                        || pid.as_deref().is_some_and(process_alive);
+                    if !keep { turn.shells.finish(id, zeron_proto::ShellTaskStatus::Stopped, None); }
+                    keep
                 });
                 turn.set_background(open_commands.len());
+            },
+
+            _ = turn.shells.refresh_requested(), if shell_inventory_supported && shell_query.is_none() => {
+                if shell_refreshed_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
+                    shell_refreshed_at = Some(tokio::time::Instant::now());
+                    let client = client.clone();
+                    let thread = thread_id.clone();
+                    shell_query = Some(Box::pin(async move {
+                        tokio::time::timeout(Duration::from_secs(2), shells::inventory(client, thread)).await
+                            .map_err(|_| HarnessError::Protocol("background terminal inventory timed out".into()))?
+                    }));
+                }
+            },
+            result = async { shell_query.as_mut().expect("guarded query").await }, if shell_query.is_some() => {
+                shell_query = None;
+                match result {
+                    Ok(tasks) => shells::reconcile(&turn.shells, tasks),
+                    Err(_) => { shell_inventory_supported = false; },
+                }
             },
 
             _ = event_tx.closed() => break 'main,

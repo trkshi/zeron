@@ -213,7 +213,9 @@ impl Shell {
             .id("home-working-now")
             .debug_selector(|| "home-working-now".into())
             .relative()
-            .size_full()
+            .w_full()
+            .h(px(desired_height))
+            .flex_none()
             .flex()
             .flex_col()
             .rounded(px(8.0))
@@ -276,11 +278,35 @@ impl Shell {
             .when(opacity < 0.95, |panel| {
                 panel.child(div().absolute().inset_0().occlude())
             });
+        self.shells
+            .update(cx, |shells, cx| shells.set_interactive(opacity >= 0.95, cx));
+        let shells_height = self.shells.read(cx).desired_height(cx);
+        let left_column = div()
+            .id("home-activity-panels")
+            .size_full()
+            .flex()
+            .flex_col()
+            .gap(px(HOME_PANEL_GAP))
+            .overflow_y_scroll()
+            .track_scroll(&self.shells.read(cx).scroll)
+            .child(panel)
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(shells_height))
+                    .flex_none()
+                    .opacity(opacity)
+                    .child(self.shells.clone())
+                    .when(opacity < 0.95, |panel| {
+                        panel.child(div().absolute().inset_0().occlude())
+                    }),
+            );
         div()
             .absolute()
             .inset_0()
             .child(BelowComposer {
-                child: Some(panel.into_any_element()),
+                child: Some(left_column.into_any_element()),
                 secondary: Some((
                     div()
                         .size_full()
@@ -297,7 +323,7 @@ impl Shell {
                         self.account_pool.read(cx).desired_height(cx)
                     },
                 )),
-                desired_height,
+                desired_height: desired_height + HOME_PANEL_GAP + shells_height,
                 available_width,
                 viewport_height: self.viewport_height,
                 bottom_clearance,

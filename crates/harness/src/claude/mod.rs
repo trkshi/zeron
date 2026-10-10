@@ -46,6 +46,7 @@
 pub mod catalog;
 mod discovery;
 mod normalize;
+mod shells;
 mod usage;
 mod wire;
 
@@ -883,6 +884,8 @@ async fn run_session(session: Session) {
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut torn_down: Vec<i32> = Vec::new();
 
+    let mut shell_observer = shells::Observer::default();
+
     'main: loop {
         tokio::select! {
             line = stdout_lines.next_line() => match line {
@@ -907,6 +910,7 @@ async fn run_session(session: Session) {
                         }
                         continue;
                     }
+                    shell_observer.observe(&frame, &turn.shells);
                     if let Frame::System(system) = &frame
                         && system.subtype == "background_tasks_changed"
                     {

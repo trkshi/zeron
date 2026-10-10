@@ -82,6 +82,12 @@ pub(crate) struct SystemFrame {
     /// now (agents and shells) — the authoritative set, not a delta.
     #[serde(default)]
     pub tasks: Option<Vec<Value>>,
+    #[serde(default)]
+    pub task_type: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default, alias = "outputFile")]
+    pub output_file: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -126,6 +132,8 @@ pub(crate) struct MessageFrame {
     /// Terse assistant-level error code (`rate_limit`, `billing_error`, …).
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub tool_use_result: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]

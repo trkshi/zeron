@@ -339,6 +339,24 @@ case "$turnline" in
   cat >/dev/null
   ;;
 
+*scenario:shell-inventory*)
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"turn/started","params":{"threadId":"th-1","turn":{"id":"t-1"}}}'
+  emit '{"method":"item/started","params":{"threadId":"th-1","item":{"type":"commandExecution","id":"bg","command":"test server","processId":"42","status":"inProgress"}}}'
+  emit '{"method":"item/commandExecution/outputDelta","params":{"threadId":"th-1","itemId":"bg","delta":"listening\n"}}'
+  emit '{"method":"item/completed","params":{"threadId":"th-1","item":{"type":"commandExecution","id":"bg","command":"test server","processId":"42","exitCode":null,"status":"completed"}}}'
+  emit '{"method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"t-1","status":"completed"}}}'
+  read -r query || exit 1
+  has "$query" '"method":"thread/backgroundTerminals/list"' || exit 9
+  emit "{\"id\":$(rid "$query"),\"result\":{\"data\":[{\"itemId\":\"bg\",\"processId\":\"42\",\"command\":\"test server\",\"cwd\":\"/repo\"}],\"nextCursor\":null}}"
+  read -r next || exit 1
+  emit "{\"id\":$(rid "$next"),\"result\":{\"turn\":{\"id\":\"t-2\"}}}"
+  emit '{"method":"turn/started","params":{"threadId":"th-1","turn":{"id":"t-2"}}}'
+  emit '{"method":"item/completed","params":{"threadId":"th-1","item":{"type":"commandExecution","id":"bg","exitCode":1,"status":"failed","aggregatedOutput":"listening\nfailed"}}}'
+  emit '{"method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"t-2","status":"completed"}}}'
+  cat >/dev/null
+  ;;
+
 *scenario:background-commands*)
   # A command still running after its turn is background work; an
   # interrupted turn's foreground command is killed without item/completed
