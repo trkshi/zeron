@@ -20,6 +20,15 @@ Zeron release.
   show their count separately from running threads and stop their animations.
   Scroll longer lists and keep the panel clear of bottom chrome. This is a
   UI-only change; no Ubuntu engine update is required.
+- Add a compact **Account pool** beside **Working now**, with expandable
+  Codex/Claude groups, active-account names, session/weekly usage bars, and
+  read-only auto-switch status for the composer's selected device. Reset
+  times and probe errors stay on hover. Share the existing accounts cache;
+  refresh at most every two minutes while Home is visible and the window is
+  active, with a manual refresh button and the engine's existing cooldown.
+  Keep unknown, failed, expired, and offline readings out of available counts.
+  Use theme-aware gray home panels and stack them on narrow windows. Account
+  switching stays in Providers; no engine update is required.
 - Open the new-chat canvas by default after the chat list loads. Turn off
   **Start with a new chat** in **Settings > General** to open the most recently
   active conversation instead on the next startup. Sidebar selections,

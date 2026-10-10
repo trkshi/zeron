@@ -73,6 +73,7 @@ mod harness_updates;
 mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
+mod account_pool;
 mod profile_image;
 pub(crate) mod project_icon;
 mod side_chats;
@@ -1889,6 +1890,8 @@ pub struct Shell {
     sidebar_pane: Entity<SidebarPane>,
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
+    account_pool: Entity<account_pool::AccountPool>,
+    _account_pool_observation: Subscription,
     /// The window's voice orchestrator: independent of the selected chat.
     voice: Entity<crate::voice::VoiceController>,
     /// Sidebar footer orb (session live) and the full-window stage's orb.
@@ -2268,6 +2271,8 @@ impl Shell {
         let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
         transcript.update(cx, |transcript, _| transcript.retain_for_route_exit());
         let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        let account_pool = cx.new(|cx| account_pool::AccountPool::new(state.clone(), cx));
+        let account_pool_observation = cx.observe(&account_pool, |_: &mut Shell, _, cx| cx.notify());
         let voice = cx.new(|_| crate::voice::VoiceController::default());
         let voice_footer_orb = cx.new(|_| {
             crate::orb::Orb::new()
@@ -2420,6 +2425,8 @@ impl Shell {
             sidebar_pane,
             transcript,
             composer,
+            account_pool,
+            _account_pool_observation: account_pool_observation,
             voice,
             voice_footer_orb,
             voice_stage_orb,
@@ -13304,6 +13311,9 @@ impl Render for Shell {
                 || state.no_project
                 || !self.composer.read(cx).staged_appshots().is_empty());
         let wake = shell_clock_wake(state, now, home_visible);
+        self.account_pool.update(cx, |pool, cx| {
+            pool.track(home_visible, window.is_window_active(), cx);
+        });
         self.clock
             .arm(wake, now, |shell: &mut Shell| &mut shell.clock, cx);
         let active_files_key = self.panel_key(cx);

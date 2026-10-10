@@ -15,6 +15,18 @@ const ROW_HEIGHT: f32 = 44.0;
 const PANEL_GAP: f32 = 16.0;
 const MAX_PANEL_WIDTH: f32 = 400.0;
 const MAX_PANEL_HEIGHT: f32 = HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 4.0;
+const HOME_PANEL_GAP: f32 = 12.0;
+const TWO_PANEL_MIN_WIDTH: f32 = 652.0;
+const MAX_HOME_WIDTH: f32 = MAX_PANEL_WIDTH * 2.0 + HOME_PANEL_GAP;
+const MAX_HOME_HEIGHT: f32 = 260.0;
+
+pub(super) fn panel_background(theme: &Theme) -> gpui::Hsla {
+    let wash = match theme.appearance {
+        crate::theme::Appearance::Dark => 0.12,
+        crate::theme::Appearance::Light => 0.04,
+    };
+    crate::theme::flatten(theme.wash(wash), theme.surface)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ActivityStatus {
@@ -184,14 +196,20 @@ impl Shell {
             .count();
         let active_count = count - done_count;
         let theme = Theme::of(cx).clone();
-        let panel_width = (width - 2.0 * Theme::SPACE_LG).clamp(0.0, MAX_PANEL_WIDTH);
+        let available_width = (width - 2.0 * Theme::SPACE_LG).max(0.0);
+        let panel_width = if available_width >= TWO_PANEL_MIN_WIDTH {
+            (available_width.min(MAX_HOME_WIDTH) - HOME_PANEL_GAP) / 2.0
+        } else {
+            available_width.min(MAX_PANEL_WIDTH)
+        };
         let rows: Vec<_> = threads
             .iter()
             .map(|row| {
                 self.render_working_thread(row, panel_width, now, opacity >= 0.95, &theme, cx)
             })
             .collect();
-        let desired_height = HEADER_HEIGHT + 8.0 + ROW_HEIGHT * count.max(1) as f32;
+        let desired_height =
+            (HEADER_HEIGHT + 8.0 + ROW_HEIGHT * count.max(1) as f32).min(MAX_PANEL_HEIGHT);
         let panel = div()
             .id("home-working-now")
             .debug_selector(|| "home-working-now".into())
@@ -202,7 +220,7 @@ impl Shell {
             .rounded(px(8.0))
             .border_1()
             .border_color(theme.border)
-            .bg(crate::theme::flatten(theme.wash(0.02), theme.surface))
+            .bg(panel_background(&theme))
             .overflow_hidden()
             .opacity(opacity)
             .child(
@@ -264,6 +282,22 @@ impl Shell {
             .inset_0()
             .child(BelowComposer {
                 child: Some(panel.into_any_element()),
+                secondary: Some((
+                    div()
+                        .size_full()
+                        .opacity(opacity)
+                        .child(self.account_pool.clone())
+                        .when(opacity < 0.95, |panel| {
+                            panel.relative().child(div().absolute().inset_0().occlude())
+                        })
+                        .into_any_element(),
+                    {
+                        self.account_pool.update(cx, |pool, cx| {
+                            pool.set_interactive(opacity >= 0.95, cx);
+                        });
+                        self.account_pool.read(cx).desired_height(cx)
+                    },
+                )),
                 desired_height,
                 viewport_height: self.viewport_height,
                 bottom_clearance,
@@ -470,10 +504,10 @@ fn panel_bounds(
     viewport_height: f32,
     bottom_clearance: f32,
     desired_height: f32,
+    secondary_height: Option<f32>,
 ) -> Option<Bounds<Pixels>> {
     let top = f32::from(composer.bottom()) + PANEL_GAP;
     let available = viewport_height - bottom_clearance - top;
-    let height = available.min(desired_height).min(MAX_PANEL_HEIGHT);
     let (left, width) = match surface {
         Some(surface) => (surface.left(), f32::from(surface.size.width)),
         None => (
@@ -481,17 +515,37 @@ fn panel_bounds(
             f32::from(composer.size.width) - 2.0 * Theme::SPACE_LG,
         ),
     };
-    let width = width.clamp(0.0, MAX_PANEL_WIDTH);
+    let wide = secondary_height.is_some() && width >= TWO_PANEL_MIN_WIDTH;
+    let width = width.clamp(
+        0.0,
+        if wide {
+            MAX_HOME_WIDTH
+        } else {
+            MAX_PANEL_WIDTH
+        },
+    );
+    let desired_height = match secondary_height {
+        Some(secondary) if wide => desired_height.max(secondary),
+        Some(secondary) => desired_height + HOME_PANEL_GAP + secondary,
+        None => desired_height,
+    };
+    let max_height = if secondary_height.is_some() {
+        MAX_HOME_HEIGHT
+    } else {
+        MAX_PANEL_HEIGHT
+    };
+    let height = available.min(desired_height).min(max_height);
     // A short window prioritizes the composer over a clipped header-only card.
     (height >= HEADER_HEIGHT + ROW_HEIGHT && width > 0.0)
         .then(|| Bounds::new(point(left, px(top)), size(px(width), px(height))))
 }
 
 /// Lay out against the composer's actual prepaint bounds, including its dock
-/// motion and multiline height. The card aligns with the input surface, not
-/// its outer gutters, but stays below the footer. Only the thread list scrolls.
+/// motion and multiline height. Align panels with the input, not its gutters;
+/// stacked panels scroll within the remaining space below the footer.
 struct BelowComposer {
     child: Option<AnyElement>,
+    secondary: Option<(AnyElement, f32)>,
     desired_height: f32,
     viewport_height: f32,
     bottom_clearance: f32,
@@ -545,12 +599,47 @@ impl Element for BelowComposer {
             self.viewport_height,
             self.bottom_clearance + self.terminal.get().height,
             self.desired_height,
+            self.secondary.as_ref().map(|(_, height)| *height),
         )?;
-        let mut child = div()
-            .w(bounds.size.width)
-            .h(bounds.size.height)
-            .child(self.child.take()?)
-            .into_any_element();
+        let primary = self.child.take()?;
+        let mut child = match self.secondary.take() {
+            Some((secondary, height)) => {
+                let wide = f32::from(bounds.size.width) >= TWO_PANEL_MIN_WIDTH;
+                div()
+                    .id("home-status-panels")
+                    .w(bounds.size.width)
+                    .h(bounds.size.height)
+                    .flex()
+                    .when(!wide, |panels| panels.flex_col())
+                    .items_start()
+                    .gap(px(HOME_PANEL_GAP))
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .h(px(self.desired_height))
+                            .max_h_full()
+                            .when(wide, |panel| panel.flex_1())
+                            .when(!wide, |panel| panel.w_full().flex_none())
+                            .child(primary),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .h(px(height.min(MAX_HOME_HEIGHT)))
+                            .max_h_full()
+                            .when(wide, |panel| panel.flex_1())
+                            .when(!wide, |panel| panel.w_full().flex_none())
+                            .child(secondary),
+                    )
+                    .into_any_element()
+            }
+            None => div()
+                .w(bounds.size.width)
+                .h(bounds.size.height)
+                .child(primary)
+                .into_any_element(),
+        };
         child.prepaint_as_root(
             bounds.origin,
             bounds.size.map(AvailableSpace::Definite),
@@ -941,15 +1030,16 @@ mod tests {
         let composer = Bounds::new(point(px(200.0), px(250.0)), size(px(600.0), px(180.0)));
         let surface = Bounds::new(point(px(224.0), px(250.0)), size(px(552.0), px(140.0)));
         let desired_height = HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 2.0;
-        let panel = panel_bounds(composer, Some(surface), 800.0, 24.0, desired_height).unwrap();
+        let panel =
+            panel_bounds(composer, Some(surface), 800.0, 24.0, desired_height, None).unwrap();
         assert_eq!(panel.left(), surface.left());
         assert_eq!(panel.top(), composer.bottom() + px(PANEL_GAP));
         assert_eq!(panel.size.width, px(MAX_PANEL_WIDTH));
         assert_eq!(panel.size.height, px(desired_height));
-        let panel = panel_bounds(composer, Some(surface), 800.0, 240.0, 1_000.0).unwrap();
+        let panel = panel_bounds(composer, Some(surface), 800.0, 240.0, 1_000.0, None).unwrap();
         assert_eq!(panel.bottom(), px(560.0));
-        assert!(panel_bounds(composer, Some(surface), 550.0, 80.0, desired_height).is_none());
-        let panel = panel_bounds(composer, Some(surface), 1_200.0, 24.0, 1_000.0).unwrap();
+        assert!(panel_bounds(composer, Some(surface), 550.0, 80.0, desired_height, None).is_none());
+        let panel = panel_bounds(composer, Some(surface), 1_200.0, 24.0, 1_000.0, None).unwrap();
         assert_eq!(panel.size.height, px(MAX_PANEL_HEIGHT));
     }
 
@@ -958,17 +1048,46 @@ mod tests {
         let composer = Bounds::new(point(px(20.0), px(100.0)), size(px(300.0), px(140.0)));
         let surface = Bounds::new(point(px(44.0), px(100.0)), size(px(252.0), px(100.0)));
         let desired_height = HEADER_HEIGHT + 8.0 + ROW_HEIGHT;
-        let panel = panel_bounds(composer, Some(surface), 800.0, 24.0, desired_height).unwrap();
+        let panel =
+            panel_bounds(composer, Some(surface), 800.0, 24.0, desired_height, None).unwrap();
         assert_eq!(panel.left(), surface.left());
         assert_eq!(panel.size.width, surface.size.width);
-        let panel = panel_bounds(composer, None, 800.0, 24.0, desired_height).unwrap();
+        let panel = panel_bounds(composer, None, 800.0, 24.0, desired_height, None).unwrap();
         assert_eq!(panel.left(), composer.left() + px(Theme::SPACE_LG));
         assert_eq!(
             panel.size.width,
             composer.size.width - px(2.0 * Theme::SPACE_LG)
         );
         let empty = Bounds::new(surface.origin, size(px(0.0), surface.size.height));
-        assert!(panel_bounds(composer, Some(empty), 800.0, 24.0, desired_height).is_none());
+        assert!(panel_bounds(composer, Some(empty), 800.0, 24.0, desired_height, None).is_none());
+    }
+
+    #[test]
+    fn home_panels_share_a_row_when_wide_and_stack_without_covering_the_composer() {
+        let composer = Bounds::new(point(px(100.0), px(100.0)), size(px(960.0), px(160.0)));
+        let surface = Bounds::new(point(px(124.0), px(100.0)), size(px(912.0), px(120.0)));
+        let wide = panel_bounds(composer, Some(surface), 800.0, 24.0, 126.0, Some(170.0)).unwrap();
+        assert_eq!(wide.left(), surface.left());
+        assert_eq!(wide.top(), composer.bottom() + px(PANEL_GAP));
+        assert_eq!(wide.size.width, px(MAX_HOME_WIDTH));
+        assert_eq!(wide.size.height, px(170.0));
+
+        let narrow_surface = Bounds::new(surface.origin, size(px(300.0), surface.size.height));
+        let narrow = panel_bounds(
+            composer,
+            Some(narrow_surface),
+            800.0,
+            24.0,
+            82.0,
+            Some(126.0),
+        )
+        .unwrap();
+        assert_eq!(narrow.size.width, px(300.0));
+        assert_eq!(narrow.size.height, px(82.0 + HOME_PANEL_GAP + 126.0));
+        let clipped =
+            panel_bounds(composer, Some(surface), 440.0, 24.0, 214.0, Some(400.0)).unwrap();
+        assert_eq!(clipped.bottom(), px(416.0));
+        assert!(panel_bounds(composer, Some(surface), 350.0, 24.0, 126.0, Some(126.0)).is_none());
     }
 
     type Measurement = std::rc::Rc<std::cell::Cell<Option<Bounds<Pixels>>>>;
@@ -1031,6 +1150,7 @@ mod tests {
                 )
                 .child(div().absolute().inset_0().child(BelowComposer {
                     child: Some(panel.into_any_element()),
+                    secondary: None,
                     desired_height: HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 2.0,
                     viewport_height: viewport,
                     bottom_clearance: 24.0,
