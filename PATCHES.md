@@ -10,6 +10,8 @@ Zeron release.
 
 - Show **Working now** beneath the new-chat composer: live top-level threads
   across projects and devices, with model, branch, and elapsed turn time.
+  Keep the card compact and aligned with the input surface; project and branch
+  sit below the title, while device details remain available on hover.
   Click a row to open its conversation; waiting questions show **Needs input**.
   Exclude archived threads, hidden workers, queued sends, and stale sessions.
   Scroll longer lists and keep the panel clear of bottom chrome. This is a
