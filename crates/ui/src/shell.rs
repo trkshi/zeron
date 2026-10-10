@@ -10349,7 +10349,7 @@ impl Shell {
 
     /// Resolve shell-owned Escape surfaces in capture phase, before focused
     /// descendants such as an integrated terminal can consume the key.
-    fn capture_escape_surface(&mut self, cx: &mut Context<Self>) -> bool {
+    fn capture_escape_surface(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.sync_flow.has_visible_overlay() {
             return true;
         }
@@ -10420,6 +10420,12 @@ impl Shell {
         if self.right_plus.get().is_some() {
             return true;
         }
+        if self.shells.read(cx).sidebar_open() {
+            if let Some(focus) = self.shells.update(cx, |shells, cx| shells.close_sidebar(cx)) {
+                window.focus(&focus, cx);
+            }
+            return true;
+        }
         self.active_changes(cx)
             .is_some_and(|changes| changes.update(cx, |changes, cx| changes.handle_escape(cx)))
     }
@@ -10449,7 +10455,7 @@ impl Shell {
         if matches!(self.route, Route::Settings(_)) {
             return;
         }
-        if event.keystroke.key == "escape" && self.capture_escape_surface(cx) {
+        if event.keystroke.key == "escape" && self.capture_escape_surface(window, cx) {
             cx.stop_propagation();
         }
     }
@@ -10628,6 +10634,13 @@ impl Shell {
     ) -> Vec<AnyElement> {
         let theme = Theme::of(cx).for_popup();
         let mut overlays: Vec<AnyElement> = Vec::new();
+
+        if let Some(sidebar) = self
+            .shells
+            .update(cx, |shells, cx| shells.render_sidebar(viewport, cx))
+        {
+            overlays.push(sidebar);
+        }
 
         if let Some(menu_state) = self.chat_menu.get().cloned() {
             let chat_id = menu_state.chat_id;
@@ -13322,8 +13335,16 @@ impl Render for Shell {
         self.account_pool.update(cx, |pool, cx| {
             pool.track(home_visible, window.is_window_active(), cx);
         });
+        let shells_on_chat = matches!(self.route, Route::Chat);
         self.shells.update(cx, |shells, cx| {
-            shells.track(home_visible, window.is_window_active(), cx);
+            if !shells_on_chat && shells.sidebar_open() {
+                shells.close_sidebar(cx);
+            }
+            shells.track(
+                home_visible || shells.sidebar_open(),
+                window.is_window_active(),
+                cx,
+            );
         });
         self.clock
             .arm(wake, now, |shell: &mut Shell| &mut shell.clock, cx);

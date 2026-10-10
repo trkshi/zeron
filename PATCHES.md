@@ -10,12 +10,16 @@ Zeron release.
 
 - Add a read-only **Shells** panel below **Working now** on Home, showing the
   selected device's Claude/Codex commands, thread, project, provider, status,
-  and elapsed time. Open a row for its output tail and a copy control.
+  and elapsed time. Show at most three rows on Home, with running tasks first.
+  Open a row or **View all** for the full list and output in a right sidebar.
+  Clicking a finished status and its X dismisses that task locally; the sidebar
+  also offers **Dismiss all finished shells**. Never dismiss a running task or
+  stop a provider process. Closing the sidebar cancels its output subscription.
   Observe provider-owned tasks only; do not scan unrelated processes or
   conflate a background shell with the chat's turn status. Ambiguous exits
   and disconnected runtimes remain Unknown, not guessed successes.
   Keep recent outcomes for two minutes, cap task history and output at 64 KiB
-  per task, and subscribe to output only while its viewer is open on Home.
+  per task, and subscribe to output only while its sidebar and window are active.
   Output is volatile and never added to chat context or synced documents.
   This feature requires the updated engine on the device running the agent;
   older engines display an upgrade message. The initial release is read-only,

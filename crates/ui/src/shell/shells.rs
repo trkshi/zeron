@@ -1,9 +1,10 @@
-//! Home's read-only agent shells; subscriptions exist only while visible.
+//! A compact Home preview and on-demand sidebar for read-only agent shells.
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, Render, ScrollHandle, SharedString, Task, Window,
-    div, prelude::*, px,
+    AnyElement, App, ClipboardItem, Context, ElementId, Entity, FocusHandle, Render, ScrollHandle,
+    SharedString, Task, Window, div, prelude::*, px,
 };
+use std::collections::HashSet;
 use std::time::Duration;
 use zeron_proto::{ShellTask, ShellTaskOutput, ShellTaskStatus, ShellTasksSnapshot};
 use zeron_rpc::methods;
@@ -14,7 +15,18 @@ use crate::state::AppState;
 use crate::theme::Theme;
 
 const HEADER_HEIGHT: f32 = 30.0;
-const ROW_HEIGHT: f32 = 46.0;
+const ROW_HEIGHT: f32 = 50.0;
+const PREVIEW_LIMIT: usize = 3;
+const SIDEBAR_WIDTH: f32 = 460.0;
+
+fn dismissible(task: &ShellTask) -> bool {
+    task.status != ShellTaskStatus::Running
+        && (task.finished_at.is_some()
+            || matches!(
+                task.status,
+                ShellTaskStatus::Completed | ShellTaskStatus::Failed | ShellTaskStatus::Stopped
+            ))
+}
 
 pub(super) struct Shells {
     state: Entity<AppState>,
@@ -25,7 +37,13 @@ pub(super) struct Shells {
     interactive: bool,
     generation: u64,
     snapshot: ShellTasksSnapshot,
+    dismissed: HashSet<String>,
     error: Option<String>,
+    sidebar_open: bool,
+    sidebar_focus: FocusHandle,
+    previous_focus: Option<FocusHandle>,
+    sidebar_scroll: ScrollHandle,
+    output_scroll: ScrollHandle,
     selected: Option<ShellTask>,
     output: Option<ShellTaskOutput>,
     watch_task: Option<Task<()>>,
@@ -35,7 +53,7 @@ pub(super) struct Shells {
 }
 
 impl Shells {
-    pub(super) fn new(state: Entity<AppState>, _: &mut Context<Self>) -> Self {
+    pub(super) fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         Self {
             state,
             target: None,
@@ -45,7 +63,13 @@ impl Shells {
             interactive: false,
             generation: 0,
             snapshot: ShellTasksSnapshot::default(),
+            dismissed: HashSet::new(),
             error: None,
+            sidebar_open: false,
+            sidebar_focus: cx.focus_handle(),
+            previous_focus: None,
+            sidebar_scroll: ScrollHandle::new(),
+            output_scroll: ScrollHandle::new(),
             selected: None,
             output: None,
             watch_task: None,
@@ -70,6 +94,7 @@ impl Shells {
         let changed = target != self.target || visible != self.visible || online != self.online;
         if target != self.target {
             self.snapshot = ShellTasksSnapshot::default();
+            self.dismissed.clear();
             self.selected = None;
             self.output = None;
         }
@@ -125,6 +150,14 @@ impl Shells {
                                 shells.connected = true;
                                 shells.error = None;
                                 shells.snapshot = snapshot;
+                                // Forget expired dismissals and let a restarted task reappear.
+                                shells.dismissed.retain(|id| {
+                                    shells
+                                        .snapshot
+                                        .tasks
+                                        .iter()
+                                        .any(|task| task.id == *id && dismissible(task))
+                                });
                                 if let Some(selected) = &shells.selected {
                                     if let Some(task) = shells
                                         .snapshot
@@ -204,42 +237,109 @@ impl Shells {
         }
     }
 
-    pub(super) fn desired_height(&self, cx: &gpui::App) -> f32 {
+    fn visible_tasks(&self, cx: &App) -> Vec<ShellTask> {
         let state = self.state.read(cx);
-        let count = self
+        let ids: HashSet<_> = state.visible_chats().map(|chat| chat.id.as_str()).collect();
+        let mut tasks: Vec<_> = self
             .snapshot
             .tasks
             .iter()
-            .filter(|task| state.visible_chats().any(|chat| chat.id == task.chat_id))
-            .count();
-        HEADER_HEIGHT
-            + 6.0
-            + ROW_HEIGHT * count.clamp(1, 4) as f32
-            + if self.selected.is_some() { 168.0 } else { 0.0 }
+            .filter(|task| {
+                ids.contains(task.chat_id.as_str()) && !self.dismissed.contains(&task.id)
+            })
+            .cloned()
+            .collect();
+        tasks.sort_by_key(|task| {
+            (
+                task.status != ShellTaskStatus::Running,
+                std::cmp::Reverse(task.started_at),
+            )
+        });
+        tasks
     }
 
-    fn toggle_output(&mut self, task: ShellTask, cx: &mut Context<Self>) {
-        if !self.interactive {
+    pub(super) fn desired_height(&self, cx: &App) -> f32 {
+        HEADER_HEIGHT
+            + 6.0
+            + ROW_HEIGHT * self.visible_tasks(cx).len().clamp(1, PREVIEW_LIMIT) as f32
+    }
+
+    pub(super) fn sidebar_open(&self) -> bool {
+        self.sidebar_open
+    }
+
+    fn open_sidebar(
+        &mut self,
+        task: Option<ShellTask>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.interactive && !self.sidebar_open {
             return;
         }
-        self.output_task = None;
-        self.output = None;
-        if self
-            .selected
-            .as_ref()
-            .is_some_and(|selected| selected.id == task.id)
+        let opening = !self.sidebar_open;
+        if opening {
+            self.previous_focus = window.focused(cx);
+            self.sidebar_open = true;
+        }
+        if let Some(task) = task
+            && self
+                .selected
+                .as_ref()
+                .is_none_or(|selected| selected.id != task.id)
         {
-            self.selected = None;
-        } else {
+            self.output_task = None;
+            self.output = None;
+            self.output_scroll = ScrollHandle::new();
             self.selected = Some(task);
             self.watch_output(cx);
-            self.scroll.scroll_to_bottom();
+        }
+        if opening {
+            window.focus(&self.sidebar_focus, cx);
         }
         cx.notify();
     }
 
+    pub(super) fn close_sidebar(&mut self, cx: &mut Context<Self>) -> Option<FocusHandle> {
+        self.sidebar_open = false;
+        self.output_task = None;
+        self.output = None;
+        self.selected = None;
+        cx.notify();
+        self.previous_focus.take()
+    }
+
+    fn dismiss_task(&mut self, id: &str, cx: &mut Context<Self>) {
+        if (!self.interactive && !self.sidebar_open)
+            || !self
+                .snapshot
+                .tasks
+                .iter()
+                .any(|task| task.id == id && dismissible(task))
+        {
+            return;
+        }
+        self.dismissed.insert(id.to_owned());
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|selected| selected.id == id)
+        {
+            self.selected = None;
+            self.output_task = None;
+            self.output = None;
+        }
+        cx.notify();
+    }
+
+    fn dismiss_finished(&mut self, cx: &mut Context<Self>) {
+        for task in self.visible_tasks(cx).into_iter().filter(dismissible) {
+            self.dismiss_task(&task.id, cx);
+        }
+    }
+
     fn watch_output(&mut self, cx: &mut Context<Self>) {
-        if !self.visible || !self.online {
+        if !self.sidebar_open || !self.visible || !self.online {
             return;
         }
         let Some(task) = self.selected.clone() else {
@@ -308,6 +408,36 @@ impl Shells {
         }));
     }
 
+    fn action_button(
+        &self,
+        id: impl Into<ElementId>,
+        label: &'static str,
+        theme: &Theme,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .h(px(24.0))
+            .flex_none()
+            .px(px(4.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(4.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .role(gpui::Role::Button)
+            .aria_label(label)
+            .tab_index(if self.interactive || self.sidebar_open {
+                0
+            } else {
+                -1
+            })
+            .tooltip(text_tooltip(label))
+            .hover(|button| button.bg(theme.element_hover))
+            .focus_visible(|button| button.bg(theme.element_hover).text_color(theme.accent))
+            .text_size(crate::typography::ui_rems(10.0))
+    }
+
     fn row(&self, task: &ShellTask, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let state = self.state.read(cx);
         let chat = state.chats.iter().find(|chat| chat.id == task.chat_id);
@@ -370,6 +500,38 @@ impl Shells {
             .selected
             .as_ref()
             .is_some_and(|selected| selected.id == task.id);
+        let status_element = if dismissible(task) {
+            let click_id = task.id.clone();
+            let keyboard_id = task.id.clone();
+            self.action_button(
+                SharedString::from(format!("dismiss-shell-{}", task.id)),
+                "Dismiss finished shell",
+                theme,
+            )
+            .text_color(color)
+            .on_click(cx.listener(move |shells, _, _, cx| {
+                cx.stop_propagation();
+                shells.dismiss_task(&click_id, cx);
+            }))
+            .on_key_down(
+                cx.listener(move |shells, event: &gpui::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        shells.dismiss_task(&keyboard_id, cx);
+                    }
+                }),
+            )
+            .child(status)
+            .child(icon(icons::CLOSE).size(px(10.0)))
+            .into_any_element()
+        } else {
+            div()
+                .flex_none()
+                .text_size(crate::typography::ui_rems(10.0))
+                .text_color(color)
+                .child(status)
+                .into_any_element()
+        };
         let click = task.clone();
         let keyboard = task.clone();
         div()
@@ -389,21 +551,18 @@ impl Shells {
             .border_color(gpui::transparent_black())
             .when(selected, |row| row.bg(theme.element_hover))
             .hover(|row| row.bg(theme.element_hover))
-            .focus_visible(|row| row.border_color(theme.accent))
             .cursor_pointer()
-            .role(gpui::Role::Button)
-            .aria_label(tooltip.clone())
-            .tab_index(if self.interactive { 0 } else { -1 })
+            .role(gpui::Role::Group)
             .tooltip(text_tooltip(tooltip))
-            .on_click(cx.listener(move |shells, _, _, cx| {
+            .on_click(cx.listener(move |shells, _, window, cx| {
                 cx.stop_propagation();
-                shells.toggle_output(click.clone(), cx);
+                shells.open_sidebar(Some(click.clone()), window, cx);
             }))
             .on_key_down(
-                cx.listener(move |shells, event: &gpui::KeyDownEvent, _, cx| {
+                cx.listener(move |shells, event: &gpui::KeyDownEvent, window, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
-                        shells.toggle_output(keyboard.clone(), cx);
+                        shells.open_sidebar(Some(keyboard.clone()), window, cx);
                     }
                 }),
             )
@@ -421,21 +580,24 @@ impl Shells {
                     )
                     .child(
                         div()
+                            .id(SharedString::from(format!("shell-command-{}", task.id)))
                             .flex_1()
                             .min_w_0()
                             .truncate()
                             .line_clamp(1)
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text)
+                            .role(gpui::Role::Button)
+                            .aria_label(format!("Show shell output: {}", task.command))
+                            .tab_index(if self.interactive || self.sidebar_open {
+                                0
+                            } else {
+                                -1
+                            })
+                            .focus_visible(|command| command.text_color(theme.accent))
                             .child(task.command.clone()),
                     )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(crate::typography::ui_rems(10.0))
-                            .text_color(color)
-                            .child(status),
-                    ),
+                    .child(status_element),
             )
             .child(
                 div()
@@ -464,41 +626,355 @@ impl Shells {
     }
 }
 
+impl Shells {
+    fn empty_message(&self) -> &str {
+        self.error.as_deref().unwrap_or(if !self.online {
+            "Device offline"
+        } else if !self.connected {
+            "Connecting..."
+        } else {
+            "No agent shells running"
+        })
+    }
+
+    // Render outside the Home card so output never expands or clips the preview.
+    pub(super) fn render_sidebar(
+        &mut self,
+        viewport: gpui::Size<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.sidebar_open {
+            return None;
+        }
+        let theme = Theme::of(cx).clone();
+        let tasks = self.visible_tasks(cx);
+        let rows: Vec<_> = tasks
+            .iter()
+            .map(|task| self.row(task, &theme, cx))
+            .collect();
+        let has_finished = tasks.iter().any(dismissible);
+        let running = tasks
+            .iter()
+            .filter(|task| task.status == ShellTaskStatus::Running)
+            .count();
+        let available = (f32::from(viewport.height) - Theme::TITLEBAR_HEIGHT - 40.0).max(0.0);
+        let list_height = (tasks.len().max(1) as f32 * ROW_HEIGHT + 8.0).min(available * 0.4);
+        let mut panel = div()
+            .id("shell-sidebar")
+            .debug_selector(|| "shell-sidebar".into())
+            .absolute()
+            .top(px(Theme::TITLEBAR_HEIGHT))
+            .bottom_0()
+            .right_0()
+            .w(px(
+                (f32::from(viewport.width) - 12.0).clamp(0.0, SIDEBAR_WIDTH)
+            ))
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .border_l_1()
+            .border_color(theme.border)
+            .bg(super::working_now::panel_background(&theme))
+            .overflow_hidden()
+            .occlude()
+            .role(gpui::Role::Group)
+            .aria_label("Agent shells")
+            .track_focus(&self.sidebar_focus)
+            .on_mouse_down_out(cx.listener(|shells, _, window, cx| {
+                if let Some(focus) = shells.close_sidebar(cx) {
+                    window.focus(&focus, cx);
+                }
+            }))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .h(px(40.0))
+                    .flex_none()
+                    .px(px(12.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text)
+                    .child(
+                        icon(icons::TERMINAL)
+                            .size(px(14.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .child("Shells")
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(crate::typography::ui_rems(10.0))
+                            .text_color(theme.text_muted)
+                            .child(format!("{running} running / {} total", tasks.len())),
+                    )
+                    .when(has_finished, |header| {
+                        header.child(
+                            self.action_button(
+                                "dismiss-finished-shells",
+                                "Dismiss all finished shells",
+                                &theme,
+                            )
+                            .w(px(24.0))
+                            .on_click(cx.listener(|shells, _, _, cx| {
+                                cx.stop_propagation();
+                                shells.dismiss_finished(cx);
+                            }))
+                            .on_key_down(cx.listener(
+                                |shells, event: &gpui::KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        cx.stop_propagation();
+                                        shells.dismiss_finished(cx);
+                                    }
+                                },
+                            ))
+                            .child(icon(icons::QUEUE_CLOSE).size(px(14.0))),
+                        )
+                    })
+                    .child(
+                        self.action_button("close-shell-sidebar", "Close shell sidebar", &theme)
+                            .w(px(24.0))
+                            .on_click(cx.listener(|shells, _, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(focus) = shells.close_sidebar(cx) {
+                                    window.focus(&focus, cx);
+                                }
+                            }))
+                            .on_key_down(cx.listener(
+                                |shells, event: &gpui::KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        cx.stop_propagation();
+                                        if let Some(focus) = shells.close_sidebar(cx) {
+                                            window.focus(&focus, cx);
+                                        }
+                                    }
+                                },
+                            ))
+                            .child(icon(icons::CLOSE).size(px(14.0))),
+                    ),
+            )
+            .child(
+                div()
+                    .id("shell-sidebar-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.sidebar_scroll)
+                    .p(px(4.0))
+                    .when(self.selected.is_some(), |list| {
+                        list.flex_none().h(px(list_height))
+                    })
+                    .children(rows)
+                    .when(tasks.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .px(px(8.0))
+                                .py(px(12.0))
+                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_color(theme.text_muted)
+                                .child(self.empty_message().to_owned()),
+                        )
+                    }),
+            )
+            .when(self.snapshot.truncated, |panel| {
+                panel.child(
+                    div()
+                        .flex_none()
+                        .px(px(12.0))
+                        .py(px(4.0))
+                        .text_size(crate::typography::ui_rems(10.0))
+                        .text_color(theme.text_muted)
+                        .child("Recent tasks"),
+                )
+            });
+        if let Some(selected) = &self.selected {
+            panel = panel.child(self.render_output(selected, &theme, cx));
+        }
+        Some(panel.into_any_element())
+    }
+
+    fn render_output(
+        &self,
+        selected: &ShellTask,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let output = self.output.as_ref();
+        let text = output
+            .map(|output| output.text.clone())
+            .unwrap_or_else(|| "Loading output...".into());
+        let message = output.and_then(|output| output.error.as_deref()).unwrap_or(
+            if output.is_some_and(|output| output.truncated) {
+                "Last 64 KiB"
+            } else {
+                "Output"
+            },
+        );
+        div()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .line_clamp(2)
+                    .text_size(crate::typography::ui_rems(12.0))
+                    .text_color(theme.text)
+                    .child(selected.command.clone()),
+            )
+            .child(
+                div()
+                    .h(px(28.0))
+                    .flex_none()
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .text_size(crate::typography::ui_rems(10.0))
+                    .text_color(theme.text_muted)
+                    .child(
+                        div()
+                            .id("shell-output-caption")
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .tooltip(text_tooltip(message.to_owned()))
+                            .child(message.to_owned()),
+                    )
+                    .when(
+                        output.is_some_and(|output| !output.text.is_empty()),
+                        |header| {
+                            header.child(
+                                self.action_button("copy-shell-output", "Copy shell output", theme)
+                                    .w(px(24.0))
+                                    .on_click(cx.listener(|shells, _, _, cx| {
+                                        cx.stop_propagation();
+                                        if shells.sidebar_open
+                                            && let Some(output) = &shells.output
+                                        {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                output.text.clone(),
+                                            ));
+                                        }
+                                    }))
+                                    .on_key_down(cx.listener(
+                                        |shells, event: &gpui::KeyDownEvent, _, cx| {
+                                            if shells.sidebar_open
+                                                && matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                )
+                                                && let Some(output) = &shells.output
+                                            {
+                                                cx.stop_propagation();
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    output.text.clone(),
+                                                ));
+                                            }
+                                        },
+                                    ))
+                                    .child(icon(icons::COPY).size(px(12.0))),
+                            )
+                        },
+                    ),
+            )
+            .child(
+                div()
+                    .id("shell-output-tail")
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.output_scroll)
+                    .whitespace_nowrap()
+                    .px(px(12.0))
+                    .pb(px(8.0))
+                    .font_family(theme.font_mono.clone())
+                    .text_size(crate::typography::ui_rems(11.0))
+                    .text_color(theme.text)
+                    .child(if text.is_empty() {
+                        "No output yet".into()
+                    } else {
+                        text
+                    }),
+            )
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task(status: ShellTaskStatus, finished_at: Option<i64>) -> ShellTask {
+        ShellTask {
+            id: "shell".into(),
+            chat_id: "chat".into(),
+            device_id: "device".into(),
+            harness: zeron_proto::HarnessId::Codex,
+            command: "echo hello".into(),
+            status,
+            started_at: 0,
+            start_estimated: false,
+            finished_at,
+            exit_code: None,
+            output_available: false,
+        }
+    }
+
+    #[test]
+    fn finished_shells_can_be_dismissed() {
+        for status in [
+            ShellTaskStatus::Completed,
+            ShellTaskStatus::Failed,
+            ShellTaskStatus::Stopped,
+        ] {
+            assert!(dismissible(&task(status, None)));
+        }
+    }
+
+    #[test]
+    fn running_shells_cannot_be_dismissed_even_with_a_stale_finish_time() {
+        assert!(!dismissible(&task(ShellTaskStatus::Running, None)));
+        assert!(!dismissible(&task(ShellTaskStatus::Running, Some(1))));
+    }
+
+    #[test]
+    fn unknown_shells_can_only_be_dismissed_after_the_runtime_ends() {
+        assert!(!dismissible(&task(ShellTaskStatus::Unknown, None)));
+        assert!(dismissible(&task(ShellTaskStatus::Unknown, Some(1))));
+    }
+}
+
 impl Render for Shells {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let state = self.state.read(cx);
-        let ids: std::collections::HashSet<_> =
-            state.visible_chats().map(|chat| chat.id.as_str()).collect();
-        let mut tasks: Vec<_> = self
-            .snapshot
-            .tasks
-            .iter()
-            .filter(|task| ids.contains(task.chat_id.as_str()))
-            .cloned()
-            .collect();
-        tasks.sort_by_key(|task| {
-            (
-                task.status != ShellTaskStatus::Running,
-                std::cmp::Reverse(task.started_at),
-            )
-        });
+        let tasks = self.visible_tasks(cx);
         let rows: Vec<_> = tasks
             .iter()
+            .take(PREVIEW_LIMIT)
             .map(|task| self.row(task, &theme, cx))
             .collect();
         let count = tasks
             .iter()
             .filter(|task| task.status == ShellTaskStatus::Running)
             .count();
-        let empty = self.error.as_deref().unwrap_or(if !self.online {
-            "Device offline"
-        } else if !self.connected {
-            "Connecting..."
+        let all_label = if tasks.len() > PREVIEW_LIMIT {
+            format!("View all ({})", tasks.len())
         } else {
-            "No agent shells running"
-        });
-        let mut panel = div()
+            "View all".to_owned()
+        };
+        div()
             .id("home-shells")
             .debug_selector(|| "home-shells".into())
             .size_full()
@@ -523,16 +999,31 @@ impl Render for Shells {
                     .child(icon(icons::TERMINAL).size(px(12.0)))
                     .child("Shells")
                     .child(count.to_string())
-                    .when(self.snapshot.truncated, |header| {
-                        header.child(div().flex_1()).child("Recent tasks")
-                    }),
+                    .child(div().flex_1())
+                    .child(
+                        self.action_button("open-shell-sidebar", "Open shell sidebar", &theme)
+                            .on_click(cx.listener(|shells, _, window, cx| {
+                                cx.stop_propagation();
+                                shells.open_sidebar(None, window, cx);
+                            }))
+                            .on_key_down(cx.listener(
+                                |shells, event: &gpui::KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        cx.stop_propagation();
+                                        shells.open_sidebar(None, window, cx);
+                                    }
+                                },
+                            ))
+                            .child(all_label)
+                            .child(icon(icons::ALT_ARROW_RIGHT).size(px(12.0))),
+                    ),
             )
             .child(
                 div()
                     .id("home-shells-list")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_hidden()
                     .px(px(4.0))
                     .pb(px(4.0))
                     .children(rows)
@@ -544,171 +1035,9 @@ impl Render for Shells {
                                 .py(px(8.0))
                                 .text_size(crate::typography::ui_rems(12.0))
                                 .text_color(theme.text_muted)
-                                .child(empty.to_owned()),
+                                .child(self.empty_message().to_owned()),
                         )
                     }),
             )
-            .when(!tasks.is_empty() && self.error.is_some(), |panel| {
-                panel.child(
-                    div()
-                        .px(px(12.0))
-                        .pb(px(6.0))
-                        .text_size(crate::typography::ui_rems(10.0))
-                        .text_color(theme.text_muted)
-                        .child(self.error.clone().unwrap_or_default()),
-                )
-            });
-        if self.selected.is_some() {
-            let output = self.output.as_ref();
-            let text = output
-                .map(|output| output.text.clone())
-                .unwrap_or_else(|| "Loading output...".into());
-            let message = output.and_then(|output| output.error.as_deref()).unwrap_or(
-                if output.is_some_and(|output| output.truncated) {
-                    "Last 64 KiB"
-                } else {
-                    "Output"
-                },
-            );
-            let copy = output.is_some_and(|output| !output.text.is_empty());
-            panel = panel.child(
-                div()
-                    .h(px(168.0))
-                    .flex_none()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .border_t_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .h(px(28.0))
-                            .flex_none()
-                            .px(px(8.0))
-                            .flex()
-                            .items_center()
-                            .gap(px(4.0))
-                            .text_size(crate::typography::ui_rems(10.0))
-                            .text_color(theme.text_muted)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(message.to_owned()),
-                            )
-                            .when(copy, |header| {
-                                header.child(
-                                    div()
-                                        .id("copy-shell-output")
-                                        .size(px(24.0))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded(px(4.0))
-                                        .cursor_pointer()
-                                        .role(gpui::Role::Button)
-                                        .aria_label("Copy shell output")
-                                        .tab_index(if self.interactive { 0 } else { -1 })
-                                        .tooltip(text_tooltip("Copy output"))
-                                        .hover(|button| button.bg(theme.element_hover))
-                                        .focus_visible(|button| button.bg(theme.element_hover))
-                                        .on_click(cx.listener(|shells, _, _, cx| {
-                                            cx.stop_propagation();
-                                            if shells.interactive
-                                                && let Some(output) = &shells.output
-                                            {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    output.text.clone(),
-                                                ));
-                                            }
-                                        }))
-                                        .on_key_down(cx.listener(
-                                            |shells, event: &gpui::KeyDownEvent, _, cx| {
-                                                if shells.interactive
-                                                    && matches!(
-                                                        event.keystroke.key.as_str(),
-                                                        "enter" | "space"
-                                                    )
-                                                    && let Some(output) = &shells.output
-                                                {
-                                                    cx.stop_propagation();
-                                                    cx.write_to_clipboard(
-                                                        ClipboardItem::new_string(
-                                                            output.text.clone(),
-                                                        ),
-                                                    );
-                                                }
-                                            },
-                                        ))
-                                        .child(icon(icons::COPY).size(px(12.0))),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .id("close-shell-output")
-                                    .size(px(24.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(4.0))
-                                    .cursor_pointer()
-                                    .role(gpui::Role::Button)
-                                    .aria_label("Close shell output")
-                                    .tab_index(if self.interactive { 0 } else { -1 })
-                                    .tooltip(text_tooltip("Close output"))
-                                    .hover(|button| button.bg(theme.element_hover))
-                                    .focus_visible(|button| button.bg(theme.element_hover))
-                                    .on_click(cx.listener(|shells, _, _, cx| {
-                                        if shells.interactive {
-                                            cx.stop_propagation();
-                                            shells.selected = None;
-                                            shells.output_task = None;
-                                            shells.output = None;
-                                            cx.notify();
-                                        }
-                                    }))
-                                    .on_key_down(cx.listener(
-                                        |shells, event: &gpui::KeyDownEvent, _, cx| {
-                                            if shells.interactive
-                                                && matches!(
-                                                    event.keystroke.key.as_str(),
-                                                    "enter" | "space"
-                                                )
-                                            {
-                                                cx.stop_propagation();
-                                                shells.selected = None;
-                                                shells.output_task = None;
-                                                shells.output = None;
-                                                cx.notify();
-                                            }
-                                        },
-                                    ))
-                                    .child(icon(icons::CLOSE).size(px(12.0))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("shell-output-tail")
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .overflow_y_scroll()
-                            .overflow_x_scroll()
-                            .whitespace_nowrap()
-                            .px(px(10.0))
-                            .pb(px(8.0))
-                            .font_family(theme.font_mono)
-                            .text_size(crate::typography::ui_rems(11.0))
-                            .text_color(theme.text)
-                            .child(if text.is_empty() {
-                                "No output yet".into()
-                            } else {
-                                text
-                            }),
-                    ),
-            );
-        }
-        panel
     }
 }
