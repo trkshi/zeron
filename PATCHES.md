@@ -139,8 +139,10 @@ Zeron release.
   the updated engine as well as the client. API-key logins are not rotated.
 - Choose **Circles** (default) or **Detailed** in **Settings > Appearance >
   Fonts and layout > Usage display**. Detailed mode keeps checkout/branch,
-  TPS, context, and provider usage together on one footer line. Context and
-  Session/Weekly usage use matching segmented bars with percentages.
+  TPS, context, and provider usage together on one footer line. Keep
+  checkout/branch on the left and right-align TPS, Context, and Session/Weekly
+  as one group. Context and Session/Weekly usage use matching segmented bars
+  with percentages.
   Hover usage for reset countdowns; click any indicator for its full popover.
   Narrow layouts hide context counts first, then its bar and the TPS label;
   provider bars shorten while retaining percentages and warning colors.

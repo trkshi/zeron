@@ -672,6 +672,7 @@ impl AccountUsage {
             .h(px(24.0))
             .flex()
             .items_center()
+            .justify_end()
             .gap_x(px(4.0))
             .whitespace_nowrap()
             .children(tokens)
@@ -1026,6 +1027,7 @@ mod tests {
                 assert_eq!(bounds.size.height, px(24.0));
             }
             assert_eq!(host.size.height, px(24.0));
+            assert!((account.right() - host.right()).abs() <= px(1.0));
             assert!(tokens.right() <= context.left());
             assert!(context.right() <= account.left());
             assert_eq!(

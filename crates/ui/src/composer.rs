@@ -11794,6 +11794,7 @@ mod tests {
                 }
                 assert!(tokens.right() <= context.left());
                 assert!(context.right() <= account.left());
+                assert!((account.right() - (row.right() - px(10.0))).abs() <= px(1.0));
             }
         }
     }
