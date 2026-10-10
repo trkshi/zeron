@@ -9451,6 +9451,25 @@ impl Composer {
                 )
                 .await
                 .map_err(|e| format!("Send failed: {e}"))?;
+                if let Some(command_id) = queued
+                    .get("commandId")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                {
+                    this.update(cx, |composer, cx| {
+                        composer.state.update(cx, |state, cx| {
+                            state.watch_send_receipt(
+                                chat_id.clone(),
+                                message_id.clone(),
+                                command_id,
+                                host_device_id.clone(),
+                                cx,
+                            );
+                        });
+                    })
+                    .ok();
+                }
                 if expects_setup_handoff
                     && let Some(command_id) = queued
                         .get("commandId")

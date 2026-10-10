@@ -13,7 +13,11 @@ Zeron release.
   Keep the card compact and aligned with the input surface; project and branch
   sit below the title, while device details remain available on hover.
   Click a row to open its conversation; waiting questions show **Needs input**.
-  Exclude archived threads, hidden workers, queued sends, and stale sessions.
+  Exclude archived threads, hidden workers, queued sends, and stale live activity.
+  Confirm background sends from host command receipts so leaving a thread
+  before its transcript acknowledges the message cannot strand it as working.
+  Keep finished, unread threads visible as **Done** until opened on any device;
+  show their count separately from running threads and stop their animations.
   Scroll longer lists and keep the panel clear of bottom chrome. This is a
   UI-only change; no Ubuntu engine update is required.
 - Open the new-chat canvas by default after the chat list loads. Turn off

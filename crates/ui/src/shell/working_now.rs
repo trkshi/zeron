@@ -1,5 +1,5 @@
-//! Home's live thread list. Registry/session watches are the only data source;
-//! opening a row uses the same navigation and draft preservation as the sidebar.
+//! Home's running and unread thread list, driven by registry/session watches.
+//! Rows use the sidebar's navigation and draft preservation.
 
 use gpui::{
     AvailableSpace, Bounds, Element, GlobalElementId, InspectorElementId, LayoutId, Pixels, point,
@@ -16,8 +16,15 @@ const PANEL_GAP: f32 = 16.0;
 const MAX_PANEL_WIDTH: f32 = 400.0;
 const MAX_PANEL_HEIGHT: f32 = HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 4.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ActivityStatus {
+    AwaitingInput,
+    Working,
+    Done,
+}
+
 struct Activity {
-    awaiting_input: bool,
+    status: ActivityStatus,
     started_at: Option<DateTime<Utc>>,
     subagents: u32,
 }
@@ -33,10 +40,7 @@ fn activity(
     session: Option<&Session>,
     now: DateTime<Utc>,
 ) -> Option<Activity> {
-    if !state.device_online(&chat.device_id, now)
-        || state.send_queued(&chat.id, now)
-        || state.send_undelivered(&chat.id, now)
-    {
+    if state.send_queued(&chat.id, now) || state.send_undelivered(&chat.id, now) {
         return None;
     }
     let live = zeron_proto::view::effective_indicator(session, now);
@@ -46,11 +50,27 @@ fn activity(
         live
     };
     let subagents = zeron_proto::view::running_subagents(session, now);
-    if !matches!(indicator, Indicator::Working | Indicator::AwaitingInput) && subagents == 0 {
+    let status = match indicator {
+        Indicator::AwaitingInput => ActivityStatus::AwaitingInput,
+        Indicator::Working => ActivityStatus::Working,
+        _ if subagents > 0 => ActivityStatus::Working,
+        // Use the sidebar's synced unread completion, but never call a
+        // crashed/stale Working row or an unfinished worker group Done.
+        Indicator::None
+            if session.is_none_or(|session| {
+                session.status == zeron_proto::SessionStatus::Idle && session.running_subagents == 0
+            }) && zeron_proto::view::display_status(chat, session, now)
+                == zeron_proto::ChatIndicator::Completed =>
+        {
+            ActivityStatus::Done
+        }
+        _ => return None,
+    };
+    if status != ActivityStatus::Done && !state.device_online(&chat.device_id, now) {
         return None;
     }
     Some(Activity {
-        awaiting_input: indicator == Indicator::AwaitingInput,
+        status,
         // Pending sends and workers outliving their parent must not inherit
         // the previous turn's timer from an idle or stale session row.
         started_at: session
@@ -78,12 +98,19 @@ fn threads(state: &AppState, now: DateTime<Utc>) -> Vec<WorkingThread> {
             })
         })
         .collect();
-    // Attention first; newest turns next. Never reorder on heartbeat timestamps.
+    // Questions and running turns lead; unread completions follow by recency.
+    // Never reorder on heartbeat timestamps.
     rows.sort_by(|a, b| {
-        b.activity
-            .awaiting_input
-            .cmp(&a.activity.awaiting_input)
-            .then_with(|| b.activity.started_at.cmp(&a.activity.started_at))
+        a.activity
+            .status
+            .cmp(&b.activity.status)
+            .then_with(|| {
+                if a.activity.status == ActivityStatus::Done {
+                    b.chat.last_message_at.cmp(&a.chat.last_message_at)
+                } else {
+                    b.activity.started_at.cmp(&a.activity.started_at)
+                }
+            })
             .then_with(|| a.chat.id.cmp(&b.chat.id))
     });
     rows
@@ -151,6 +178,11 @@ impl Shell {
             )
         };
         let count = threads.len();
+        let done_count = threads
+            .iter()
+            .filter(|row| row.activity.status == ActivityStatus::Done)
+            .count();
+        let active_count = count - done_count;
         let theme = Theme::of(cx).clone();
         let panel_width = (width - 2.0 * Theme::SPACE_LG).clamp(0.0, MAX_PANEL_WIDTH);
         let rows: Vec<_> = threads
@@ -189,7 +221,15 @@ impl Shell {
                             .text_color(theme.text_muted),
                     )
                     .child("Working now")
-                    .child(count.to_string()),
+                    .child(active_count.to_string())
+                    .when(done_count > 0, |header| {
+                        header.child(div().flex_1()).child(
+                            div()
+                                .flex_none()
+                                .text_color(theme.success)
+                                .child(format!("{done_count} done")),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -269,7 +309,9 @@ impl Shell {
             }
             (config.harness, name)
         });
-        let status = if row.activity.awaiting_input {
+        let status = if row.activity.status == ActivityStatus::Done {
+            "Done".to_owned()
+        } else if row.activity.status == ActivityStatus::AwaitingInput {
             "Needs input".to_owned()
         } else if let Some(started) = row.activity.started_at {
             elapsed(started, now)
@@ -290,12 +332,17 @@ impl Shell {
                 String::new()
             },
         );
-        let color = if row.activity.awaiting_input {
-            theme.warning
-        } else {
-            theme.text_muted
+        let color = match row.activity.status {
+            ActivityStatus::AwaitingInput => theme.warning,
+            ActivityStatus::Working => theme.text_muted,
+            ActivityStatus::Done => theme.success,
         };
-        let marker = if row.activity.awaiting_input {
+        let marker = if row.activity.status == ActivityStatus::Done {
+            icon(icons::CHECK)
+                .size(px(12.0))
+                .text_color(theme.success)
+                .into_any_element()
+        } else if row.activity.status == ActivityStatus::AwaitingInput {
             icon(icons::CHAT_ROUND_LINE)
                 .size(px(12.0))
                 .text_color(theme.warning)
@@ -602,7 +649,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["question", "working"]
         );
-        assert!(rows[0].activity.awaiting_input);
+        assert_eq!(rows[0].activity.status, ActivityStatus::AwaitingInput);
         assert!(rows[0].activity.started_at.is_none());
         assert!(has_running_clock(&state, now()));
         assert!(threads(&state, now() + chrono::TimeDelta::seconds(46)).is_empty());
@@ -625,6 +672,160 @@ mod tests {
         assert!(rows[0].activity.started_at.is_none());
         assert!(!has_running_clock(&state, now()));
         assert!(threads(&state, now() + chrono::TimeDelta::seconds(46)).is_empty());
+    }
+
+    #[test]
+    fn delivery_ack_removes_seen_rows_but_keeps_live_background_turns() {
+        let mut state = AppState::new();
+        state.chats = vec![chat("thread")];
+        state.sessions = vec![session("thread", SessionStatus::Idle)];
+        state.begin_pending_send("thread", "message", now());
+        let rows = threads(&state, now());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].activity.started_at.is_none());
+        state.end_pending_send("thread", "message");
+        assert!(threads(&state, now()).is_empty());
+        assert!(!has_running_clock(&state, now()));
+
+        state.sessions = vec![session("thread", SessionStatus::Working)];
+        state.begin_pending_send("thread", "next-message", now());
+        state.end_pending_send("thread", "next-message");
+        let rows = threads(&state, now());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].activity.started_at, state.sessions[0].started_at);
+        assert!(has_running_clock(&state, now()));
+        state.sessions[0].status = SessionStatus::Idle;
+        state.sessions[0].started_at = None;
+        assert!(threads(&state, now()).is_empty());
+        assert!(!has_running_clock(&state, now()));
+    }
+
+    #[test]
+    fn finished_threads_stay_done_until_the_synced_seen_marker_advances() {
+        let mut state = AppState::new();
+        let mut thread = chat("thread");
+        thread.last_message_at = Some(now() - chrono::TimeDelta::minutes(2));
+        thread.last_seen_at = Some(now() - chrono::TimeDelta::minutes(3));
+        state.chats = vec![thread];
+        state.sessions = vec![session("thread", SessionStatus::Working)];
+        assert_eq!(
+            threads(&state, now())[0].activity.status,
+            ActivityStatus::Working
+        );
+
+        state.sessions[0].status = SessionStatus::Idle;
+        state.sessions[0].started_at = None;
+        state.sessions[0].last_completed_turn = Some("finished-answer".into());
+        state.chats[0].last_message_at = Some(now());
+        let rows = threads(&state, now());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].activity.status, ActivityStatus::Done);
+        assert!(rows[0].activity.started_at.is_none());
+        assert!(!has_running_clock(&state, now()));
+        assert_eq!(
+            threads(&state, now() + chrono::TimeDelta::hours(1))[0]
+                .activity
+                .status,
+            ActivityStatus::Done,
+        );
+        // Opening on this device or another writes the same synced marker.
+        state.chats[0].last_seen_at = state.chats[0].last_message_at;
+        assert!(threads(&state, now()).is_empty());
+    }
+
+    #[test]
+    fn short_reply_changes_from_pending_working_to_unread_done_after_ack() {
+        let mut state = AppState::new();
+        let mut thread = chat("thread");
+        thread.last_message_at = Some(now());
+        state.chats = vec![thread];
+        state.sessions = vec![session("thread", SessionStatus::Idle)];
+        state.begin_pending_send("thread", "hello", now());
+        assert_eq!(
+            threads(&state, now())[0].activity.status,
+            ActivityStatus::Working
+        );
+        state.end_pending_send("thread", "hello");
+        assert_eq!(
+            threads(&state, now())[0].activity.status,
+            ActivityStatus::Done
+        );
+        assert!(!has_running_clock(&state, now()));
+    }
+
+    #[test]
+    fn unread_output_does_not_turn_stale_work_errors_or_live_workers_into_done() {
+        let mut state = AppState::new();
+        let mut thread = chat("thread");
+        thread.last_message_at = Some(now());
+        state.chats = vec![thread];
+        let mut live = session("thread", SessionStatus::Working);
+        live.updated_at = now() - chrono::TimeDelta::seconds(46);
+        state.sessions = vec![live];
+        assert!(threads(&state, now()).is_empty());
+        state.sessions[0].status = SessionStatus::Errored;
+        assert!(threads(&state, now()).is_empty());
+        state.sessions[0].status = SessionStatus::Idle;
+        state.sessions[0].running_subagents = 2;
+        assert!(threads(&state, now()).is_empty());
+        state.sessions[0].updated_at = now();
+        let rows = threads(&state, now());
+        assert_eq!(rows[0].activity.status, ActivityStatus::Working);
+        assert_eq!(rows[0].activity.subagents, 2);
+        assert!(rows[0].activity.started_at.is_none());
+    }
+
+    #[test]
+    fn unread_completions_survive_host_offline_and_absent_live_sessions() {
+        let mut state = AppState::new();
+        let mut thread = chat("thread");
+        thread.last_message_at = Some(now());
+        state.chats = vec![thread];
+        state.sessions = vec![session("thread", SessionStatus::Idle)];
+        state.devices = vec![zeron_proto::Device {
+            id: "host".into(),
+            name: "Ubuntu".into(),
+            platform: "linux".into(),
+            last_seen_at: Some(now() - chrono::TimeDelta::hours(1)),
+            created_at: None,
+            version: None,
+            cursor_sdk_version: None,
+            capabilities: vec![],
+        }];
+        assert_eq!(
+            threads(&state, now())[0].activity.status,
+            ActivityStatus::Done
+        );
+        state.sessions.clear();
+        assert_eq!(
+            threads(&state, now())[0].activity.status,
+            ActivityStatus::Done
+        );
+        assert!(!has_running_clock(&state, now()));
+    }
+
+    #[test]
+    fn questions_and_running_threads_sort_before_unread_completions() {
+        let mut state = AppState::new();
+        state.chats = ["older-done", "newer-done", "working", "question"]
+            .into_iter()
+            .map(chat)
+            .collect();
+        state.chats[0].last_message_at = Some(now() - chrono::TimeDelta::minutes(2));
+        state.chats[1].last_message_at = Some(now() - chrono::TimeDelta::minutes(1));
+        state.sessions = vec![
+            session("older-done", SessionStatus::Idle),
+            session("newer-done", SessionStatus::Idle),
+            session("working", SessionStatus::Working),
+            session("question", SessionStatus::AwaitingInput),
+        ];
+        assert_eq!(
+            threads(&state, now())
+                .iter()
+                .map(|row| row.chat.id.as_str())
+                .collect::<Vec<_>>(),
+            ["question", "working", "newer-done", "older-done"],
+        );
     }
 
     #[test]

@@ -663,6 +663,12 @@ struct PendingSend {
     started: DateTime<Utc>,
 }
 
+#[derive(serde::Deserialize)]
+struct SendReceipt {
+    id: String,
+    status: zeron_doc::SessionCommandStatus,
+}
+
 /// How long an unadopted send reads as Working/Sending (or Queued when the
 /// path is degraded) before flipping to the EXPLICIT failed state with a
 /// retry affordance. The old 30s overlay silently expired back to Idle with
@@ -1785,6 +1791,121 @@ impl AppState {
         {
             self.pending_sends.remove(chat_id);
         }
+    }
+
+    fn acknowledge_send_receipt(
+        &mut self,
+        chat_id: &str,
+        message_id: &str,
+        command_id: &str,
+        receipt: &SendReceipt,
+    ) -> bool {
+        if receipt.id != command_id
+            || receipt.status != zeron_doc::SessionCommandStatus::Applied
+            || !self
+                .pending_sends
+                .get(chat_id)
+                .is_some_and(|pending| pending.message_id == message_id)
+        {
+            return false;
+        }
+        self.end_pending_send(chat_id, message_id);
+        true
+    }
+
+    /// A deselected transcript no longer acknowledges its optimistic send.
+    /// Check only that send's receipt, without retaining a background transcript.
+    pub(crate) fn watch_send_receipt(
+        &mut self,
+        chat_id: String,
+        message_id: String,
+        command_id: String,
+        target_device_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.engine.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(UNDELIVERED_GRACE_MS as u64);
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                let poll = this
+                    .update(cx, |state, _| {
+                        let now = Utc::now();
+                        state
+                            .pending_sends
+                            .get(&chat_id)
+                            .filter(|pending| {
+                                pending.message_id == message_id
+                                    && !state.send_undelivered(&chat_id, now)
+                            })
+                            .map(|_| {
+                                state.selected_chat.as_deref() != Some(chat_id.as_str())
+                                    && state
+                                        .chats
+                                        .iter()
+                                        .find(|chat| chat.id == chat_id)
+                                        .is_some_and(|chat| {
+                                            state.device_online(&chat.device_id, now)
+                                        })
+                            })
+                    })
+                    .ok()
+                    .flatten();
+                let Some(poll) = poll else {
+                    return;
+                };
+                if poll {
+                    let reply = crate::attachments::call_with_timeout(
+                        &engine,
+                        cx.background_executor(),
+                        methods::GET_SESSION_COMMAND,
+                        serde_json::json!({
+                            "chatId": chat_id,
+                            "commandId": command_id,
+                            "targetDeviceId": target_device_id,
+                        }),
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await
+                    .and_then(|value| {
+                        serde_json::from_value::<Option<SendReceipt>>(value)
+                            .map_err(|error| error.to_string())
+                    });
+                    match reply {
+                        Ok(Some(receipt)) if receipt.id == command_id => {
+                            if receipt.status == zeron_doc::SessionCommandStatus::Applied {
+                                this.update(cx, |state, cx| {
+                                    if state.acknowledge_send_receipt(
+                                        &chat_id,
+                                        &message_id,
+                                        &command_id,
+                                        &receipt,
+                                    ) {
+                                        cx.notify();
+                                    }
+                                })
+                                .ok();
+                                return;
+                            }
+                            if receipt.status != zeron_doc::SessionCommandStatus::Pending {
+                                return;
+                            }
+                        }
+                        Err(error) if error.starts_with("unknown method: ") => return,
+                        _ => {}
+                    }
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+            }
+        })
+        .detach();
     }
 
     /// Attachment upload starting: expose its progress to the working label.
@@ -4672,6 +4793,84 @@ mod tests {
         s.end_pending_send("c", "m1"); // m1's failure cleanup arrives late
         assert!(s.send_pending("c", now), "m2's overlay must survive");
         s.end_pending_send("c", "m2");
+        assert!(!s.send_pending("c", now));
+    }
+
+    #[test]
+    fn delivery_receipt_clears_working_after_leaving_a_completed_chat() {
+        let now = Utc::now();
+        let mut s = AppState::new();
+        let finished = chat("c", 0, Some(10));
+        s.selected_chat = Some("other-chat".into());
+        s.transcript = vec![user_entry("other-message")];
+        s.sessions = vec![session("c", SessionStatus::Idle, 0, now)];
+        s.begin_pending_send("c", "m1", now);
+        assert_eq!(s.indicator_for("c", now), Indicator::Working);
+        let receipt = SendReceipt {
+            id: "command-1".into(),
+            status: zeron_doc::SessionCommandStatus::Applied,
+        };
+        assert!(s.acknowledge_send_receipt("c", "m1", "command-1", &receipt));
+        assert!(!s.send_pending("c", now));
+        assert_eq!(s.indicator_for("c", now), Indicator::None);
+        assert_eq!(s.display_status_for(&finished, now), ChatIndicator::Completed);
+        assert_eq!(s.selected_chat.as_deref(), Some("other-chat"));
+        assert_eq!(s.transcript[0].id, "other-message");
+    }
+
+    #[test]
+    fn delivery_acknowledgement_does_not_end_a_genuinely_running_turn() {
+        let now = Utc::now();
+        let mut s = AppState::new();
+        let running = session("c", SessionStatus::Working, 0, now);
+        s.sessions = vec![running.clone()];
+        s.begin_pending_send("c", "m1", now);
+        let receipt = SendReceipt {
+            id: "command-1".into(),
+            status: zeron_doc::SessionCommandStatus::Applied,
+        };
+        assert!(s.acknowledge_send_receipt("c", "m1", "command-1", &receipt));
+        assert_eq!(s.indicator_for("c", now), Indicator::Working);
+        assert_eq!(s.sessions, vec![running]);
+    }
+
+    #[test]
+    fn only_the_matching_applied_receipt_can_acknowledge_a_send() {
+        use zeron_doc::SessionCommandStatus;
+        let now = Utc::now();
+        let mut s = AppState::new();
+        s.begin_pending_send("c", "m1", now);
+        for status in [
+            SessionCommandStatus::Pending,
+            SessionCommandStatus::Rejected,
+            SessionCommandStatus::Expired,
+            SessionCommandStatus::Superseded,
+            SessionCommandStatus::Cancelled,
+        ] {
+            let receipt = SendReceipt {
+                id: "command-1".into(),
+                status,
+            };
+            assert!(!s.acknowledge_send_receipt("c", "m1", "command-1", &receipt));
+            assert!(s.send_pending("c", now));
+        }
+        let receipt = SendReceipt {
+            id: "command-1".into(),
+            status: SessionCommandStatus::Applied,
+        };
+        assert!(!s.acknowledge_send_receipt("c", "m1", "different-command", &receipt));
+        assert!(s.send_pending("c", now));
+        s.begin_pending_send("c", "m2", now);
+        assert!(!s.acknowledge_send_receipt("c", "m1", "command-1", &receipt));
+        assert!(
+            s.send_pending("c", now),
+            "a late receipt must not clear a newer send"
+        );
+        let newer = SendReceipt {
+            id: "command-2".into(),
+            status: SessionCommandStatus::Applied,
+        };
+        assert!(s.acknowledge_send_receipt("c", "m2", "command-2", &newer));
         assert!(!s.send_pending("c", now));
     }
 
