@@ -14,6 +14,7 @@ use zeron_proto::{
 use zeron_rpc::methods;
 
 use crate::icons::{self, icon};
+use crate::motion::{self, DisclosureMotion};
 use crate::settings::accounts::{AccountsSnapshotCache, format_reset, render_usage_meter};
 use crate::settings::widgets::text_tooltip;
 use crate::state::AppState;
@@ -113,6 +114,16 @@ fn account_name(account: &AgentAccount) -> &str {
         .unwrap_or("Saved account")
 }
 
+fn account_detail_height(account: &AgentAccount) -> f32 {
+    let meters = account
+        .usage_windows
+        .iter()
+        .filter(|window| quota_window(window))
+        .take(2)
+        .count();
+    30.0 + 16.0 * meters.max(1) as f32
+}
+
 #[derive(Default, Debug, PartialEq, Eq)]
 struct PoolSummary {
     available: usize,
@@ -145,6 +156,7 @@ pub(super) struct AccountPool {
     window_active: bool,
     interactive: bool,
     expanded: [bool; 2],
+    disclosure_motion: [Option<DisclosureMotion>; 2],
     loaded: bool,
     refreshing: bool,
     last_forced: Option<Instant>,
@@ -167,6 +179,7 @@ impl AccountPool {
             window_active: false,
             interactive: false,
             expanded: [false; 2],
+            disclosure_motion: [None; 2],
             loaded: false,
             refreshing: false,
             last_forced: None,
@@ -203,6 +216,7 @@ impl AccountPool {
         if changed {
             self.target = target;
             self.expanded = [false; 2];
+            self.disclosure_motion = [None; 2];
             self.loaded = false;
             self.last_forced = None;
             self.auto_switch = None;
@@ -219,6 +233,9 @@ impl AccountPool {
         self.visible = visible;
         self.window_active = window_active;
         self.online = online;
+        if !visible || !window_active {
+            self.disclosure_motion = [None; 2];
+        }
         if !visible || !window_active || !online {
             self.poll_task = None;
             self.load_task = None;
@@ -266,24 +283,16 @@ impl AccountPool {
         let detail_height: f32 = PROVIDERS
             .iter()
             .enumerate()
-            .filter(|(index, _)| self.expanded[*index])
-            .map(|(_, (harness, _))| {
-                self.snapshot(cx).map_or(0.0, |snapshot| {
-                    snapshot
-                        .accounts
-                        .iter()
-                        .filter(|account| account.harness == *harness)
-                        .map(|account| {
-                            let meters = account
-                                .usage_windows
-                                .iter()
-                                .filter(|window| quota_window(window))
-                                .take(2)
-                                .count();
-                            30.0 + 16.0 * meters.max(1) as f32
-                        })
-                        .sum::<f32>()
-                })
+            .map(|(index, (harness, _))| {
+                self.reveal(index, cx)
+                    * self.snapshot(cx).map_or(0.0, |snapshot| {
+                        snapshot
+                            .accounts
+                            .iter()
+                            .filter(|account| account.harness == *harness)
+                            .map(account_detail_height)
+                            .sum::<f32>()
+                    })
             })
             .sum();
         let note = if self.error.is_some() || !self.online {
@@ -292,6 +301,15 @@ impl AccountPool {
             0.0
         };
         HEADER_HEIGHT + 8.0 + PROVIDER_HEIGHT * 2.0 + detail_height + note
+    }
+
+    // The card and its clipped rows share one timeline, including reversals.
+    fn reveal(&self, index: usize, cx: &gpui::App) -> f32 {
+        let target = if self.expanded[index] { 1.0 } else { 0.0 };
+        if motion::reduced_motion(cx) || !self.visible || !self.window_active {
+            return target;
+        }
+        self.disclosure_motion[index].map_or(target, DisclosureMotion::current)
     }
 
     fn load(&mut self, force: bool, cx: &mut Context<Self>) {
@@ -383,7 +401,18 @@ impl AccountPool {
         if !self.interactive {
             return;
         }
+        let from = self.reveal(index, cx);
         self.expanded[index] = !self.expanded[index];
+        self.disclosure_motion[index] = if motion::reduced_motion(cx) {
+            None
+        } else {
+            let epoch = self.disclosure_motion[index].map_or(1, |motion| motion.epoch + 1);
+            Some(DisclosureMotion::new(
+                epoch,
+                from,
+                if self.expanded[index] { 1.0 } else { 0.0 },
+            ))
+        };
         if self.expanded[index] {
             self.load(true, cx);
         }
@@ -398,6 +427,7 @@ impl AccountPool {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (harness, name) = PROVIDERS[index];
+        let reveal = self.reveal(index, cx);
         let now = chrono::Utc::now();
         let mut accounts: Vec<_> = snapshot
             .into_iter()
@@ -519,13 +549,12 @@ impl AccountPool {
                             .child(count),
                     )
                     .child(
-                        icon(if self.expanded[index] {
-                            icons::ALT_ARROW_DOWN
-                        } else {
-                            icons::ALT_ARROW_RIGHT
-                        })
-                        .size(px(10.0))
-                        .text_color(theme.text_muted),
+                        icon(icons::ALT_ARROW_RIGHT)
+                            .size(px(10.0))
+                            .text_color(theme.text_muted)
+                            .with_transformation(gpui::Transformation::rotate(gpui::percentage(
+                                reveal * 0.25,
+                            ))),
                     ),
             )
             .child(
@@ -543,11 +572,25 @@ impl AccountPool {
         div()
             .flex_none()
             .child(button)
-            .when(self.expanded[index], |group| {
-                group.children(
-                    accounts
-                        .iter()
-                        .map(|account| self.account_row(account, theme)),
+            .when(self.expanded[index] || reveal > 0.0, |group| {
+                let full_height: f32 = accounts
+                    .iter()
+                    .map(|account| account_detail_height(account))
+                    .sum();
+                group.child(
+                    div()
+                        .w_full()
+                        .flex_none()
+                        .overflow_hidden()
+                        .opacity(reveal)
+                        .when(reveal < 1.0, |body| body.h(px(full_height * reveal)))
+                        .child(
+                            div().w_full().flex().flex_col().children(
+                                accounts
+                                    .iter()
+                                    .map(|account| self.account_row(account, theme)),
+                            ),
+                        ),
                 )
             })
             .into_any_element()
@@ -678,6 +721,12 @@ impl Render for AccountPool {
             self._activation = Some(cx.observe_window_activation(window, |pool, window, cx| {
                 pool.track(pool.visible, window.is_window_active(), cx);
             }));
+        }
+        let animating = (0..PROVIDERS.len()).any(|index| {
+            self.disclosure_motion[index].is_some_and(|motion| self.reveal(index, cx) != motion.to)
+        });
+        if animating && self.visible && self.window_active {
+            motion::pulse_lease(cx.entity_id(), cx);
         }
         let theme = Theme::of(cx).clone();
         let snapshot = self.snapshot(cx).cloned();
