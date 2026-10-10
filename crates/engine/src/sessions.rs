@@ -247,6 +247,7 @@ struct Inner {
     turn_listener: OnceLock<TurnListener>,
     checkpoints: OnceLock<crate::checkpoints::Checkpoints>,
     agent_accounts: OnceLock<crate::agent_accounts::AgentAccounts>,
+    usage_history: OnceLock<crate::usage_history::UsageHistory>,
 }
 
 /// Turn-start hook: called with `(chat_id, cwd)`.
@@ -290,6 +291,7 @@ impl SessionsEngine {
                 turn_listener: OnceLock::new(),
                 checkpoints: OnceLock::new(),
                 agent_accounts: OnceLock::new(),
+                usage_history: OnceLock::new(),
             }),
         }
     }
@@ -350,6 +352,14 @@ impl SessionsEngine {
 
     pub fn set_agent_accounts(&self, accounts: crate::agent_accounts::AgentAccounts) {
         let _ = self.inner.agent_accounts.set(accounts);
+    }
+
+    pub fn set_usage_history(&self, history: crate::usage_history::UsageHistory) {
+        let _ = self.inner.usage_history.set(history);
+    }
+
+    pub fn usage_history(&self) -> Option<crate::usage_history::UsageHistory> {
+        self.inner.usage_history.get().cloned()
     }
 
     /// Called under checkpoint admission, which also orders sends and steers.
@@ -2360,6 +2370,35 @@ fn folded_text(parts: &[MessagePart]) -> String {
         .join("\n")
 }
 
+async fn record_turn_usage(
+    inner: &Inner,
+    chat_id: &str,
+    message_id: &str,
+    started_at: i64,
+    harness: HarnessId,
+    model: Option<&str>,
+    usage: Option<TokenUsage>,
+) {
+    if let (Some(history), Some(usage)) = (inner.usage_history.get(), usage) {
+        if usage == TokenUsage::default() {
+            return;
+        }
+        history
+            .record(zeron_proto::UsageHistoryRecord {
+                message_id: message_id.into(),
+                chat_id: chat_id.into(),
+                device_id: inner.device_id.clone(),
+                started_at,
+                harness: Some(harness),
+                model: model
+                    .filter(|model| !model.trim().is_empty())
+                    .map(str::to_owned),
+                usage,
+            })
+            .await;
+    }
+}
+
 fn sync_segment<'a>(
     doc: &'a SessionDoc,
     writer: &mut Option<SegmentWriter<'a>>,
@@ -2500,6 +2539,7 @@ async fn drive_run(
     let device_id = inner.device_id.clone();
     // Captured for post-run auto-titling (the request moves into the harness).
     let harness_id = harness.id();
+    let mut turn_model = request.model.clone();
     let user_prompt = request.prompt.clone();
     let run_cwd = request.cwd.clone();
     if request.resume.is_none() {
@@ -3012,6 +3052,8 @@ async fn drive_run(
                             tracing::warn!(chat = %chat_id, error = %err, "quiesce segment finish failed");
                         }
                         inner.note_message(&chat_id, &folded_text(&folded));
+                        record_turn_usage(&inner, &chat_id, &entry_id, segment_started,
+                            harness_id, turn_model.as_deref(), turn_usage).await;
                     }
                     folded.clear();
                     turn_usage = None;
@@ -3265,6 +3307,11 @@ async fn drive_run(
             }
             continue;
         }
+        if let AgentEvent::SessionStarted { model, .. } = &event
+            && !model.trim().is_empty()
+        {
+            turn_model = Some(model.chars().take(256).collect());
+        }
         if let AgentEvent::AsyncInputRequested { request_id, .. } = &event {
             if !seen_async_inputs.insert(request_id.clone()) {
                 continue;
@@ -3517,11 +3564,25 @@ async fn drive_run(
                 tracing::warn!(chat = %chat_id, error = %err, "segment finish failed");
             }
             inner.note_message(&chat_id, &folded_text(&folded));
+            record_turn_usage(
+                &inner,
+                &chat_id,
+                &entry_id,
+                segment_started,
+                harness_id,
+                turn_model.as_deref(),
+                turn_usage,
+            )
+            .await;
             folded.clear();
             turn_usage = None;
             dirty = false;
             entry_id = next_assistant_message_id.clone().unwrap_or_else(new_id);
             segment_started = now_ms();
+            turn_model = lock(&inner.runs)
+                .get(&chat_id)
+                .filter(|run| run.run_id == run_id)
+                .and_then(|run| run.runtime_config.request.model.clone());
             // The elapsed timer is per user message, not per child process: a
             // steer boundary restarts it (matches the parked-resume path and
             // the composer's optimistic overlay, which already reads 0:00).
@@ -3638,6 +3699,16 @@ async fn drive_run(
                     tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
                 }
                 inner.note_message(&chat_id, &folded_text(&folded));
+                record_turn_usage(
+                    &inner,
+                    &chat_id,
+                    &entry_id,
+                    segment_started,
+                    harness_id,
+                    turn_model.as_deref(),
+                    turn_usage,
+                )
+                .await;
             }
             if *status == DoneStatus::Completed {
                 // A cleanly completed turn resets the auto-resume revival

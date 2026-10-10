@@ -53,6 +53,7 @@ pub mod methods {
     pub const GET_ACCOUNT_AUTO_SWITCH: &str = "GetAccountAutoSwitch";
     pub const SET_ACCOUNT_AUTO_SWITCH: &str = "SetAccountAutoSwitch";
     pub const LIST_MODELS: &str = "ListModels";
+    pub const READ_USAGE_HISTORY: &str = "ReadUsageHistory";
     pub const LIST_SKILLS: &str = "ListSkills";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";

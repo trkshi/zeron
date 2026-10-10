@@ -43,6 +43,7 @@ pub mod terminals;
 pub mod titles;
 mod transcript_history;
 pub mod uploads;
+pub mod usage_history;
 pub mod voice;
 pub mod workspace_files;
 pub mod workspace_host;
@@ -252,6 +253,17 @@ impl EngineCore {
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
+        match usage_history::UsageHistory::open(
+            profile.store_root(),
+            store_for_import.clone(),
+            workspace.clone(),
+            device_id.clone(),
+        ) {
+            Ok(history) => sessions.set_usage_history(history),
+            Err(error) => {
+                tracing::warn!(%error, "usage history unavailable; engine continues normally")
+            }
+        }
         doc_host.spawn_transcript_salvage(profile.store_root().join("journals"));
         let repos = Repos::new(data_dir, &device_id);
         doc_host.set_repos(repos.clone());

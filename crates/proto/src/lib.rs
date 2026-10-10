@@ -15,6 +15,7 @@ pub mod motion;
 pub mod preview;
 pub mod shells;
 pub mod sidebar_pins;
+pub mod usage_history;
 pub mod view;
 pub mod voice;
 pub mod workspace;
@@ -25,6 +26,7 @@ pub use entities::*;
 pub use preview::*;
 pub use shells::*;
 pub use sidebar_pins::*;
+pub use usage_history::*;
 pub use workspace::*;
 
 /// Parse "0.2.12" (tolerating a `-suffix`/`+build` tail on the last part)

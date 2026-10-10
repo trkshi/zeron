@@ -18,6 +18,7 @@ pub mod capabilities {
     pub const ASYNC_QUESTIONS_V1: &str = "async-questions-v1";
     pub const CHECKPOINTS_V1: &str = "checkpoints-v1";
     pub const SHELL_MONITOR_V1: &str = "shell-monitor-v1";
+    pub const USAGE_HISTORY_V1: &str = "usage-history-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -31,6 +32,7 @@ pub mod capabilities {
         crate::voice::remote::CAPABILITY,
         CHECKPOINTS_V1,
         SHELL_MONITOR_V1,
+        USAGE_HISTORY_V1,
     ];
 
     pub fn current() -> Vec<String> {

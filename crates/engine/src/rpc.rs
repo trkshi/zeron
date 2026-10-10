@@ -1423,6 +1423,7 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         }
         // Allow the adapter discovery budget plus relay and shutdown overhead.
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
+        methods::READ_USAGE_HISTORY => Duration::from_secs(120),
         _ => Duration::from_secs(30),
     }
 }
@@ -1449,6 +1450,7 @@ fn forwardable(method: &str) -> bool {
             | methods::INSTALL_HARNESS
             | methods::CANCEL_INSTALL
             | methods::GET_TITLE_SETTINGS
+            | methods::READ_USAGE_HISTORY
             | methods::SET_TITLE_SETTINGS
             | methods::SET_HARNESS_ENABLED
             | methods::GET_ACCOUNT_AUTO_SWITCH
@@ -3644,6 +3646,17 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&snapshot)
+            }
+            methods::READ_USAGE_HISTORY => {
+                let query: zeron_proto::UsageHistoryQuery = parse_params(params)?;
+                let history = self.sessions.usage_history().ok_or_else(|| {
+                    RpcError::Failed("Usage history is unavailable on this engine".into())
+                })?;
+                let summary = history
+                    .read(query)
+                    .await
+                    .map_err(|error| RpcError::Failed(error.to_string()))?;
+                RpcReply::value(&summary)
             }
             methods::ACTIVATE_AGENT_ACCOUNT => {
                 self.voice.retire();
