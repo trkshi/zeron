@@ -42,6 +42,7 @@ enum Entry {
     NewProject,
     Settings,
     Usage,
+    Shells,
     Theme(AppearanceMode),
     Chat(String),
 }
@@ -53,6 +54,7 @@ impl Entry {
             Self::NewProject => Some(("New project", icons::FOLDER)),
             Self::Settings => Some(("Open settings", icons::SETTINGS)),
             Self::Usage => Some(("Open usage dashboard", icons::SPEEDOMETER)),
+            Self::Shells => Some(("Open shell monitor", icons::TERMINAL)),
             Self::Theme(mode) => Some((
                 match mode {
                     AppearanceMode::System => "Switch to system theme",
@@ -77,6 +79,7 @@ fn actions_for(query: &str, is_dark: bool) -> Vec<Entry> {
         Entry::NewProject,
         Entry::Settings,
         Entry::Usage,
+        Entry::Shells,
         Entry::Theme(if is_dark {
             AppearanceMode::Light
         } else {
@@ -212,6 +215,14 @@ impl Shell {
             Entry::NewProject => self.open_add_space(cx),
             Entry::Settings => self.open_last_settings(cx),
             Entry::Usage => self.open_usage(cx),
+            Entry::Shells => {
+                self.set_route(Route::Chat, cx);
+                self.nav.push(NavEntry::Chat(self.active_chat.clone()));
+                self.shells.update(cx, |shells, cx| {
+                    shells.set_interactive(true, cx);
+                    shells.open_sidebar(None, window, cx);
+                });
+            }
             Entry::Theme(_) => unreachable!(),
             Entry::Chat(id) => self.open_chat(id, cx),
         }
@@ -730,6 +741,8 @@ mod tests {
                 Entry::NewChat,
                 Entry::NewProject,
                 Entry::Settings,
+                Entry::Usage,
+                Entry::Shells,
                 Entry::Theme(AppearanceMode::Light)
             ]
         );
@@ -738,6 +751,8 @@ mod tests {
             vec![Entry::NewChat, Entry::NewProject]
         );
         assert_eq!(actions_for("settings", true), vec![Entry::Settings]);
+        assert_eq!(actions_for("usage", true), vec![Entry::Usage]);
+        assert_eq!(actions_for("shell", true), vec![Entry::Shells]);
         assert_eq!(
             actions_for("theme", true),
             vec![Entry::Theme(AppearanceMode::Light)]

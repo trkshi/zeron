@@ -6983,12 +6983,13 @@ impl Shell {
         cluster + CLUSTER_BUTTONS_WIDTH + TITLEBAR_IDENTITY_GAP
     }
 
-    /// The session titlebar, or on the Pull requests route the open pull
-    /// request's own bar.
+    /// The session titlebar, the open pull request's bar, or a neutral strip
+    /// above Usage. Non-chat pages must not inherit the selected chat's controls.
     fn render_title_bar(&mut self, viewport_height: Pixels, cx: &mut Context<Self>) -> AnyElement {
-        if !matches!(self.route, Route::PullRequests) {
+        if !matches!(self.route, Route::PullRequests | Route::Usage) {
             return self.render_session_title_bar(viewport_height, cx);
         }
+        let on_pull_requests = matches!(self.route, Route::PullRequests);
         let plus_inset = TITLEBAR_ACTION_SLOT_WIDTH * self.titlebar_plus_alpha(cx);
         let inner = div()
             .size_full()
@@ -6998,12 +6999,21 @@ impl Shell {
             .pl(px((self.sidebar_now() + Theme::SPACE_LG)
                 .max(self.title_bar_content_start() + plus_inset)))
             .pr(px(self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET)))
-            .when_some(self.pull_request_detail.clone(), |bar, detail| {
-                bar.child(detail.update(cx, |page, cx| page.titlebar(cx)))
-            });
+            .when_some(
+                self.pull_request_detail.clone().filter(|_| on_pull_requests),
+                |bar, detail| bar.child(detail.update(cx, |page, cx| page.titlebar(cx))),
+            );
         let bar = div().h(px(Theme::TITLEBAR_HEIGHT)).flex_none().child(inner);
-        self.titlebar_drag_region("pull-requests-titlebar", bar, cx)
-            .into_any_element()
+        self.titlebar_drag_region(
+            if on_pull_requests {
+                "pull-requests-titlebar"
+            } else {
+                "usage-titlebar"
+            },
+            bar,
+            cx,
+        )
+        .into_any_element()
     }
 
     /// Make a titlebar strip drag the window — zed's platform-titlebar
@@ -9658,7 +9668,13 @@ impl Shell {
             .hover(|d| d.bg(theme.glass_hover()))
             .focus_visible(|d| d.border_1().border_color(theme.accent))
             .tooltip(crate::settings::widgets::text_tooltip("Usage"))
-            .child(icon(icons::SPEEDOMETER).size(px(15.0)))
+            .child(icon(icons::SPEEDOMETER).size(px(15.0)).text_color(
+                if matches!(self.route, Route::Usage) {
+                    theme.text
+                } else {
+                    motion::hover_blend("open-usage", theme.text_muted, theme.text)
+                },
+            ))
             .on_click(cx.listener(|shell, _, _, cx| shell.open_usage(cx)));
         let theme = &theme.for_popup();
         let open = self.user_menu.is_open();
@@ -13423,11 +13439,7 @@ impl Render for Shell {
             if !shells_on_chat && shells.sidebar_open() {
                 shells.close_sidebar(cx);
             }
-            shells.track(
-                home_visible || shells.sidebar_open(),
-                window.is_window_active(),
-                cx,
-            );
+            shells.track(shells.sidebar_open(), window.is_window_active(), cx);
         });
         self.clock
             .arm(wake, now, |shell: &mut Shell| &mut shell.clock, cx);

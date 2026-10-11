@@ -387,7 +387,7 @@ impl UsageDashboard {
                 self.control("usage-refresh", "", false, theme)
                     .aria_label("Refresh usage")
                     .tooltip(text_tooltip("Refresh usage and model pricing"))
-                    .child(icon(icons::REFRESH).size(px(15.0)))
+                    .child(icon(icons::REFRESH).size(px(15.0)).text_color(theme.text_muted))
                     .on_click(cx.listener(|page, _, _, cx| page.load(true, cx))),
             )
             .into_any_element()
@@ -1357,6 +1357,7 @@ impl Render for UsageDashboard {
             .size_full()
             .flex()
             .flex_col()
+            .pt(px(Theme::TITLEBAR_HEIGHT))
             .text_color(theme.text)
             .bg(theme.surface)
             .on_key_down(cx.listener(|page, event: &gpui::KeyDownEvent, _, cx| {

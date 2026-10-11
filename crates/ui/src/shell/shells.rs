@@ -49,7 +49,6 @@ pub(super) struct Shells {
     watch_task: Option<Task<()>>,
     output_task: Option<Task<()>>,
     clock_task: Option<Task<()>>,
-    pub(super) scroll: ScrollHandle,
 }
 
 impl Shells {
@@ -75,7 +74,6 @@ impl Shells {
             watch_task: None,
             output_task: None,
             clock_task: None,
-            scroll: ScrollHandle::new(),
         }
     }
 
@@ -258,17 +256,11 @@ impl Shells {
         tasks
     }
 
-    pub(super) fn desired_height(&self, cx: &App) -> f32 {
-        HEADER_HEIGHT
-            + 6.0
-            + ROW_HEIGHT * self.visible_tasks(cx).len().clamp(1, PREVIEW_LIMIT) as f32
-    }
-
     pub(super) fn sidebar_open(&self) -> bool {
         self.sidebar_open
     }
 
-    fn open_sidebar(
+    pub(super) fn open_sidebar(
         &mut self,
         task: Option<ShellTask>,
         window: &mut Window,
