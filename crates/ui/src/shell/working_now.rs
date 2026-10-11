@@ -181,6 +181,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let now = Utc::now();
+        // Git projects show checkout/branch selectors under the input.
+        let footer_clearance = if self.space_git_detected(cx) {
+            crate::composer::SESSION_FOOTER_HEIGHT + Theme::SPACE_SM
+        } else {
+            Theme::SPACE_SM
+        };
         let (threads, empty_text) = {
             let state = self.state.read(cx);
             (
@@ -340,6 +346,7 @@ impl Shell {
             .inset_0()
             .child(BelowComposer {
                 summary: Some(summary),
+                footer_clearance: Some(footer_clearance),
                 child: Some(panel.into_any_element()),
                 secondary: Some((
                     div()
@@ -606,6 +613,9 @@ fn panel_bounds(
 struct BelowComposer {
     /// A one-line summary centered above the panels; hidden with them.
     summary: Option<AnyElement>,
+    /// Space kept under the input surface for rows shown beneath it. `None`
+    /// anchors to the composer's full measured bounds.
+    footer_clearance: Option<f32>,
     child: Option<AnyElement>,
     secondary: Option<(AnyElement, f32)>,
     desired_height: f32,
@@ -656,6 +666,14 @@ impl Element for BelowComposer {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
+        // The composer reserves its footer slot even when it is empty, so
+        // follow the input surface plus only what is actually shown below it.
+        let bottom = match (self.footer_clearance, self.surface.get()) {
+            (Some(clearance), Some(surface)) => {
+                composer.bottom().min(surface.bottom() + px(clearance))
+            }
+            _ => composer.bottom(),
+        };
         // The summary takes the top of the area, so panels lay out below it.
         let reserve = if self.summary.is_some() {
             SUMMARY_HEIGHT + SUMMARY_GAP
@@ -664,7 +682,10 @@ impl Element for BelowComposer {
         };
         let anchor = Bounds::new(
             composer.origin,
-            size(composer.size.width, composer.size.height + px(reserve)),
+            size(
+                composer.size.width,
+                bottom - composer.origin.y + px(reserve),
+            ),
         );
         let Some(bounds) = panel_bounds(
             anchor,
@@ -683,7 +704,7 @@ impl Element for BelowComposer {
         let mut painted = Vec::new();
         if let Some(mut summary) = self.summary.take() {
             summary.prepaint_as_root(
-                point(bounds.origin.x, composer.bottom() + px(PANEL_GAP)),
+                point(bounds.origin.x, bottom + px(PANEL_GAP)),
                 size(bounds.size.width, px(SUMMARY_HEIGHT)).map(AvailableSpace::Definite),
                 window,
                 cx,
@@ -1345,6 +1366,7 @@ mod tests {
                 )
                 .child(div().absolute().inset_0().child(BelowComposer {
                     summary: None,
+                    footer_clearance: None,
                     child: Some(panel.into_any_element()),
                     secondary: None,
                     desired_height: HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 2.0,
