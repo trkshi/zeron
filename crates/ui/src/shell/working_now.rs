@@ -10,15 +10,19 @@ use zeron_proto::{Chat, Session, view::project_label};
 
 use super::*;
 
-const HEADER_HEIGHT: f32 = 30.0;
-const ROW_HEIGHT: f32 = 44.0;
+const HEADER_HEIGHT: f32 = 40.0;
+const ROW_HEIGHT: f32 = 52.0;
 const PANEL_GAP: f32 = 16.0;
-const MAX_PANEL_WIDTH: f32 = 400.0;
+const MAX_PANEL_WIDTH: f32 = 460.0;
 const MAX_PANEL_HEIGHT: f32 = HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 4.0;
 const HOME_PANEL_GAP: f32 = 12.0;
 const TWO_PANEL_MIN_WIDTH: f32 = 652.0;
 const MAX_HOME_WIDTH: f32 = MAX_PANEL_WIDTH * 2.0 + HOME_PANEL_GAP;
-const MAX_HOME_HEIGHT: f32 = 260.0;
+const MAX_HOME_HEIGHT: f32 = 360.0;
+/// The summary pill above the panels, and the space it keeps from them.
+const SUMMARY_HEIGHT: f32 = 30.0;
+const SUMMARY_GAP: f32 = 12.0;
+pub(super) const PANEL_RADIUS: f32 = 12.0;
 
 pub(super) fn panel_background(theme: &Theme) -> gpui::Hsla {
     match theme.appearance {
@@ -194,7 +198,55 @@ impl Shell {
             .filter(|row| row.activity.status == ActivityStatus::Done)
             .count();
         let active_count = count - done_count;
+        let input_count = threads
+            .iter()
+            .filter(|row| row.activity.status == ActivityStatus::AwaitingInput)
+            .count();
         let theme = Theme::of(cx).clone();
+        let running = active_count - input_count;
+        let mut summary_parts = Vec::new();
+        if running > 0 {
+            summary_parts.push(format!("{running} running"));
+        }
+        if input_count > 0 {
+            summary_parts.push(format!("{input_count} need input"));
+        }
+        if done_count > 0 {
+            summary_parts.push(format!("{done_count} to review"));
+        }
+        if summary_parts.is_empty() {
+            summary_parts.push("Nothing running".to_owned());
+        }
+        summary_parts.extend(self.account_pool.read(cx).headroom(cx));
+        let summary = div()
+            .id("home-summary")
+            .debug_selector(|| "home-summary".into())
+            .size_full()
+            .flex()
+            .justify_center()
+            .opacity(opacity)
+            .child(
+                div()
+                    .h_full()
+                    .min_w_0()
+                    .px(px(14.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(panel_background(&theme))
+                    .text_size(crate::typography::ui_rems(12.5))
+                    .text_color(theme.text)
+                    .child(
+                        icon(icons::HOME)
+                            .size(px(13.0))
+                            .text_color(theme.text_muted),
+                    )
+                    .child(div().min_w_0().truncate().child(summary_parts.join(" · "))),
+            )
+            .into_any_element();
         let available_width = (main_width - 2.0 * Theme::SPACE_LG).max(0.0);
         let panel_width = if available_width >= TWO_PANEL_MIN_WIDTH {
             (available_width.min(MAX_HOME_WIDTH) - HOME_PANEL_GAP) / 2.0
@@ -218,7 +270,7 @@ impl Shell {
             .flex_none()
             .flex()
             .flex_col()
-            .rounded(px(8.0))
+            .rounded(px(PANEL_RADIUS))
             .border_1()
             .border_color(theme.border)
             .bg(panel_background(&theme))
@@ -228,18 +280,23 @@ impl Shell {
                 div()
                     .h(px(HEADER_HEIGHT))
                     .flex_none()
-                    .px(px(12.0))
+                    .px(px(14.0))
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
-                    .text_size(crate::typography::ui_rems(11.0))
+                    .gap(px(8.0))
+                    .text_size(crate::typography::ui_rems(12.0))
                     .text_color(theme.text_muted)
                     .child(
                         icon(icons::SPEEDOMETER)
-                            .size(px(12.0))
+                            .size(px(14.0))
                             .text_color(theme.text_muted),
                     )
-                    .child("Working now")
+                    .child(
+                        div()
+                            .text_size(crate::typography::ui_rems(13.0))
+                            .text_color(theme.text)
+                            .child("Working now"),
+                    )
                     .child(active_count.to_string())
                     .when(done_count > 0, |header| {
                         header.child(div().flex_1()).child(
@@ -258,16 +315,16 @@ impl Shell {
                     .min_h_0()
                     .overflow_y_scroll()
                     .px(px(4.0))
-                    .pb(px(4.0))
+                    .pb(px(8.0))
                     .children(rows)
                     .when(count == 0, |list| {
                         list.child(
                             div()
                                 .h(px(ROW_HEIGHT))
-                                .px(px(8.0))
+                                .px(px(10.0))
                                 .flex()
                                 .items_center()
-                                .text_size(crate::typography::ui_rems(12.0))
+                                .text_size(crate::typography::ui_rems(13.0))
                                 .text_color(theme.text_muted)
                                 .child(empty_text),
                         )
@@ -282,6 +339,7 @@ impl Shell {
             .absolute()
             .inset_0()
             .child(BelowComposer {
+                summary: Some(summary),
                 child: Some(panel.into_any_element()),
                 secondary: Some((
                     div()
@@ -402,11 +460,11 @@ impl Shell {
                 .flex_none()
                 .min_w_0()
                 .max_w(px((width * 0.44).max(0.0)))
-                .text_size(crate::typography::ui_rems(11.0))
+                .text_size(crate::typography::ui_rems(12.0))
                 .text_color(theme.text_muted)
                 .child(
                     icon(path)
-                        .size(px(12.0))
+                        .size(px(13.0))
                         .flex_none()
                         .text_color(tint.unwrap_or(theme.text_muted)),
                 )
@@ -427,15 +485,15 @@ impl Shell {
             })
             .h(px(ROW_HEIGHT))
             .w_full()
-            .px(px(7.0))
+            .px(px(10.0))
             .py(px(4.0))
-            .rounded(px(4.0))
+            .rounded(px(8.0))
             .border_1()
             .border_color(gpui::transparent_black())
             .flex()
             .flex_col()
             .justify_center()
-            .gap(px(3.0))
+            .gap(px(4.0))
             .cursor_pointer()
             .hover(|row| row.bg(theme.element_hover))
             .focus_visible(|row| row.border_color(theme.accent))
@@ -465,7 +523,7 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_size(crate::typography::ui_rems(14.0))
                             .text_color(theme.text)
                             .child(title.to_owned()),
                     )
@@ -473,7 +531,7 @@ impl Shell {
                     .child(
                         div()
                             .flex_none()
-                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_size(crate::typography::ui_rems(12.0))
                             .text_color(color)
                             .child(status),
                     ),
@@ -490,7 +548,7 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(crate::typography::ui_rems(11.0))
+                            .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
                             .child(project),
                     )
@@ -546,6 +604,8 @@ fn panel_bounds(
 /// motion and multiline height. Center panels below the input, allowing a
 /// wider row within the main column; stacked panels scroll in the space left.
 struct BelowComposer {
+    /// A one-line summary centered above the panels; hidden with them.
+    summary: Option<AnyElement>,
     child: Option<AnyElement>,
     secondary: Option<(AnyElement, f32)>,
     desired_height: f32,
@@ -565,7 +625,7 @@ impl IntoElement for BelowComposer {
 
 impl Element for BelowComposer {
     type RequestLayoutState = ();
-    type PrepaintState = Option<AnyElement>;
+    type PrepaintState = Vec<AnyElement>;
     fn id(&self) -> Option<gpui::ElementId> {
         None
     }
@@ -595,17 +655,41 @@ impl Element for BelowComposer {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) -> Option<AnyElement> {
-        let bounds = panel_bounds(
-            composer,
+    ) -> Vec<AnyElement> {
+        // The summary takes the top of the area, so panels lay out below it.
+        let reserve = if self.summary.is_some() {
+            SUMMARY_HEIGHT + SUMMARY_GAP
+        } else {
+            0.0
+        };
+        let anchor = Bounds::new(
+            composer.origin,
+            size(composer.size.width, composer.size.height + px(reserve)),
+        );
+        let Some(bounds) = panel_bounds(
+            anchor,
             self.surface.get(),
             self.available_width,
             self.viewport_height,
             self.bottom_clearance + self.terminal.get().height,
             self.desired_height,
             self.secondary.as_ref().map(|(_, height)| *height),
-        )?;
-        let primary = self.child.take()?;
+        ) else {
+            return Vec::new();
+        };
+        let Some(primary) = self.child.take() else {
+            return Vec::new();
+        };
+        let mut painted = Vec::new();
+        if let Some(mut summary) = self.summary.take() {
+            summary.prepaint_as_root(
+                point(bounds.origin.x, composer.bottom() + px(PANEL_GAP)),
+                size(bounds.size.width, px(SUMMARY_HEIGHT)).map(AvailableSpace::Definite),
+                window,
+                cx,
+            );
+            painted.push(summary);
+        }
         let mut child = match self.secondary.take() {
             Some((secondary, height)) => {
                 let wide = f32::from(bounds.size.width) >= TWO_PANEL_MIN_WIDTH;
@@ -650,7 +734,8 @@ impl Element for BelowComposer {
             window,
             cx,
         );
-        Some(child)
+        painted.push(child);
+        painted
     }
     fn paint(
         &mut self,
@@ -658,11 +743,11 @@ impl Element for BelowComposer {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut (),
-        child: &mut Option<AnyElement>,
+        children: &mut Vec<AnyElement>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Some(child) = child {
+        for child in children {
             child.paint(window, cx);
         }
     }
@@ -1259,6 +1344,7 @@ mod tests {
                     ),
                 )
                 .child(div().absolute().inset_0().child(BelowComposer {
+                    summary: None,
                     child: Some(panel.into_any_element()),
                     secondary: None,
                     desired_height: HEADER_HEIGHT + 8.0 + ROW_HEIGHT * 2.0,

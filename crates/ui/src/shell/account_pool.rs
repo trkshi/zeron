@@ -15,20 +15,82 @@ use zeron_rpc::methods;
 
 use crate::icons::{self, icon};
 use crate::motion::{self, DisclosureMotion};
-use crate::settings::accounts::{AccountsSnapshotCache, format_reset, render_usage_meter};
+use crate::settings::accounts::{
+    AccountsSnapshotCache, format_reset, render_usage_meter, usage_color, usage_level,
+};
 use crate::settings::widgets::text_tooltip;
 use crate::state::AppState;
 use crate::theme::Theme;
 
 const PROVIDERS: [(HarnessId, &str); 2] = [
     (HarnessId::Codex, "Codex"),
-    (HarnessId::ClaudeCode, "Claude"),
+    (HarnessId::ClaudeCode, "Claude Code"),
 ];
 const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const FORCE_MIN_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_USAGE_AGE_MS: i64 = 5 * 60 * 1_000;
-const HEADER_HEIGHT: f32 = 30.0;
-const PROVIDER_HEIGHT: f32 = 44.0;
+const HEADER_HEIGHT: f32 = 40.0;
+const PROVIDER_HEIGHT: f32 = 72.0;
+const ACCOUNT_LINE_HEIGHT: f32 = 18.0;
+const METER_HEIGHT: f32 = 16.0;
+
+/// The two quota windows a provider row pools, by the labels each provider
+/// reports for them.
+const POOL_WINDOWS: [(&str, &[&str]); 2] = [
+    ("5h", &["5h", "Session"]),
+    ("Weekly", &["7d", "Week", "Weekly"]),
+];
+
+/// One quota window across a provider's accounts: each account's used
+/// fraction (`None` when it has no current reading) and the soonest reset.
+struct PooledWindow {
+    label: &'static str,
+    used: Vec<Option<f32>>,
+    resets_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl PooledWindow {
+    /// Mean used fraction over the accounts that reported one.
+    fn average(&self) -> Option<f32> {
+        let readings: Vec<f32> = self.used.iter().flatten().copied().collect();
+        (!readings.is_empty()).then(|| readings.iter().sum::<f32>() / readings.len() as f32)
+    }
+}
+
+fn pooled_windows(
+    accounts: &[&AgentAccount],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<PooledWindow> {
+    POOL_WINDOWS
+        .iter()
+        .filter_map(|(label, names)| {
+            let readings: Vec<_> = accounts
+                .iter()
+                .map(|account| {
+                    account.usage_windows.iter().find(|window| {
+                        names.contains(&window.label.as_str())
+                            && window.used_fraction.is_finite()
+                            && window.used_fraction >= 0.0
+                            // A passed reset means the reading is from the old window.
+                            && window.resets_at.is_none_or(|reset| reset > now)
+                    })
+                })
+                .collect();
+            readings.iter().any(Option::is_some).then(|| PooledWindow {
+                label,
+                used: readings
+                    .iter()
+                    .map(|window| window.map(|window| window.used_fraction.min(1.0)))
+                    .collect(),
+                resets_at: readings
+                    .iter()
+                    .flatten()
+                    .filter_map(|window| window.resets_at)
+                    .min(),
+            })
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuotaStatus {
@@ -121,7 +183,75 @@ fn account_detail_height(account: &AgentAccount) -> f32 {
         .filter(|window| quota_window(window))
         .take(2)
         .count();
-    30.0 + 16.0 * meters.max(1) as f32
+    12.0 + ACCOUNT_LINE_HEIGHT + METER_HEIGHT * meters.max(1) as f32
+}
+
+/// A pooled window as a labelled meter: the window, its soonest reset, the
+/// mean usage, and one equal-width segment per account filled to its usage.
+fn pooled_meter(
+    window: &PooledWindow,
+    now: chrono::DateTime<chrono::Utc>,
+    theme: &Theme,
+) -> AnyElement {
+    let average = window.average().unwrap_or(0.0);
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(
+            div()
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .text_size(crate::typography::ui_rems(11.5))
+                .text_color(theme.text_muted)
+                .child(div().flex_none().child(window.label))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(theme.text_faint)
+                        .children(window.resets_at.map(|at| {
+                            format!("↻ {}", crate::usage_dashboard::resets_in(at, now))
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(usage_color(usage_level(average), theme))
+                        .child(format!("{}%", (average * 100.0).round())),
+                ),
+        )
+        .child(
+            div()
+                .h(px(4.0))
+                .flex()
+                .gap(px(2.0))
+                .children(window.used.iter().map(|used| {
+                    let fraction = used.unwrap_or(0.0);
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .rounded_full()
+                        .overflow_hidden()
+                        .bg(theme.wash(0.08))
+                        .when(fraction > 0.0, |track| {
+                            track.child(
+                                div()
+                                    .h_full()
+                                    // Keep tiny non-zero usage visible.
+                                    .w(gpui::relative(fraction.max(0.015)))
+                                    .rounded_full()
+                                    .bg(usage_color(usage_level(fraction), theme)),
+                            )
+                        })
+                })),
+        )
+        .into_any_element()
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -303,6 +433,33 @@ impl AccountPool {
         HEADER_HEIGHT + 8.0 + PROVIDER_HEIGHT * 2.0 + detail_height + note
     }
 
+    /// Home's summary line: each provider's headroom in its tightest pooled
+    /// window, e.g. `Codex 66% left`. Providers without readings are left out.
+    pub(super) fn headroom(&self, cx: &gpui::App) -> Vec<String> {
+        let Some(snapshot) = self.snapshot(cx) else {
+            return Vec::new();
+        };
+        let now = chrono::Utc::now();
+        PROVIDERS
+            .iter()
+            .filter_map(|(harness, name)| {
+                let accounts: Vec<_> = snapshot
+                    .accounts
+                    .iter()
+                    .filter(|account| account.harness == *harness)
+                    .collect();
+                let used = pooled_windows(&accounts, now)
+                    .iter()
+                    .filter_map(PooledWindow::average)
+                    .reduce(f32::max)?;
+                Some(format!(
+                    "{name} {}% left",
+                    ((1.0 - used) * 100.0).round().max(0.0)
+                ))
+            })
+            .collect()
+    }
+
     // The card and its clipped rows share one timeline, including reversals.
     fn reveal(&self, index: usize, cx: &gpui::App) -> f32 {
         let target = if self.expanded[index] { 1.0 } else { 0.0 };
@@ -458,19 +615,23 @@ impl AccountPool {
         } else {
             format!("{}/{} available", summary.available, summary.total)
         };
-        let active = accounts
+        let active_name = accounts
             .iter()
             .find(|account| account.active)
-            .map(|account| format!("Active: {}", account_name(account)))
+            .map(|account| account_name(account).to_owned());
+        let active = active_name
+            .as_deref()
+            .map(|name| format!("Active: {name}"))
             .unwrap_or_else(|| "No active account".into());
-        let auto_switch = match self.auto_switch {
-            Some(prefs) if prefs.enabled(harness) => "Auto-switch on",
-            Some(_) => "Auto-switch off",
+        let auto_switch_on = self.auto_switch.map(|prefs| prefs.enabled(harness));
+        let auto_switch = match auto_switch_on {
+            Some(true) => "Auto-switch on",
+            Some(false) => "Auto-switch off",
             None => "Auto-switch unknown",
         };
         let mut tooltip = format!(
-            "{name} on {}\n{active}\n{} available, {} at a limit, {} unknown or stale\n{auto_switch}\nAvailability is the last reported session/weekly quota, not a guarantee of sign-in health.",
-            self.device_name, summary.available, summary.limited, summary.unknown
+            "{active}\n{} available, {} at a limit, {} unknown or stale\n{auto_switch}",
+            summary.available, summary.limited, summary.unknown
         );
         if let Some(snapshot) = snapshot {
             for warning in snapshot
@@ -482,16 +643,38 @@ impl AccountPool {
             }
         }
         let (brand_icon, tint) = crate::pickers::harness_brand_icon(harness);
+        let windows = pooled_windows(&accounts, now);
+        let meters: Vec<AnyElement> = if windows.is_empty() {
+            vec![
+                div()
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .text_size(crate::typography::ui_rems(11.5))
+                    .text_color(theme.text_muted)
+                    .child(if summary.total == 0 {
+                        "Sign in from Settings → Accounts"
+                    } else {
+                        "Usage unavailable"
+                    })
+                    .into_any_element(),
+            ]
+        } else {
+            windows
+                .iter()
+                .map(|window| pooled_meter(window, now, theme))
+                .collect()
+        };
         let button = div()
             .id(("account-pool-provider", index))
             .h(px(PROVIDER_HEIGHT))
             .flex_none()
-            .px(px(8.0))
+            .px(px(10.0))
             .flex()
             .flex_col()
             .justify_center()
-            .gap(px(2.0))
-            .rounded(px(4.0))
+            .gap(px(8.0))
+            .rounded(px(8.0))
             .cursor_pointer()
             .hover(|row| row.bg(theme.element_hover))
             .border_1()
@@ -521,26 +704,44 @@ impl AccountPool {
             }))
             .child(
                 div()
+                    .h(px(20.0))
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
+                    .gap(px(8.0))
                     .min_w_0()
                     .child(
                         icon(brand_icon)
-                            .size(px(12.0))
+                            .size(px(14.0))
                             .text_color(tint.unwrap_or(theme.text_muted)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(crate::typography::ui_rems(13.0))
+                            .text_color(theme.text)
+                            .child(name),
                     )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_color(theme.text)
-                            .child(name),
+                            .text_size(crate::typography::ui_rems(12.0))
+                            .text_color(theme.text_muted)
+                            .children(active_name),
                     )
+                    // Auto-switch rides as a glyph; its state is in the tooltip.
+                    .when(auto_switch_on == Some(true), |row| {
+                        row.child(
+                            icon(icons::SORT_VERTICAL)
+                                .size(px(12.0))
+                                .text_color(theme.accent),
+                        )
+                    })
                     .child(
                         div()
                             .flex_none()
+                            .text_size(crate::typography::ui_rems(12.0))
                             .text_color(if summary.limited > 0 {
                                 theme.warning
                             } else {
@@ -559,15 +760,10 @@ impl AccountPool {
             )
             .child(
                 div()
-                    .pl(px(18.0))
                     .flex()
-                    .items_center()
-                    .gap(px(6.0))
+                    .gap(px(16.0))
                     .min_w_0()
-                    .text_size(crate::typography::ui_rems(10.5))
-                    .text_color(theme.text_muted)
-                    .child(div().flex_1().min_w_0().truncate().child(active))
-                    .child(div().flex_none().child(auto_switch)),
+                    .children(meters),
             );
         div()
             .flex_none()
@@ -662,16 +858,18 @@ impl AccountPool {
                 account.id
             )))
             .flex_none()
-            .px(px(8.0))
+            .h(px(account_detail_height(account)))
+            .px(px(10.0))
             .py(px(6.0))
-            .ml(px(18.0))
+            .ml(px(22.0))
             .flex()
             .flex_col()
-            .gap(px(2.0))
             .min_w_0()
+            .overflow_hidden()
             .tooltip(text_tooltip(tooltip.join("\n")))
             .child(
                 div()
+                    .h(px(ACCOUNT_LINE_HEIGHT))
                     .flex()
                     .items_center()
                     .gap(px(6.0))
@@ -681,6 +879,7 @@ impl AccountPool {
                             .flex_1()
                             .min_w_0()
                             .truncate()
+                            .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text)
                             .child(account_name(account).to_owned()),
                     )
@@ -705,7 +904,7 @@ impl AccountPool {
                     .when(!has_meters, |row| {
                         row.child(
                             div()
-                                .h(px(16.0))
+                                .h(px(METER_HEIGHT))
                                 .text_color(theme.text_muted)
                                 .child("Usage unavailable"),
                         )
@@ -745,39 +944,58 @@ impl Render for AccountPool {
             .size_full()
             .flex()
             .flex_col()
-            .rounded(px(8.0))
+            .rounded(px(super::working_now::PANEL_RADIUS))
             .border_1()
             .border_color(theme.border)
             .bg(super::working_now::panel_background(&theme))
             .overflow_hidden()
-            .text_size(crate::typography::ui_rems(11.0))
+            .text_size(crate::typography::ui_rems(12.0))
             .text_color(theme.text_muted)
             .child(
                 div()
                     .h(px(HEADER_HEIGHT))
                     .flex_none()
-                    .px(px(12.0))
+                    .pl(px(14.0))
+                    .pr(px(8.0))
                     .flex()
                     .items_center()
-                    .gap(px(6.0))
+                    .gap(px(8.0))
                     .child(
                         icon(icons::KEY_MINIMALISTIC)
-                            .size(px(12.0))
+                            .size(px(14.0))
                             .text_color(theme.text_muted),
                     )
-                    .child("Account pool")
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_right()
-                            .child(self.device_name.clone()),
+                            .text_size(crate::typography::ui_rems(13.0))
+                            .text_color(theme.text)
+                            .child("Account pool"),
+                    )
+                    .child(
+                        div()
+                            .h(px(24.0))
+                            .min_w_0()
+                            .px(px(8.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .child(
+                                icon(icons::LAPTOP)
+                                    .size(px(12.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(div().min_w_0().truncate().child(self.device_name.clone())),
                     )
                     .child(
                         div()
                             .id("account-pool-refresh")
-                            .size(px(22.0))
+                            .size(px(24.0))
                             .flex_none()
                             .flex()
                             .items_center()
@@ -830,7 +1048,7 @@ impl Render for AccountPool {
                     .min_h_0()
                     .overflow_y_scroll()
                     .px(px(4.0))
-                    .pb(px(4.0))
+                    .pb(px(8.0))
                     .children(
                         (0..PROVIDERS.len())
                             .map(|index| self.provider_row(index, snapshot.as_ref(), &theme, cx)),
@@ -839,7 +1057,7 @@ impl Render for AccountPool {
                         div()
                             .id("account-pool-status-note")
                             .h(px(28.0))
-                            .px(px(8.0))
+                            .px(px(10.0))
                             .flex()
                             .items_center()
                             .text_color(theme.warning)
