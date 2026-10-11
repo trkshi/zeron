@@ -220,6 +220,8 @@ pub mod methods {
     pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
     pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";
     pub const FORGET_AGENT_ACCOUNT: &str = "ForgetAgentAccount";
+    /// Redeem one banked rate-limit reset credit on a saved Codex login.
+    pub const CONSUME_AGENT_RESET_CREDIT: &str = "ConsumeAgentResetCredit";
     pub const START_AGENT_LOGIN: &str = "StartAgentLogin";
     pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
     pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";

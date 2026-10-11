@@ -1149,6 +1149,40 @@ pub struct AgentAccount {
     /// most one of them is in use. `None` for single-login agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Banked rate-limit reset credits (Codex). `None` when the provider has
+    /// no such credits or the last usage probe did not report them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<AgentResetCredits>,
+}
+
+/// Credits that clear an account's current rate-limit windows when redeemed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentResetCredits {
+    pub available: u32,
+    /// Soonest expiry among the available credits, when the provider says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_expires_at: Option<DateTime<Utc>>,
+}
+
+/// What redeeming a reset credit did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentResetOutcome {
+    /// The windows cleared.
+    Reset,
+    /// No window was in use, so nothing was spent.
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+
+/// Reply to a reset-credit redemption: the outcome plus the refreshed accounts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentResetCreditReply {
+    pub outcome: AgentResetOutcome,
+    pub snapshot: AgentAccountsSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

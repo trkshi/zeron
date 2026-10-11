@@ -88,7 +88,8 @@ use sha2::{Digest, Sha256};
 
 use zeron_proto::{
     AgentAccount, AgentAccountWarning, AgentAccountsSnapshot, AgentAuthKind, AgentLoginMode,
-    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, AgentUsageWindow, HarnessId,
+    AgentLoginPoll, AgentLoginStart, AgentLoginStatus, AgentResetCreditReply, AgentResetCredits,
+    AgentResetOutcome, AgentUsageWindow, HarnessId,
 };
 
 use crate::repos::home_dir;
@@ -482,6 +483,9 @@ struct UsageSnapshot {
     windows: Vec<AgentUsageWindow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plan_label: Option<String>,
+    /// Codex's banked rate-limit reset credits, read with the windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reset_credits: Option<AgentResetCredits>,
 }
 
 /// Why a usage probe produced no windows. Drives the backoff and the reason
@@ -1054,6 +1058,7 @@ impl AgentAccounts {
                     switchable: harness != HarnessId::Hermes,
                     saved_at: (harness != HarnessId::Hermes).then_some(slot.saved_at),
                     provider: provider_group(harness, slot.store_key.as_deref()),
+                    reset_credits: snapshot.and_then(|usage| usage.reset_credits.clone()),
                 });
             }
             // A live login whose credentials we couldn't read has no slot — still
@@ -1077,6 +1082,7 @@ impl AgentAccounts {
                     switchable: false,
                     saved_at: None,
                     provider: provider_group(harness, u.store_key.as_deref()),
+                    reset_credits: None,
                 });
             }
         }
@@ -1362,6 +1368,74 @@ impl AgentAccounts {
             }
         }
         Ok(())
+    }
+
+    // ── reset credits ───────────────────────────────────────────────────────
+
+    /// Redeems one of a Codex account's banked reset credits, clearing its
+    /// current rate-limit windows, then re-probes that account so the returned
+    /// snapshot shows the result. Never retried: a redemption spends a credit,
+    /// and its request id only dedupes the single attempt.
+    pub async fn consume_reset_credit(
+        &self,
+        harness: HarnessId,
+        account_id: &str,
+    ) -> Result<AgentResetCreditReply, EngineError> {
+        if harness != HarnessId::Codex {
+            return Err(EngineError::Other(
+                "Only Codex accounts have reset credits.".into(),
+            ));
+        }
+        let _ops = self.inner.ops.lock().await;
+        let slot = self
+            .read_slots(harness)
+            .into_iter()
+            .find(|slot| slot.id == account_id)
+            .ok_or_else(|| {
+                EngineError::Other(
+                    "That saved login no longer exists — refresh and try again.".into(),
+                )
+            })?;
+        let (access_token, chatgpt_account) = codex_session(&slot).map_err(reset_credit_error)?;
+        let body = probe_json(
+            "codex",
+            "reset-consume",
+            self.inner
+                .http
+                .post(format!(
+                    "{}/consume",
+                    codex_reset_credits_url(&self.inner.endpoints.codex_usage)
+                ))
+                .bearer_auth(&access_token)
+                .header("chatgpt-account-id", &chatgpt_account)
+                .json(&serde_json::json!({
+                    "redeem_request_id": uuid::Uuid::new_v4().to_string(),
+                })),
+        )
+        .await
+        .map_err(reset_credit_error)?;
+        let outcome = match body.get("code").and_then(serde_json::Value::as_str) {
+            Some("reset") => AgentResetOutcome::Reset,
+            Some("nothing_to_reset") => AgentResetOutcome::NothingToReset,
+            Some("no_credit") => AgentResetOutcome::NoCredit,
+            Some("already_redeemed") => AgentResetOutcome::AlreadyRedeemed,
+            _ => {
+                return Err(EngineError::Other(
+                    "Codex answered the reset in a way zeron doesn't recognise. Refresh to \
+                     check whether it applied."
+                        .into(),
+                ));
+            }
+        };
+        // Probe this account now, past any freshness window: its windows and
+        // credit count just changed.
+        let result = self.probe_usage(harness, &slot, false).await;
+        lock(&self.inner.usage)
+            .entry(usage_key(harness, &slot.account_key))
+            .or_default()
+            .record(result, credentials_fingerprint(&slot.credentials), now_ms());
+        let snapshot = self.list_locked(false).await?;
+        Ok(AgentResetCreditReply { outcome, snapshot })
     }
 
     // ── forget ──────────────────────────────────────────────────────────────
@@ -2785,19 +2859,7 @@ impl AgentAccounts {
     }
 
     async fn codex_usage(&self, slot: &Slot) -> Result<UsageSnapshot, ProbeError> {
-        // api-key mode has no ChatGPT rate windows.
-        let Some(tokens) = slot.credentials.get("tokens") else {
-            return Err(ProbeError::NoCredentials {
-                why: if str_field(&slot.credentials, "OPENAI_API_KEY").is_some() {
-                    NoCredentials::ApiKey
-                } else {
-                    NoCredentials::Missing
-                },
-            });
-        };
-        let access_token = str_field(tokens, "access_token").ok_or(ProbeError::NoCredentials {
-            why: NoCredentials::Missing,
-        })?;
+        let (access_token, account_id) = codex_session(slot)?;
         let body = probe_json(
             "codex",
             "usage",
@@ -2805,13 +2867,31 @@ impl AgentAccounts {
                 .http
                 .get(&self.inner.endpoints.codex_usage)
                 .bearer_auth(&access_token)
-                .header(
-                    "chatgpt-account-id",
-                    str_field(tokens, "account_id").unwrap_or_default(),
-                ),
+                .header("chatgpt-account-id", &account_id),
         )
         .await?;
-        codex_usage_snapshot(&body).ok_or_else(|| schema_error("codex", &body))
+        let mut snapshot =
+            codex_usage_snapshot(&body).ok_or_else(|| schema_error("codex", &body))?;
+        // The usage payload carries only the credit count; the expiry needs the
+        // credit list. Best effort: a failed lookup never costs the windows.
+        if let Some(credits) = snapshot
+            .reset_credits
+            .as_mut()
+            .filter(|credits| credits.available > 0)
+            && let Ok(list) = probe_json(
+                "codex",
+                "reset-credits",
+                self.inner
+                    .http
+                    .get(codex_reset_credits_url(&self.inner.endpoints.codex_usage))
+                    .bearer_auth(&access_token)
+                    .header("chatgpt-account-id", &account_id),
+            )
+            .await
+        {
+            credits.next_expires_at = codex_next_credit_expiry(&list);
+        }
+        Ok(snapshot)
     }
 
     async fn cursor_usage(&self, slot: &Slot) -> Result<UsageSnapshot, ProbeError> {
@@ -2857,6 +2937,7 @@ impl AgentAccounts {
             .map(|window| UsageSnapshot {
                 windows: vec![window],
                 plan_label: None,
+                reset_credits: None,
             })
             .ok_or_else(|| schema_error("cursor", &body))
     }
@@ -3090,6 +3171,7 @@ impl AntigravityLogin {
             switchable: false,
             saved_at: None,
             provider: None,
+            reset_credits: None,
         }
     }
 }
@@ -3684,10 +3766,82 @@ fn codex_usage_snapshot(body: &serde_json::Value) -> Option<UsageSnapshot> {
     // so a plan change shows up on the next forced refresh without a
     // re-login.
     let plan_label = codex_plan(str_field(body, "plan_type").as_deref());
+    let reset_credits = body
+        .pointer("/rate_limit_reset_credits/available_count")
+        .and_then(serde_json::Value::as_i64)
+        .map(|count| AgentResetCredits {
+            available: count.clamp(0, i64::from(u32::MAX)) as u32,
+            next_expires_at: None,
+        });
     Some(UsageSnapshot {
         windows,
         plan_label,
+        reset_credits,
     })
+}
+
+/// The ChatGPT session a Codex slot probes with: access token and account id.
+/// API-key logins have no ChatGPT rate windows (or reset credits).
+fn codex_session(slot: &Slot) -> Result<(String, String), ProbeError> {
+    let Some(tokens) = slot.credentials.get("tokens") else {
+        return Err(ProbeError::NoCredentials {
+            why: if str_field(&slot.credentials, "OPENAI_API_KEY").is_some() {
+                NoCredentials::ApiKey
+            } else {
+                NoCredentials::Missing
+            },
+        });
+    };
+    let access_token = str_field(tokens, "access_token").ok_or(ProbeError::NoCredentials {
+        why: NoCredentials::Missing,
+    })?;
+    Ok((
+        access_token,
+        str_field(tokens, "account_id").unwrap_or_default(),
+    ))
+}
+
+/// Codex's reset-credit endpoints sit beside its usage endpoint
+/// (`…/wham/usage` → `…/wham/rate-limit-reset-credits`).
+fn codex_reset_credits_url(usage_url: &str) -> String {
+    let base = usage_url.strip_suffix("/usage").unwrap_or(usage_url);
+    format!("{base}/rate-limit-reset-credits")
+}
+
+/// Soonest expiry among the credits still available to redeem.
+fn codex_next_credit_expiry(body: &serde_json::Value) -> Option<DateTime<Utc>> {
+    body.get("credits")?
+        .as_array()?
+        .iter()
+        .filter(|credit| {
+            credit.get("status").and_then(serde_json::Value::as_str) == Some("available")
+        })
+        .filter_map(|credit| parse_when(credit.get("expires_at")))
+        .min()
+}
+
+/// What a failed redemption tells the user. A request that never got an
+/// answer may still have spent the credit, so it says to check rather than
+/// to retry.
+fn reset_credit_error(error: ProbeError) -> EngineError {
+    EngineError::Other(
+        match error {
+            ProbeError::NoCredentials { .. } => {
+                "This Codex login has no ChatGPT session, so it has no reset credits."
+            }
+            ProbeError::Unauthorized { .. } => {
+                "Codex rejected this login. Sign in again to use its reset credit."
+            }
+            ProbeError::RateLimited { .. } => {
+                "Codex is limiting requests right now. Try the reset again in a minute."
+            }
+            ProbeError::Network { .. } => {
+                "Couldn't confirm the reset with Codex. Refresh to check whether it applied."
+            }
+            _ => "Codex could not redeem the reset credit. Refresh to check.",
+        }
+        .into(),
+    )
 }
 
 /// Windows from Claude's `/api/oauth/usage`: the 5-hour session and weekly
@@ -3708,6 +3862,7 @@ fn claude_usage_windows(body: &serde_json::Value) -> Option<UsageSnapshot> {
     (!windows.is_empty()).then_some(UsageSnapshot {
         windows,
         plan_label: None,
+        reset_credits: None,
     })
 }
 
@@ -4628,6 +4783,7 @@ mod probe_tests {
                 resets_at: None,
             }],
             plan_label: None,
+            reset_credits: None,
         }
     }
 

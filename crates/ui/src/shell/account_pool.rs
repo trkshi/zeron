@@ -883,6 +883,7 @@ mod tests {
             switchable: true,
             saved_at: None,
             provider: None,
+            reset_credits: None,
         }
     }
 

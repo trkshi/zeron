@@ -1424,6 +1424,8 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         // Allow the adapter discovery budget plus relay and shutdown overhead.
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
         methods::READ_USAGE_HISTORY => Duration::from_secs(120),
+        // The redemption, then a fresh usage probe of the account.
+        methods::CONSUME_AGENT_RESET_CREDIT => Duration::from_secs(60),
         _ => Duration::from_secs(30),
     }
 }
@@ -1527,6 +1529,7 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_AGENT_ACCOUNTS
             | methods::ACTIVATE_AGENT_ACCOUNT
             | methods::FORGET_AGENT_ACCOUNT
+            | methods::CONSUME_AGENT_RESET_CREDIT
             | methods::START_AGENT_LOGIN
             | methods::COMPLETE_AGENT_LOGIN
             | methods::POLL_AGENT_LOGIN
@@ -3677,6 +3680,15 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&snapshot)
+            }
+            methods::CONSUME_AGENT_RESET_CREDIT => {
+                let p: AgentAccountParams = parse_params(params)?;
+                let reply = self
+                    .agent_accounts
+                    .consume_reset_credit(p.harness, &p.account_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&reply)
             }
             methods::START_AGENT_LOGIN => {
                 let p: StartAgentLoginParams = parse_params(params)?;

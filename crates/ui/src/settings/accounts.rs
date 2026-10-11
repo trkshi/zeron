@@ -2395,6 +2395,7 @@ mod tests {
             switchable: true,
             saved_at: None,
             provider: provider.map(str::to_string),
+            reset_credits: None,
         };
         let mut snapshot = AgentAccountsSnapshot {
             accounts: vec![
@@ -2466,6 +2467,7 @@ mod tests {
             switchable: true,
             saved_at: None,
             provider: None,
+            reset_credits: None,
         }
     }
 
@@ -2669,6 +2671,7 @@ mod tests {
             switchable,
             saved_at: None,
             provider: Some("openai".into()),
+            reset_credits: None,
         };
         window
             .update(cx, |page, _, cx| {
@@ -2759,6 +2762,7 @@ mod tests {
             switchable: true,
             saved_at: None,
             provider: None,
+            reset_credits: None,
         };
         let snapshot = AgentAccountsSnapshot {
             accounts: vec![

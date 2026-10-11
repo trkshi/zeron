@@ -199,6 +199,7 @@ async fn scoped_usage_refresh_preserves_other_accounts_and_full_refresh_behavior
                     resets_at: None,
                 }],
                 plan_label: None,
+                reset_credits: None,
             }),
             credentials_fingerprint(&slot.credentials),
             stale_at,
@@ -2010,5 +2011,115 @@ async fn a_failed_sign_ins_output_is_redacted_before_the_ui_sees_it() {
     assert_eq!(
         message,
         "failed at https://auth.x.ai/device?… with code [code] token=[redacted]"
+    );
+}
+
+#[tokio::test]
+async fn codex_reset_credits_are_listed_and_redeemed_once() {
+    let root = tempfile::tempdir().unwrap();
+    let redeemed = Arc::new(AtomicUsize::new(0));
+    let server_redeemed = redeemed.clone();
+    let server = MockServer::start(move |method, path, body| match (method, path) {
+        ("GET", "/backend-api/wham/usage") => {
+            // Exhausted until the credit is spent, then cleared.
+            let fresh = server_redeemed.load(Ordering::SeqCst) > 0;
+            (
+                200,
+                serde_json::json!({
+                    "plan_type": "pro",
+                    "rate_limit": { "primary_window": {
+                        "used_percent": if fresh { 0.0 } else { 100.0 },
+                        "reset_at": 1_800_000_000,
+                        "limit_window_seconds": 18_000
+                    }},
+                    "rate_limit_reset_credits": {
+                        "available_count": if fresh { 1 } else { 2 }
+                    }
+                })
+                .to_string(),
+            )
+        }
+        ("GET", "/backend-api/wham/rate-limit-reset-credits") => (
+            200,
+            serde_json::json!({
+                "available_count": 2,
+                "credits": [
+                    { "id": "a", "status": "available", "expires_at": "2030-02-01T00:00:00Z" },
+                    { "id": "b", "status": "available", "expires_at": "2030-01-01T00:00:00Z" },
+                    { "id": "c", "status": "redeemed", "expires_at": "2029-01-01T00:00:00Z" }
+                ]
+            })
+            .to_string(),
+        ),
+        ("POST", "/backend-api/wham/rate-limit-reset-credits/consume") => {
+            let request: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert!(
+                request["redeem_request_id"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty())
+            );
+            server_redeemed.fetch_add(1, Ordering::SeqCst);
+            (
+                200,
+                serde_json::json!({ "code": "reset", "windows_reset": 1 }).to_string(),
+            )
+        }
+        other => panic!("unexpected request {other:?}"),
+    })
+    .await;
+    let (accounts, _) = accounts_with(root.path(), mocked(&server.base));
+    accounts
+        .write_slot(&Slot {
+            id: "00000000000000aa".into(),
+            harness: HarnessId::Codex,
+            account_key: "acct".into(),
+            profile: SlotProfile {
+                email: "codex@example.invalid".into(),
+                display_name: None,
+                organization: None,
+                plan: None,
+                auth_kind: AgentAuthKind::Oauth,
+            },
+            credentials: serde_json::json!({
+                "tokens": { "access_token": "token", "account_id": "acct" }
+            }),
+            claude_config: None,
+            saved_at: 0,
+            created_at: None,
+            store_key: None,
+        })
+        .unwrap();
+
+    let snapshot = accounts.list_with_usage_scope(true, None).await.unwrap();
+    let row = rows(&snapshot, HarnessId::Codex).remove(0);
+    assert_eq!(
+        row.reset_credits,
+        Some(AgentResetCredits {
+            available: 2,
+            next_expires_at: Some("2030-01-01T00:00:00Z".parse().unwrap()),
+        })
+    );
+    assert_eq!(row.usage_windows[0].used_fraction, 1.0);
+
+    let reply = accounts
+        .consume_reset_credit(HarnessId::Codex, &row.id)
+        .await
+        .unwrap();
+    assert_eq!(reply.outcome, AgentResetOutcome::Reset);
+    assert_eq!(redeemed.load(Ordering::SeqCst), 1);
+    let row = rows(&reply.snapshot, HarnessId::Codex).remove(0);
+    assert_eq!(row.usage_windows[0].used_fraction, 0.0);
+    assert_eq!(row.reset_credits.map(|credits| credits.available), Some(1));
+
+    // Only Codex banks credits; nothing is sent for another provider.
+    assert!(
+        accounts
+            .consume_reset_credit(HarnessId::ClaudeCode, &row.id)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        server.hits("POST /backend-api/wham/rate-limit-reset-credits/consume"),
+        1
     );
 }
