@@ -51,7 +51,7 @@ Zeron release.
   Codex/Claude groups, active-account names, session/weekly usage bars, and
   read-only auto-switch status for the composer's selected device. Reset
   times and probe errors stay on hover. Share the existing accounts cache;
-  refresh at most every two minutes while Home is visible and the window is
+  refresh at most every five minutes while Home is visible and the window is
   active, with a manual refresh button and the engine's existing cooldown.
   Keep unknown, failed, expired, and offline readings out of available counts.
   Use `#141414` home panels in dark mode, retain light-theme surfaces, and
@@ -165,11 +165,12 @@ Zeron release.
   in Settings, or beneath an open overlay.
   Keep normal `Ctrl+Backspace` word deletion unchanged, and preserve existing
   custom shortcuts when upgrading.
-- Refresh account usage every minute while the window is active and every
-  five minutes in the background. Completed turns also trigger a refresh,
-  deferred when necessary to honor the 30-second cooldown. Automatic refreshes
-  probe only the current harness's active accounts; opening the account picker
-  still refreshes all saved accounts. Remote scoped polling requires the
+- Refresh account usage every five minutes in both active and background
+  windows, matching upstream's normal interval. Completed turns also trigger
+  a refresh, deferred when necessary to honor the 30-second cooldown.
+  Automatic refreshes probe only the current harness's active accounts;
+  opening the account picker still refreshes all saved accounts. Remote scoped
+  polling requires the
   patched Ubuntu engine; provider backoff and last-good usage caches remain.
 - Give each saved account a stable, unique UI row ID so different providers
   cannot consume each other's Switch clicks. Retargeting Accounts clears old

@@ -25,7 +25,7 @@ use crate::theme::Theme;
 
 /// The engine enforces the same per-account cooldown and provider backoff.
 const FORCE_MIN_INTERVAL: Duration = Duration::from_secs(30);
-const ACTIVE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 fn reset_countdown(
@@ -1128,10 +1128,10 @@ mod tests {
     }
 
     #[test]
-    fn polling_uses_foreground_and_background_intervals() {
+    fn polling_uses_five_minutes_in_foreground_and_background() {
         assert_eq!(
             refresh_delay(Some(Duration::ZERO), true, false),
-            Duration::from_secs(60)
+            Duration::from_secs(300)
         );
         assert_eq!(
             refresh_delay(Some(Duration::ZERO), false, false),
@@ -1139,7 +1139,7 @@ mod tests {
         );
         assert_eq!(
             refresh_delay(Some(Duration::from_secs(45)), true, false),
-            Duration::from_secs(15)
+            Duration::from_secs(255)
         );
         assert_eq!(
             refresh_delay(Some(Duration::from_secs(120)), false, false),
@@ -1147,6 +1147,10 @@ mod tests {
         );
         assert_eq!(
             refresh_delay(Some(Duration::from_secs(120)), true, false),
+            Duration::from_secs(180)
+        );
+        assert_eq!(
+            refresh_delay(Some(Duration::from_secs(300)), true, false),
             Duration::ZERO
         );
         assert_eq!(refresh_delay(None, true, false), Duration::ZERO);

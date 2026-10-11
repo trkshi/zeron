@@ -24,7 +24,7 @@ const PROVIDERS: [(HarnessId, &str); 2] = [
     (HarnessId::Codex, "Codex"),
     (HarnessId::ClaudeCode, "Claude"),
 ];
-const POLL_INTERVAL: Duration = Duration::from_secs(120);
+const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const FORCE_MIN_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_USAGE_AGE_MS: i64 = 5 * 60 * 1_000;
 const HEADER_HEIGHT: f32 = 30.0;
