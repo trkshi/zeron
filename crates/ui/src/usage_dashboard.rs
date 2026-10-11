@@ -1028,7 +1028,7 @@ impl UsageDashboard {
             share_bar(
                 "usage-token-type",
                 "Tokens by type",
-                token_segments(totals, theme),
+                token_segments(totals),
                 compact,
                 theme,
             )
@@ -2181,7 +2181,7 @@ impl UsageDashboard {
                 bars.extend(share_bar(
                     "usage-detail-token-type",
                     "Tokens by type",
-                    token_segments(totals, theme),
+                    token_segments(totals),
                     compact,
                     theme,
                 ));
@@ -2521,35 +2521,45 @@ struct Segment {
     color: Hsla,
 }
 
-/// A neutral step between background and foreground, so type mixes never
-/// borrow a provider's colour.
+/// A neutral step between background and foreground.
 fn ink(theme: &Theme, share: f32) -> Hsla {
     mix(theme.bg, theme.text, share)
 }
 
-fn token_segments(totals: &UsageHistoryTotals, theme: &Theme) -> Vec<Segment> {
+/// Token-type hues (blue, emerald, amber, pink), kept clear of the provider
+/// colours so a type mix never reads as a provider.
+const TYPE_INPUT: u32 = 0x60a5fa;
+const TYPE_CACHE_READ: u32 = 0x34d399;
+const TYPE_CACHE_WRITE: u32 = 0xfbbf24;
+const TYPE_OUTPUT: u32 = 0xf472b6;
+
+fn type_color(hex: u32) -> Hsla {
+    Hsla::from(gpui::rgb(hex))
+}
+
+fn token_segments(totals: &UsageHistoryTotals) -> Vec<Segment> {
     let usage = totals.usage;
     let tokens = |value: Option<u64>| value.unwrap_or(0) as f64;
     vec![
         Segment {
             label: "Input",
             value: tokens(totals.uncached_input_tokens),
-            color: ink(theme, 0.60),
+            color: type_color(TYPE_INPUT),
         },
         Segment {
             label: "Cache read",
             value: tokens(usage.cached_input_tokens),
-            color: ink(theme, 0.30),
+            color: type_color(TYPE_CACHE_READ),
         },
         Segment {
             label: "Cache write",
             value: tokens(usage.cache_write_input_tokens),
-            color: ink(theme, 0.72),
+            color: type_color(TYPE_CACHE_WRITE),
         },
         Segment {
             label: "Output",
             value: tokens(usage.output_tokens),
-            color: ink(theme, 1.0),
+            color: type_color(TYPE_OUTPUT),
         },
     ]
 }
@@ -2560,22 +2570,22 @@ fn cost_segments(totals: &UsageHistoryTotals, theme: &Theme) -> Vec<Segment> {
         Segment {
             label: "Input",
             value: input,
-            color: ink(theme, 0.60),
+            color: type_color(TYPE_INPUT),
         },
         Segment {
             label: "Cache read",
             value: cache_read,
-            color: ink(theme, 0.30),
+            color: type_color(TYPE_CACHE_READ),
         },
         Segment {
             label: "Cache write",
             value: cache_write,
-            color: ink(theme, 0.72),
+            color: type_color(TYPE_CACHE_WRITE),
         },
         Segment {
             label: "Output",
             value: output,
-            color: ink(theme, 1.0),
+            color: type_color(TYPE_OUTPUT),
         },
         // Below a cent the unsplit remainder is rounding, not usage.
         Segment {
@@ -2882,7 +2892,7 @@ fn window_span(label: &str) -> Option<chrono::Duration> {
 }
 
 /// `3d 4h`, `2h 15m`, or `12m` until `at`.
-fn resets_in(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+pub(crate) fn resets_in(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let minutes = (at - now).num_minutes().max(0);
     let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
     if days > 0 {
