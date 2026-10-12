@@ -111,6 +111,9 @@ const CLAUDE_SCOPES: &str = "org:create_api_key user:profile user:inference";
 const CLAUDE_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+/// The OAuth usage/profile endpoints answer a permanent 429 to any client whose
+/// User-Agent lacks the `claude-code/` prefix (the version is not checked).
+pub(crate) const CLAUDE_USER_AGENT: &str = "claude-code/2.1.296";
 // Claude Code 2.1.x's automatic (loopback) login: the claude.ai authorize
 // page, the token endpoint it exchanges at, the page it sends the browser to
 // once the code is redeemed, and the scopes it asks for.
@@ -2136,6 +2139,7 @@ impl AgentAccounts {
             .get(&self.inner.endpoints.claude_profile)
             .bearer_auth(&access_token)
             .header("anthropic-beta", "oauth-2025-04-20")
+            .header("User-Agent", CLAUDE_USER_AGENT)
             .send()
             .await
         {
@@ -2923,6 +2927,7 @@ impl AgentAccounts {
                 .get(&self.inner.endpoints.claude_usage)
                 .bearer_auth(access_token)
                 .header("anthropic-beta", "oauth-2025-04-20")
+                .header("User-Agent", CLAUDE_USER_AGENT)
                 .header("Content-Type", "application/json"),
         )
         .await?;

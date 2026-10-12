@@ -985,6 +985,7 @@ impl AgentAccounts {
             .get(&self.inner.endpoints.claude_profile)
             .bearer_auth(access_token)
             .header("anthropic-beta", "oauth-2025-04-20")
+            .header("User-Agent", super::CLAUDE_USER_AGENT)
             .send()
             .await
             .ok()
