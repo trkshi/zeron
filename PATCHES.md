@@ -3,10 +3,16 @@
 This public fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) keeps the
 app named Zeron. The `patched-windows` branch starts from upstream `v0.2.101`
 (`b42fc2b8fbf247dd92796c2917f277535cea91ac`) and incorporates upstream `main`
-through `344436ef` (version `v0.2.108`). It is a personal build, not an official
+through `09beace0` (version `v0.2.112`). It is a personal build, not an official
 Zeron release.
 
 ## Changes
+
+- Integrate upstream's tabbed workspace search, session-info panel, adaptive
+  panel layout, projectless scratch folders, quieter Providers page, and MCP
+  worker limits. Preserve the Usage dashboard command in the new palette,
+  account auto-switch controls, and host-driven quota refreshes. Keep Home
+  panels anchored to the composer and expanded agent-update notices above them.
 
 - Share activity-driven account usage refreshes in the host engine across all
   running threads and clients, with a 30-second per-account minimum, coalesced

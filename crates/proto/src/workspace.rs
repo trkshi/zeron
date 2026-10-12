@@ -20,6 +20,9 @@ pub mod capabilities {
     pub const SHELL_MONITOR_V1: &str = "shell-monitor-v1";
     pub const USAGE_HISTORY_V1: &str = "usage-history-v1";
     pub const ACCOUNT_USAGE_REFRESH_V1: &str = "account-usage-refresh-v1";
+    /// The host creates a projectless chat's scratch folder
+    /// (`crate::projectless`) when it runs; older hosts only know `~`.
+    pub const PROJECTLESS_SCRATCH_V1: &str = "projectless-scratch-v1";
 
     pub const CURRENT: &[&str] = &[
         COMPOSER_REFERENCES_V1,
@@ -30,6 +33,7 @@ pub mod capabilities {
         MESSAGE_QUEUE_EDIT_LEASE_V1,
         HARNESS_UPDATES_V1,
         ASYNC_QUESTIONS_V1,
+        PROJECTLESS_SCRATCH_V1,
         crate::voice::remote::CAPABILITY,
         CHECKPOINTS_V1,
         SHELL_MONITOR_V1,
@@ -116,9 +120,12 @@ mod tests {
                     "message-queue-edit-lease-v1",
                     "harness-updates-v1",
                     "async-questions-v1",
+                    "projectless-scratch-v1",
                     "voice-client-media-v1",
                     "checkpoints-v1",
-                    "shell-monitor-v1"
+                    "shell-monitor-v1",
+                    "usage-history-v1",
+                    "account-usage-refresh-v1"
                 ],
             })
         );

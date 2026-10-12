@@ -13,6 +13,7 @@ pub mod file_mentions;
 pub mod invocation;
 pub mod motion;
 pub mod preview;
+pub mod projectless;
 pub mod shells;
 pub mod sidebar_pins;
 pub mod usage_history;
