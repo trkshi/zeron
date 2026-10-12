@@ -1063,6 +1063,7 @@ impl EngineRpc {
                     | methods::WATCH_HARNESS_UPDATES
                     | methods::WATCH_SHELL_TASKS
                     | methods::WATCH_SHELL_TASK_OUTPUT
+                    | methods::WATCH_AGENT_ACCOUNTS
             ) {
                 let rx = match client.subscribe_checked(method, params).await {
                     Ok(rx) => rx,
@@ -1527,6 +1528,7 @@ fn forwardable(method: &str) -> bool {
             // Agent accounts are per-device CLI logins (the device switcher
             // retargets which device's logins are shown).
             | methods::LIST_AGENT_ACCOUNTS
+            | methods::WATCH_AGENT_ACCOUNTS
             | methods::ACTIVATE_AGENT_ACCOUNT
             | methods::FORGET_AGENT_ACCOUNT
             | methods::CONSUME_AGENT_RESET_CREDIT
@@ -1561,6 +1563,7 @@ fn is_stream_method(method: &str) -> bool {
         methods::WATCH_DOC_MESSAGES
             | methods::WATCH_SHELL_TASKS
             | methods::WATCH_SHELL_TASK_OUTPUT
+            | methods::WATCH_AGENT_ACCOUNTS
             | methods::WATCH_QUEUE
             | methods::SUBSCRIBE_TERMINAL
             | methods::WATCH_CHECKOUT_DIFFS
@@ -3650,6 +3653,14 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&snapshot)
             }
+            methods::WATCH_AGENT_ACCOUNTS => {
+                let rx = self
+                    .agent_accounts
+                    .watch_usage()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                Ok(RpcReply::Stream(watch_stream(rx)))
+            }
             methods::READ_USAGE_HISTORY => {
                 let query: zeron_proto::UsageHistoryQuery = parse_params(params)?;
                 let history = self.sessions.usage_history().ok_or_else(|| {
@@ -4354,6 +4365,8 @@ mod tests {
         assert!(!forwardable(methods::ENGINE_READY));
         assert!(forwardable(methods::QUEUE_COMMAND));
         assert!(forwardable(methods::GET_ACCOUNT_AUTO_SWITCH));
+        assert!(forwardable(methods::WATCH_AGENT_ACCOUNTS));
+        assert!(is_stream_method(methods::WATCH_AGENT_ACCOUNTS));
         assert!(forwardable(methods::SET_ACCOUNT_AUTO_SWITCH));
         assert!(!is_stream_method(methods::GET_ACCOUNT_AUTO_SWITCH));
         assert!(!is_stream_method(methods::SET_ACCOUNT_AUTO_SWITCH));

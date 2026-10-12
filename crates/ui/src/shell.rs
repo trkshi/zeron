@@ -1894,6 +1894,7 @@ pub struct Shell {
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
     account_pool: Entity<account_pool::AccountPool>,
+    account_usage_watch: Entity<crate::account_usage_watch::AccountUsageWatch>,
     _account_pool_observation: Subscription,
     /// The window's voice orchestrator: independent of the selected chat.
     voice: Entity<crate::voice::VoiceController>,
@@ -2276,6 +2277,8 @@ impl Shell {
         transcript.update(cx, |transcript, _| transcript.retain_for_route_exit());
         let composer = cx.new(|cx| Composer::new(state.clone(), cx));
         let account_pool = cx.new(|cx| account_pool::AccountPool::new(state.clone(), cx));
+        let account_usage_watch =
+            cx.new(|_| crate::account_usage_watch::AccountUsageWatch::new(state.clone()));
         let account_pool_observation = cx.observe(&account_pool, |_: &mut Shell, _, cx| cx.notify());
         let voice = cx.new(|_| crate::voice::VoiceController::default());
         let voice_footer_orb = cx.new(|_| {
@@ -2432,6 +2435,7 @@ impl Shell {
             transcript,
             composer,
             account_pool,
+            account_usage_watch,
             _account_pool_observation: account_pool_observation,
             voice,
             voice_footer_orb,
@@ -13411,6 +13415,16 @@ impl Render for Shell {
                 || state.no_project
                 || !self.composer.read(cx).staged_appshots().is_empty());
         let wake = shell_clock_wake(state, now, home_visible);
+        let account_device = if matches!(self.route, Route::Chat) {
+            state
+                .selected_chat_row()
+                .map(|chat| chat.device_id.clone())
+                .or_else(|| state.effective_device_id())
+        } else {
+            state.effective_device_id()
+        };
+        self.account_usage_watch
+            .update(cx, |watch, cx| watch.track(account_device, cx));
         self.account_pool.update(cx, |pool, cx| {
             pool.track(home_visible, window.is_window_active(), cx);
         });

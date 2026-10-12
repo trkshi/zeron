@@ -201,6 +201,13 @@ impl AccountUsage {
                             BACKGROUND_POLL_INTERVAL
                         };
                     }
+                    if usage.host_refresh_supported(cx) && usage.pending_refresh.is_none() {
+                        return if countdown {
+                            Duration::from_secs(30)
+                        } else {
+                            BACKGROUND_POLL_INTERVAL
+                        };
+                    }
                     if usage.next_refresh_delay().is_zero() {
                         let refresh = usage.pending_refresh.unwrap_or(UsageRefresh::Active);
                         usage.load(refresh, cx);
@@ -269,6 +276,10 @@ impl AccountUsage {
         )
     }
 
+    fn host_refresh_supported(&self, cx: &gpui::App) -> bool {
+        crate::account_usage_watch::host_refresh_supported(self.state.read(cx), &self.target)
+    }
+
     fn state_changed(&mut self, cx: &mut Context<Self>) {
         let completion = {
             let state = self.state.read(cx);
@@ -280,7 +291,10 @@ impl AccountUsage {
         };
         // The completion marker also advances when a queued turn starts
         // immediately, without an observable Working -> Idle transition.
-        if self.completions.observe(completion) && self.harness.is_some() {
+        if self.completions.observe(completion)
+            && self.harness.is_some()
+            && !self.host_refresh_supported(cx)
+        {
             self.load(UsageRefresh::Active, cx);
         }
         cx.notify();
@@ -315,7 +329,12 @@ impl AccountUsage {
         }
         if harness.is_some() && !self.loaded {
             self.loaded = true;
-            self.load(UsageRefresh::Active, cx);
+            let refresh = if self.host_refresh_supported(cx) {
+                UsageRefresh::Cached
+            } else {
+                UsageRefresh::Active
+            };
+            self.load(refresh, cx);
         }
     }
 

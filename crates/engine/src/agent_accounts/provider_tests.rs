@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use zeron_proto::AgentEvent;
 
 use super::stores::*;
 use super::usage::*;
@@ -248,6 +249,93 @@ async fn scoped_usage_refresh_preserves_other_accounts_and_full_refresh_behavior
             .unwrap()
             > stale_at
     );
+}
+
+#[tokio::test]
+async fn usage_watchers_share_one_active_account_probe_with_running_threads() {
+    let root = tempfile::tempdir().unwrap();
+    let server = MockServer::start(|method, path, _| {
+        assert_eq!((method, path), ("GET", "/backend-api/wham/usage"));
+        (
+            200,
+            serde_json::json!({
+                "plan_type": "plus",
+                "rate_limit": { "primary_window": {
+                    "used_percent": 25.0,
+                    "reset_at": 1_800_000_000,
+                    "limit_window_seconds": 18_000
+                }}
+            })
+            .to_string(),
+        )
+    })
+    .await;
+    let (accounts, config) = accounts_with(root.path(), mocked(&server.base));
+    for who in ["inactive", "active"] {
+        let id = format!("acct-{who}");
+        let auth = serde_json::json!({"tokens": {
+            "access_token": chatgpt_access(&format!("{who}@example.invalid"), &id, "plus"),
+            "account_id": id,
+            "id_token": jwt(serde_json::json!({
+                "email": format!("{who}@example.invalid"),
+                "https://api.openai.com/auth": {"chatgpt_account_id": id}
+            }))
+        }});
+        write(&config.codex_auth_file(), &auth.to_string());
+        accounts.list(false).await.unwrap();
+    }
+    let mut first = accounts.watch_usage().await.unwrap();
+    let second = accounts.watch_usage().await.unwrap();
+    let snapshot = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = first.borrow_and_update().clone();
+            if snapshot.accounts.iter().any(|account| {
+                account.active
+                    && account.harness == HarnessId::Codex
+                    && account.usage_fetched_at.is_some()
+            }) {
+                break snapshot;
+            }
+            first.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    let codex = rows(&snapshot, HarnessId::Codex);
+    assert_eq!(codex.len(), 2);
+    assert_eq!(
+        codex.iter().find(|account| account.active).unwrap().usage_windows[0].used_fraction,
+        0.25,
+    );
+    assert!(
+        codex
+            .iter()
+            .find(|account| !account.active)
+            .unwrap()
+            .usage_windows
+            .is_empty()
+    );
+    assert_eq!(server.hits("GET /backend-api/wham/usage"), 1);
+    let mut one = accounts.usage_run("one".into(), HarnessId::Codex, true);
+    let mut two = accounts.usage_run("two".into(), HarnessId::Codex, true);
+    for id in 0..20 {
+        let event = AgentEvent::ToolResult {
+            id: format!("tool-{id}"),
+            is_error: false,
+            output: None,
+            diff: None,
+        };
+        one.observe(&event);
+        two.observe(&event);
+    }
+    one.pause();
+    two.pause();
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(server.hits("GET /backend-api/wham/usage"), 1);
+    assert_eq!(rows(&second.borrow(), HarnessId::Codex), codex);
+    accounts.shutdown();
 }
 
 fn rows(snapshot: &AgentAccountsSnapshot, harness: HarnessId) -> Vec<AgentAccount> {

@@ -43,6 +43,37 @@ account average**, not combined capacity: different subscription plans can
 have different allowances. Stale, expired, offline, and failed readings remain
 labelled. This dashboard does not switch accounts or change auto-switch settings.
 
+## Quota Refreshes
+
+The host engine schedules quota refreshes for every running thread, independently
+of which conversation is selected or whether a client is connected. Completed
+tool calls (including edits and shell commands), changed token reports, and the
+transition from streamed reasoning to text or a tool call request a refresh.
+Raw reasoning/text chunks and tool-output chunks do not each send a request.
+Finishing, stopping, or failing a turn requests a final refresh too.
+
+Activity for the same provider is coalesced into one pending job; provider probes
+remain limited to one attempt per account per 30 seconds. Events arriving during
+the cooldown join the pending job without postponing it, and events arriving
+during a probe get one trailing refresh. Quiet turns and background subagents
+retain a five-minute fallback. Connected clients also keep active-account
+readings fresh on that fallback; an idle host without clients does not poll.
+
+Automatic refreshes probe active logins only. Saved inactive accounts retain their
+cached readings until an explicit account/pool refresh, opening the footer account
+popover or expanding a Home provider group, or an auto-switch check needs
+alternatives. The host preserves the last successful reading on failure and
+honors provider backoff and Retry-After, including manual refreshes. A changed
+login does not inherit another account's backoff. Redeeming
+a reset credit retains its immediate post-redemption probe.
+
+`WatchAgentAccounts` publishes quota snapshots to the selected host's UI cache,
+shared by the Home account pool, composer footer, and Limits dashboard. Clients
+on a host advertising `account-usage-refresh-v1` no longer run their own automatic
+quota probes; older hosts retain the previous five-minute UI polling and
+selected-chat completion refresh. Quota percentages still come from providers,
+not from counting edits or tools, and providers may report them after a delay.
+
 ## Coverage and Storage
 
 The first version covers usage recorded by Zeron, not standalone CLI history.
@@ -63,9 +94,11 @@ records did not save those fields. Unavailable, malformed, or over-32-MiB
 snapshots are skipped and disclosed. External CLI logs and synced conversations
 hosted on other devices are not imported. Select another host to read its index.
 
-The dashboard refreshes at most every 30 seconds while visible and the window
-is active. Snapshot backfill is limited to once every two minutes unless
-manually refreshed. It stops polling when hidden, offline, or inactive. Index
+The Cost and Tokens views refresh history at most every 30 seconds while visible
+and the window is active. Limits uses streamed quota snapshots on supporting
+hosts, falling back to cached reads on older hosts. Snapshot backfill is limited
+to once every two minutes unless manually refreshed. It stops polling when
+hidden, offline, or inactive. Index
 writes run off the engine's async executor and never run on text deltas or UI
 animation frames. A failed index does not prevent normal conversations.
 

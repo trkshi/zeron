@@ -372,7 +372,11 @@ impl AccountPool {
             self.refreshing = false;
         } else {
             if changed || resumed || !self.loaded {
-                self.load(true, cx);
+                let force = !crate::account_usage_watch::host_refresh_supported(
+                    self.state.read(cx),
+                    &self.target,
+                );
+                self.load(force, cx);
             }
             if self.poll_task.is_none() {
                 self.poll_task = Some(cx.spawn(async move |this, cx| {
@@ -380,7 +384,11 @@ impl AccountPool {
                         cx.background_executor().timer(POLL_INTERVAL).await;
                         if this
                             .update(cx, |pool, cx| {
-                                pool.load(true, cx);
+                                let force = !crate::account_usage_watch::host_refresh_supported(
+                                    pool.state.read(cx),
+                                    &pool.target,
+                                );
+                                pool.load(force, cx);
                                 cx.notify();
                             })
                             .is_err()

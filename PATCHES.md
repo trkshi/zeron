@@ -8,6 +8,13 @@ Zeron release.
 
 ## Changes
 
+- Share activity-driven account usage refreshes in the host engine across all
+  running threads and clients, with a 30-second per-account minimum, coalesced
+  pending work, provider backoff, and a five-minute quiet-turn fallback. Stream
+  snapshots to the Home account pool, footer, and Usage Limits view. Automatic
+  probes target active logins only; explicit refreshes and auto-switch checks
+  retain access to saved accounts. Older engines keep the previous UI polling.
+
 - Add a **Usage** dashboard from the sidebar footer, with **Cost**, **Tokens**,
   and **Limits** views, device selection, 24-hour/7-day/30-day/90-day periods,
   provider trends, billing-category bars, model details, and pooled account
@@ -35,8 +42,8 @@ Zeron release.
   Codex/Claude groups, active-account names, session/weekly usage bars, and
   read-only auto-switch status for the composer's selected device. Reset
   times and probe errors stay on hover. Share the existing accounts cache;
-  refresh at most every five minutes while Home is visible and the window is
-  active, with a manual refresh button and the engine's existing cooldown.
+  use the host's shared refresh stream, with five-minute UI polling for older
+  hosts, a manual refresh button, and the engine's existing cooldown.
   Keep unknown, failed, expired, and offline readings out of available counts.
   Use `#141414` home panels in dark mode, retain light-theme surfaces, and
   stack them on narrow windows. Account switching stays in Providers; the
@@ -149,7 +156,7 @@ Zeron release.
   in Settings, or beneath an open overlay.
   Keep normal `Ctrl+Backspace` word deletion unchanged, and preserve existing
   custom shortcuts when upgrading.
-- Refresh account usage every five minutes in both active and background
+- On older hosts, refresh account usage every five minutes in active and background
   windows, matching upstream's normal interval. Completed turns also trigger
   a refresh, deferred when necessary to honor the 30-second cooldown.
   Automatic refreshes probe only the current harness's active accounts;

@@ -101,6 +101,7 @@ mod oauth;
 mod provider_tests;
 mod stores;
 mod usage;
+mod usage_refresh;
 
 // Claude Code's public OAuth client (the one the CLI itself uses for the manual
 // "paste the code" flow — no secret involved, PKCE carries the proof).
@@ -631,6 +632,22 @@ impl UsageEntry {
         }
     }
 
+    fn retry_delay(&self, credentials: &str, now: i64) -> Duration {
+        let mut at = self.checked_at + FORCED_MIN_INTERVAL.as_millis() as i64;
+        if let (Some(retry), Some(error)) = (self.retry_at, &self.error) {
+            let changed = matches!(
+                error,
+                ProbeError::Unauthorized { .. }
+                    | ProbeError::NoCredentials { .. }
+                    | ProbeError::UntrustedEndpoint
+            ) && self.credentials.as_deref() != Some(credentials);
+            if !changed {
+                at = at.max(retry);
+            }
+        }
+        Duration::from_millis(at.saturating_sub(now).max(0) as u64)
+    }
+
     fn record(&mut self, result: Result<UsageSnapshot, ProbeError>, credentials: String, now: i64) {
         self.checked_at = now;
         match result {
@@ -727,6 +744,7 @@ struct Inner {
     flows: Mutex<HashMap<String, LoginFlow>>,
     /// `"{harness}:{accountKey}"` → usage state; mirrored to disk.
     usage: Mutex<HashMap<String, UsageEntry>>,
+    refresh: usage_refresh::UsageRefresh,
     /// Accounts with a usage probe in flight — overlapping forced lists (the
     /// page's paint-then-refresh, two open windows) share one probe.
     inflight_probes: Mutex<std::collections::HashSet<String>>,
@@ -772,11 +790,12 @@ pub struct AgentAccounts {
     inner: Arc<Inner>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum UsageProbeScope {
     All,
     ActiveHarness(HarnessId),
     Harness(HarnessId),
+    ActiveHarnesses(Vec<HarnessId>),
 }
 
 impl AgentAccounts {
@@ -835,6 +854,7 @@ impl AgentAccounts {
                 ops: tokio::sync::Mutex::new(()),
                 flows: Mutex::new(HashMap::new()),
                 usage: Mutex::new(usage),
+                refresh: usage_refresh::UsageRefresh::default(),
                 inflight_probes: Mutex::new(std::collections::HashSet::new()),
                 inflight_refreshes: Mutex::new(std::collections::HashSet::new()),
                 claude_credentials: Mutex::new(None),
@@ -904,6 +924,16 @@ impl AgentAccounts {
         force_usage: bool,
         scope: UsageProbeScope,
     ) -> Result<AgentAccountsSnapshot, EngineError> {
+        self.list_locked_with_usage_schedule(force_usage, scope)
+            .await
+            .map(|(snapshot, _)| snapshot)
+    }
+
+    async fn list_locked_with_usage_schedule(
+        &self,
+        force_usage: bool,
+        scope: UsageProbeScope,
+    ) -> Result<(AgentAccountsSnapshot, HashMap<HarnessId, Duration>), EngineError> {
         let mut warnings: Vec<AgentAccountWarning> = Vec::new();
         // Per agent, the live logins' account keys — one for single-login
         // agents, one per model provider for OpenCode / Pi.
@@ -993,6 +1023,7 @@ impl AgentAccounts {
         let (hermes, hermes_active) = self.hermes_slots();
         active_keys.insert(HarnessId::Hermes, hermes_active);
         providers.push((HarnessId::Hermes, hermes));
+        let mut retries = HashMap::new();
         if force_usage {
             let targets: Vec<(HarnessId, &Slot, bool)> = providers
                 .iter()
@@ -1007,7 +1038,7 @@ impl AgentAccounts {
                     })
                 })
                 .collect();
-            self.refresh_usage(&targets, scope).await;
+            retries = self.refresh_usage(&targets, scope).await;
             // A probe can teach a slot who it is (Devin's key file names no
             // one): show that in this very list.
             for (harness, slots) in providers.iter_mut() {
@@ -1091,7 +1122,35 @@ impl AgentAccounts {
         if let Some(login) = antigravity {
             accounts.push(login.account());
         }
-        Ok(AgentAccountsSnapshot { accounts, warnings })
+        let snapshot = AgentAccountsSnapshot { accounts, warnings };
+        let mut changed_accounts = Vec::new();
+        self.inner.refresh.updates.send_if_modified(|current| {
+            if *current == snapshot {
+                false
+            } else {
+                let previous: std::collections::HashSet<_> = current
+                    .accounts
+                    .iter()
+                    .filter(|account| account.active)
+                    .map(|account| (account.harness, account.id.clone()))
+                    .collect();
+                let next: std::collections::HashSet<_> = snapshot
+                    .accounts
+                    .iter()
+                    .filter(|account| account.active)
+                    .map(|account| (account.harness, account.id.clone()))
+                    .collect();
+                changed_accounts.extend(
+                    next.difference(&previous).map(|(harness, _)| *harness),
+                );
+                *current = snapshot.clone();
+                true
+            }
+        });
+        for harness in changed_accounts {
+            self.usage_account_changed(harness);
+        }
+        Ok((snapshot, retries))
     }
 
     // ── swap ────────────────────────────────────────────────────────────────
@@ -2376,6 +2435,7 @@ impl AgentAccounts {
     /// Engine shutdown: kill any in-flight login child so an orphan `codex login`
     /// can't survive the restart and brick the next attempt.
     pub fn shutdown(&self) {
+        self.inner.refresh.shutdown();
         let ids: Vec<String> = lock(&self.inner.flows).keys().cloned().collect();
         for id in ids {
             self.cancel_login(&id);
@@ -2692,18 +2752,28 @@ impl AgentAccounts {
         &self,
         targets: &[(HarnessId, &Slot, bool)],
         scope: UsageProbeScope,
-    ) {
+    ) -> HashMap<HarnessId, Duration> {
         let now = now_ms();
         let mut probes = Vec::new();
         let mut claimed = Vec::new();
+        let mut retries = HashMap::new();
+        let mut retry = |harness, delay: Duration| {
+            retries
+                .entry(harness)
+                .and_modify(|at: &mut Duration| *at = (*at).min(delay))
+                .or_insert(delay);
+        };
         {
             let usage = lock(&self.inner.usage);
             let mut inflight = lock(&self.inner.inflight_probes);
             for &(harness, slot, active) in targets {
-                let skip = match scope {
+                let skip = match &scope {
                     UsageProbeScope::All => false,
-                    UsageProbeScope::ActiveHarness(selected) => selected != harness || !active,
-                    UsageProbeScope::Harness(selected) => selected != harness,
+                    UsageProbeScope::ActiveHarness(selected) => *selected != harness || !active,
+                    UsageProbeScope::Harness(selected) => *selected != harness,
+                    UsageProbeScope::ActiveHarnesses(selected) => {
+                        !active || !selected.contains(&harness)
+                    }
                 };
                 if skip {
                     continue;
@@ -2713,6 +2783,7 @@ impl AgentAccounts {
                 if let Some(entry) = usage.get(&key)
                     && !entry.probe_due(&credentials, now)
                 {
+                    retry(harness, entry.retry_delay(&credentials, now));
                     tracing::debug!(
                         provider = harness_slug(harness),
                         slot = %slot.id,
@@ -2722,6 +2793,7 @@ impl AgentAccounts {
                     continue;
                 }
                 if !inflight.insert(key.clone()) {
+                    retry(harness, FORCED_MIN_INTERVAL);
                     continue;
                 }
                 claimed.push(key.clone());
@@ -2736,16 +2808,14 @@ impl AgentAccounts {
             keys: claimed,
         };
         if probes.is_empty() {
-            return;
+            return retries;
         }
         let results = futures::future::join_all(probes).await;
         let now = now_ms();
         let mut usage = lock(&self.inner.usage);
         for (key, credentials, result) in results {
-            usage
-                .entry(key)
-                .or_default()
-                .record(result, credentials, now);
+            let entry = usage.entry(key).or_default();
+            entry.record(result, credentials, now);
         }
         // Use the complete slot list here, not just the scoped probe subset:
         // inactive accounts must retain their last good usage for the picker.
@@ -2768,6 +2838,7 @@ impl AgentAccounts {
         if let Err(err) = persisted {
             tracing::warn!(error = %err, "agent usage cache write failed");
         }
+        retries
     }
 
     /// One account's probe. Never touches the cache (see [`Self::refresh_usage`]).
@@ -4902,7 +4973,10 @@ mod probe_tests {
         let inside = later + 60_000;
         assert!(!entry.probe_due("creds", inside));
         assert!(!entry.probe_due("new-creds", inside));
+        assert_eq!(entry.retry_delay("creds", inside), Duration::from_secs(60));
+        assert_eq!(entry.retry_delay("new-creds", inside), Duration::from_secs(60));
         assert!(entry.probe_due("creds", later + 121_000));
+        assert!(entry.retry_delay("creds", later + 121_000).is_zero());
     }
 
     #[test]
@@ -4916,6 +4990,13 @@ mod probe_tests {
         let soon = 1_000 + FORCED_MIN_INTERVAL.as_millis() as i64 + 1;
         assert!(!entry.probe_due("old", soon));
         assert!(entry.probe_due("refreshed", soon));
+        assert!(!entry.retry_delay("old", soon).is_zero());
+        assert!(entry.retry_delay("refreshed", soon).is_zero());
+        // A new credential does not bypass the per-account minimum interval.
+        assert_eq!(
+            entry.retry_delay("refreshed", 1_000 + 10_000),
+            Duration::from_secs(20),
+        );
     }
 
     #[test]

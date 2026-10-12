@@ -351,7 +351,11 @@ impl SessionsEngine {
     }
 
     pub fn set_agent_accounts(&self, accounts: crate::agent_accounts::AgentAccounts) {
-        let _ = self.inner.agent_accounts.set(accounts);
+        if self.inner.agent_accounts.set(accounts).is_ok()
+            && let Some(accounts) = self.inner.agent_accounts.get()
+        {
+            accounts.start_usage_refresh();
+        }
     }
 
     pub fn set_usage_history(&self, history: crate::usage_history::UsageHistory) {
@@ -2539,6 +2543,9 @@ async fn drive_run(
     let device_id = inner.device_id.clone();
     // Captured for post-run auto-titling (the request moves into the harness).
     let harness_id = harness.id();
+    let mut usage_run = inner.agent_accounts.get().map(|accounts| {
+        accounts.usage_run(run_id.clone(), harness_id, !resume_state.idle)
+    });
     let mut turn_model = request.model.clone();
     let user_prompt = request.prompt.clone();
     let run_cwd = request.cwd.clone();
@@ -2840,6 +2847,9 @@ async fn drive_run(
     let mut final_completed_turn = None;
     let mut seen_async_inputs = std::collections::HashSet::new();
     let final_status = loop {
+        if let Some(run) = &mut usage_run {
+            run.background(!subagents.is_empty());
+        }
         let event: AgentEvent = if let Some(event) = prepared_events.pop_front() {
             event
         } else {
@@ -3189,6 +3199,16 @@ async fn drive_run(
                 }
             }
             let done = matches!(sub_event.as_ref(), AgentEvent::Done { .. });
+            if let Some(run) = &mut usage_run {
+                run.background(!subagents.is_empty());
+                run.observe(sub_event.as_ref());
+                if matches!(
+                    sub_event.as_ref(),
+                    AgentEvent::TurnUsage { .. } | AgentEvent::Done { .. }
+                ) {
+                    run.changed();
+                }
+            }
             if done {
                 settled_subagents.insert(parent_tool_use_id.clone());
                 if !chip_streaming {
@@ -3256,6 +3276,9 @@ async fn drive_run(
                     }
                 }
             }
+            if let Some(run) = &mut usage_run {
+                run.background(!subagents.is_empty());
+            }
             continue;
         }
 
@@ -3298,6 +3321,9 @@ async fn drive_run(
         // another turn. Adapters emit whole-turn snapshots, so replace, not add.
         if let AgentEvent::TurnUsage { usage } = &event {
             if idle_since.is_none() && turn_usage != Some(*usage) {
+                if let Some(run) = &usage_run {
+                    run.changed();
+                }
                 turn_usage = Some(*usage);
                 if !dirty {
                     dirty = true;
@@ -3487,6 +3513,14 @@ async fn drive_run(
             _ => {}
         }
 
+        if let Some(run) = &mut usage_run
+            && idle_since.is_none()
+            && !matches!(&event, AgentEvent::Done { .. })
+        {
+            run.resume();
+            run.observe(&event);
+        }
+
         // Startup-crash retry: a run that dies before ever starting (errored
         // Done, no SessionStarted, nothing streamed) means the AGENT CHILD
         // failed to come up — not that the injected resume id was bad. Since
@@ -3650,6 +3684,9 @@ async fn drive_run(
         }
 
         if let AgentEvent::Done { status, .. } = &event {
+            if let Some(run) = &mut usage_run {
+                run.pause();
+            }
             // A question still pending at turn end can never be legitimately
             // answered (its turn is over): drain the resolvers NOW, or a late
             // `respond_input` finds one, emits InputResolved, and un-parks

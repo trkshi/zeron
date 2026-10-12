@@ -260,6 +260,16 @@ impl UsageDashboard {
         if self.loading || !self.visible || !self.active || !self.online {
             return;
         }
+        if self.metric == Metric::Limits
+            && !force
+            && crate::account_usage_watch::host_refresh_supported(self.state.read(cx), &self.target)
+            && cx
+                .try_global::<AccountsSnapshotCache>()
+                .is_some_and(|cache| cache.0.contains_key(&self.target))
+        {
+            self.account_error = None;
+            return;
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
