@@ -46,6 +46,7 @@
 pub mod catalog;
 mod discovery;
 mod normalize;
+pub mod rewind;
 mod shells;
 mod usage;
 mod wire;
@@ -587,6 +588,19 @@ impl ClaudeHarness {
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
         let mut cmd = self.build_command(&exe, &request);
+        let opening = if title_only {
+            crate::TurnOpening::default()
+        } else {
+            controls.turn.opening()
+        };
+        if let (Some(rewind), Some(_)) = (&opening.rewind, &request.resume) {
+            cmd.args([
+                "--resume-session-at",
+                &rewind.keep_through,
+                "--resume-drops-turn",
+                &rewind.drop_turn,
+            ]);
+        }
         if title_only {
             cmd.args([
                 "--system-prompt",
@@ -657,7 +671,23 @@ impl ClaudeHarness {
         // also ride the prompt text, so a skipped/unreadable file degrades to
         // the old-app behavior (the agent opens the path with its Read tool).
         let images = load_image_blocks(&request.attachments).await;
-        let first_command = uuid::Uuid::new_v4().to_string();
+        // Transcript ids let a later rewind find each prompt — unless the
+        // session already holds one (a retried send), which the CLI would take
+        // as a replay and answer with no turn at all.
+        let mut taken_ids = if title_only {
+            None
+        } else {
+            let session = request.resume.clone();
+            tokio::task::spawn_blocking(move || rewind::taken_ids(session.as_deref()))
+                .await
+                .ok()
+                .flatten()
+        };
+        let first_command = rewind::reusable(opening.message_id.as_deref(), taken_ids.as_ref())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if let Some(taken) = &mut taken_ids {
+            taken.insert(first_command.clone());
+        }
         let first = wire::prompt_line(
             &apply_ultrathink(request.reasoning, &request.prompt),
             &first_command,
@@ -672,6 +702,7 @@ impl ClaudeHarness {
             child,
             stdout_lines: BufReader::new(stdout).lines(),
             first_command,
+            taken_ids,
             stdin_tx,
             event_tx,
             controls,
@@ -799,6 +830,9 @@ struct Session {
     stdout_lines: tokio::io::Lines<BufReader<crate::process::ChildStdout>>,
     /// The uuid the opening prompt was written with.
     first_command: String,
+    /// Ids the session holds, so a steer reuses its transcript id only when
+    /// the CLI cannot take it as a replay; `None` when that is unknown.
+    taken_ids: Option<std::collections::HashSet<String>>,
     stdin_tx: mpsc::UnboundedSender<StdinMsg>,
     event_tx: mpsc::Sender<Result<AgentEvent, HarnessError>>,
     controls: RunControls,
@@ -820,6 +854,7 @@ async fn run_session(session: Session) {
         mut child,
         mut stdout_lines,
         first_command,
+        mut taken_ids,
         stdin_tx,
         event_tx,
         controls,
@@ -1083,7 +1118,11 @@ async fn run_session(session: Session) {
                         }
                         config = *next;
                     }
-                    let id = uuid::Uuid::new_v4().to_string();
+                    let id = rewind::reusable(msg.message_id.as_deref(), taken_ids.as_ref())
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    if let Some(taken) = &mut taken_ids {
+                        taken.insert(id.clone());
+                    }
                     let images = load_image_blocks(&msg.attachments).await;
                     let line = wire::steer_message_line_with_images(
                         &apply_ultrathink(config.reasoning, &msg.prompt),

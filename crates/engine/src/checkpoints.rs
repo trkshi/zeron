@@ -903,7 +903,7 @@ impl Checkpoints {
             Some((_, _, Some(result))) => serde_json::from_str(&result).map(Some).map_err(error),
             Some((_, backup_id, None)) => {
                 let result = RestoreCheckpointResult {
-                    chat_id: None, chat: None, backup_id,
+                    chat_id: None, chat: None, backup_id, restored_prompt: None,
                     error: Some("A previous restore was interrupted. Inspect files and use its backup before starting another restore.".into()),
                 };
                 self.finish_restore(id, &result)?;
@@ -933,7 +933,7 @@ impl Checkpoints {
         };
         for (old_id, backup_id) in unfinished {
             self.finish_restore(&old_id, &RestoreCheckpointResult {
-                chat_id: None, chat: None, backup_id,
+                chat_id: None, chat: None, backup_id, restored_prompt: None,
                 error: Some("Restore was interrupted. Use its recovery backup to inspect or restore files.".into()),
             })?;
         }

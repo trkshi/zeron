@@ -477,6 +477,53 @@ impl SessionsEngine {
         Ok(())
     }
 
+    /// Retire this chat's parked runtime before an in-place rewind: its live
+    /// provider process still holds the turns being dropped. Background work
+    /// is never killed for it.
+    pub(crate) async fn retire_for_rewind(&self, chat_id: &str) -> Result<(), EngineError> {
+        if self.turn_in_flight(chat_id) {
+            return Err(EngineError::Other(
+                "Wait for this turn to finish or stop it before restoring".into(),
+            ));
+        }
+        if self.holds_background_work(chat_id) {
+            return Err(EngineError::Other(
+                "Stop this thread's background agents and shells before rewinding".into(),
+            ));
+        }
+        self.interrupt(chat_id).await?;
+        if lock(&self.inner.runs).contains_key(chat_id) {
+            return Err(EngineError::Other(
+                "The agent is still shutting down; try restoring again shortly".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// See [`Inner::drop_harness_session`].
+    pub(crate) fn drop_harness_session(&self, chat_id: &str, cwd: &str) {
+        self.inner.drop_harness_session(chat_id, cwd);
+    }
+
+    /// The chat's latest provider session, wherever its next run launches
+    /// (same sources as [`Inner::resume_for`], without the cwd gate).
+    pub(crate) fn known_session(&self, chat_id: &str) -> Option<String> {
+        let known = if let Some(known) = lock(&self.inner.harness_sessions).get(chat_id) {
+            Some(known.session_id.clone())
+        } else if let Some((session_id, _)) = self
+            .inner
+            .workspace()
+            .and_then(|ws| ws.chat_harness_session(chat_id))
+        {
+            Some(session_id)
+        } else {
+            self.inner
+                .journal_harness_session(chat_id)
+                .map(|(session_id, _)| session_id)
+        };
+        known.filter(|id| !id.is_empty())
+    }
+
     async fn capture_checkpoint(
         &self,
         chat: &str,
@@ -1027,6 +1074,29 @@ impl SessionsEngine {
             request.resume = self.inner.resume_for(chat_id, &request.cwd);
             resume_injected = request.resume.is_some();
         }
+        // An in-place rewind is owed (see `rpc::checkpoints`). Only Claude
+        // resumes truncated; anything else — another harness, another
+        // session, a retry after the truncating start died — starts a fresh
+        // session seeded with the remaining transcript. Never resume the
+        // untruncated session: it still holds the rewound turns.
+        let mut rewind = None;
+        if !idle && let Some(pending) = handle.doc().pending_rewind() {
+            if harness_id == HarnessId::ClaudeCode
+                && !startup_retry
+                && request.resume.as_deref() == Some(pending.session_id.as_str())
+            {
+                rewind = Some(zeron_harness::Rewind {
+                    keep_through: pending.keep_through,
+                    drop_turn: pending.drop_turn,
+                });
+            } else {
+                request.resume = None;
+                resume_injected = false;
+                self.inner.drop_harness_session(chat_id, &request.cwd);
+                let _ = handle.doc().set_rewind_replay(true);
+                let _ = handle.doc().set_pending_rewind(None);
+            }
+        }
         lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
 
         let run_id = new_id();
@@ -1066,6 +1136,10 @@ impl SessionsEngine {
         };
         let interrupt_token = CancellationToken::new();
         let turn = TurnControl::default();
+        turn.set_opening(zeron_harness::TurnOpening {
+            message_id: (!idle).then(|| user_id.clone()),
+            rewind: rewind.clone(),
+        });
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fork_history_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (voice_handle, realtime, _voice_events) = zeron_harness::codex::realtime::channel();
@@ -1140,6 +1214,7 @@ impl SessionsEngine {
                 user_message_id: user_id,
                 resume_injected,
                 startup_retry,
+                rewinding: rewind.is_some(),
                 fork_history_sent,
                 started,
             },
@@ -1920,6 +1995,22 @@ impl Inner {
         }
     }
 
+    /// Tombstone the chat's provider session on purpose: an in-place rewind
+    /// must not resume a session that still holds the rewound turns. (Not for
+    /// startup failures — see below.)
+    pub(crate) fn drop_harness_session(&self, chat_id: &str, cwd: &str) {
+        lock(&self.harness_sessions).insert(
+            chat_id.to_string(),
+            HarnessSessionRef {
+                session_id: String::new(),
+                cwd: cwd.to_string(),
+            },
+        );
+        if let Some(ws) = self.workspace() {
+            ws.set_chat_harness_session(chat_id, "", cwd);
+        }
+    }
+
     // NB: there is deliberately no `forget_harness_session` anymore. The old
     // tombstone fired on "run died before SessionStarted", which — since the
     // ACP conversion made stale ids a harness-internal fallback — only ever
@@ -2056,6 +2147,7 @@ enum ProviderSession<'a> {
 fn note_fork_history_session(doc: &SessionDoc, carried: bool, session_id: &str) {
     if carried && !session_id.is_empty() {
         let _ = doc.set_fork_history_session(session_id);
+        let _ = doc.set_rewind_replay(false);
     }
 }
 
@@ -2077,10 +2169,14 @@ impl Inner {
         if native_command(prompt, harness_id) {
             return None;
         }
-        let inherited = self
-            .workspace()
-            .and_then(|ws| ws.chat(chat_id).ok().flatten())
-            .is_some_and(|chat| chat.parent_chat_id.is_some())
+        // A rewind that dropped the provider session owes the next one the
+        // whole remaining transcript, whether it starts fresh or idle-warm.
+        let rewound = doc.rewind_replay();
+        let inherited = rewound
+            || self
+                .workspace()
+                .and_then(|ws| ws.chat(chat_id).ok().flatten())
+                .is_some_and(|chat| chat.parent_chat_id.is_some())
             || doc.restored_from_chat().is_some();
         if !inherited {
             return None;
@@ -2098,6 +2194,7 @@ impl Inner {
             .collect();
         let end = match provider {
             ProviderSession::Fresh => entries.len(),
+            ProviderSession::Continued(_) if rewound => entries.len(),
             ProviderSession::Continued(_) => {
                 entries.iter().rposition(|entry| {
                     entry
@@ -2473,6 +2570,9 @@ struct RunResumeState {
     user_message_id: String,
     resume_injected: bool,
     startup_retry: bool,
+    /// The run resumes truncated for a pending rewind, which its session
+    /// start settles.
+    rewinding: bool,
     fork_history_sent: Arc<std::sync::atomic::AtomicBool>,
     /// Set once the harness stream is open (see [`RunHandle::started`]).
     started: Arc<std::sync::atomic::AtomicBool>,
@@ -3651,9 +3751,27 @@ async fn drive_run(
                     .map(|known| known.session_id.clone())
                     .filter(|id| !id.is_empty())
             {
-                let _ = doc.set_fork_history_session(&session);
+                note_fork_history_session(&doc, true, &session);
             }
             continue;
+        }
+
+        // Claude refuses a truncating resume before its init frame (e.g. the
+        // dropped range holds a queued prompt): rewind by a fresh session
+        // seeded with the transcript instead, never by the untruncated one.
+        if resume_state.rewinding
+            && !saw_session_started
+            && matches!(
+                &event,
+                AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    ..
+                }
+            )
+        {
+            inner.drop_harness_session(&chat_id, &run_cwd);
+            let _ = doc.set_pending_rewind(None);
+            let _ = doc.set_rewind_replay(true);
         }
 
         match &event {
@@ -3665,6 +3783,9 @@ async fn drive_run(
                 // session) scopes the stored id, not the request's.
                 inner.remember_harness_session(&chat_id, session_id, cwd);
                 note_fork_history_session(&doc, carried_history, session_id);
+                if resume_state.rewinding {
+                    let _ = doc.set_pending_rewind(None);
+                }
             }
             AgentEvent::Done {
                 session_id: Some(session_id),

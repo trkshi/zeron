@@ -1,4 +1,5 @@
-//! Checkpoint RPCs run on the source host and never mutate its transcript.
+//! Checkpoint RPCs run on the source host. Only an in-place rewind mutates
+//! the source transcript; every other restore leaves it intact.
 use super::*;
 use zeron_doc::{MessageRole, MessageStatus, SessionMessageEntry};
 use zeron_proto::{
@@ -113,6 +114,7 @@ impl EngineRpc {
                 "A recovery backup restores files only".into(),
             ));
         }
+        let in_place = params.in_place && params.mode.includes_conversation();
         let host = self.restore_host()?;
         // Keep ownership independent of the connection: a lost reply must not
         // release either lock while the filesystem worker is still running.
@@ -125,6 +127,10 @@ impl EngineRpc {
             let (source, prefix) = host.source_prefix(&params.checkpoint)?;
             if host.sessions.turn_in_flight(&source.id) {
                 return Err(failed("Wait for this turn to finish or stop it before restoring"));
+            }
+            if in_place {
+                // Its live provider process still holds the turns being dropped.
+                host.sessions.retire_for_rewind(&source.id).await.map_err(failed)?;
             }
             let identity = if params.mode.includes_files() {
                 // Retire only idle children; active work is never cancelled by restore.
@@ -148,7 +154,7 @@ impl EngineRpc {
                 {
                     return Err(failed("Conversation changed; refresh the checkpoint preview"));
                 }
-                if params.mode.includes_conversation()
+                if params.mode.includes_conversation() && !in_place
                     && host.workspace.chat(&format!("restore-{}", params.operation_id)).map_err(failed)?.is_some()
                 {
                     return Err(failed("This restore's new conversation already exists. Use a fresh restore operation."));
@@ -164,12 +170,19 @@ impl EngineRpc {
                 };
                 let backup_id = plan.as_ref().map(|plan| host.checkpoints.save_backup(&source.id, &params.checkpoint.message_id, plan)).transpose().map_err(failed)?;
                 host.checkpoints.begin_restore(&params.operation_id, &request, backup_id.as_deref()).map_err(failed)?;
-                let mut result = RestoreCheckpointResult { chat_id: None, chat: None, backup_id, error: None };
+                let mut result = RestoreCheckpointResult { chat_id: None, chat: None, backup_id, error: None, restored_prompt: None };
                 let outcome = (|| -> Result<(), String> {
                     if let Some(plan) = &plan {
                         host.checkpoints.apply(plan)?;
                     }
-                    if params.mode.includes_conversation() {
+                    if in_place {
+                        let prompt = host.rewind_in_place(&source, &params.checkpoint.message_id, &prefix)
+                            .map_err(|e| if plan.is_some() {
+                                format!("Files were restored, but the conversation could not be rewound: {e}. The file backup is intact.")
+                            } else { e.to_string() })?;
+                        result.chat_id = Some(source.id.clone());
+                        result.restored_prompt = Some(prompt);
+                    } else if params.mode.includes_conversation() {
                         let chat = host.create_restored_chat(&source, prefix, &params.operation_id)
                             .map_err(|e| if plan.is_some() {
                                 format!("Files were restored, but the new conversation could not be created: {e}. The original thread and file backup are intact.")
@@ -248,6 +261,64 @@ impl RestoreHost {
             .checkout_identity(std::path::Path::new(&cwd))
             .await
             .map_err(failed)
+    }
+
+    /// Rewind the source thread itself: drop the boundary message and all
+    /// after it, and settle how the next turn reaches a provider session that
+    /// no longer holds them. Claude sessions whose prompt carries its
+    /// transcript id resume truncated (`PendingRewind`); any other session is
+    /// dropped and the next one is seeded with the remaining transcript.
+    /// Returns the boundary prompt's text for the composer.
+    fn rewind_in_place(
+        &self,
+        source: &Chat,
+        boundary: &str,
+        prefix: &[SessionMessageEntry],
+    ) -> Result<String, crate::EngineError> {
+        let handle = self.docs.open(&source.id)?;
+        let doc = handle.doc();
+        let prompt = doc
+            .read_entries()?
+            .into_iter()
+            .find(|entry| entry.id == boundary)
+            .map(|entry| {
+                entry
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        MessagePart::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let has_history = prefix.iter().any(|entry| entry.role == MessageRole::User);
+        let precise = has_history
+            .then(|| self.sessions.known_session(&source.id))
+            .flatten()
+            .and_then(|session| {
+                let keep_through = zeron_harness::claude::rewind::rewind_anchor(&session, boundary)?;
+                Some(zeron_doc::PendingRewind {
+                    session_id: session,
+                    keep_through,
+                    drop_turn: boundary.to_owned(),
+                })
+            });
+        doc.truncate_messages_from(boundary)?;
+        match precise {
+            Some(rewind) => {
+                doc.set_rewind_replay(false)?;
+                doc.set_pending_rewind(Some(&rewind))?;
+            }
+            None => {
+                let cwd = source.cwd.clone().unwrap_or_default();
+                self.sessions.drop_harness_session(&source.id, &cwd);
+                doc.set_pending_rewind(None)?;
+                doc.set_rewind_replay(has_history)?;
+            }
+        }
+        Ok(prompt)
     }
 
     fn create_restored_chat(

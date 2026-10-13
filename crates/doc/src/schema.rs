@@ -40,6 +40,17 @@ pub enum MessageRole {
     System,
 }
 
+/// An in-place rewind owed to the chat's provider session: resume `session_id`
+/// truncated so `drop_turn` (a provider-side prompt id) and what followed are
+/// gone, keeping through `keep_through`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingRewind {
+    pub session_id: String,
+    pub keep_through: String,
+    pub drop_turn: String,
+}
+
 /// One entry in the doc's `messages` list (`SessionMessageEntry` in TS).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -414,6 +425,80 @@ impl SessionDoc {
         self.doc.get_map("meta").insert("restoredFromChat", chat_id)?;
         self.doc.commit();
         Ok(())
+    }
+
+    /// An in-place rewind the provider session has not applied yet.
+    pub fn pending_rewind(&self) -> Option<PendingRewind> {
+        match self.doc.get_map("meta").get("pendingRewind") {
+            Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => {
+                serde_json::from_str(&s).ok()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn set_pending_rewind(&self, rewind: Option<&PendingRewind>) -> Result<(), DocError> {
+        let meta = self.doc.get_map("meta");
+        match rewind {
+            Some(rewind) => meta.insert("pendingRewind", serde_json::to_string(rewind)?)?,
+            None if meta.get("pendingRewind").is_some() => meta.delete("pendingRewind")?,
+            None => return Ok(()),
+        }
+        self.doc.commit();
+        Ok(())
+    }
+
+    /// A rewind dropped the provider session: the next fresh one is owed the
+    /// remaining transcript, like a restored thread's first turn.
+    pub fn rewind_replay(&self) -> bool {
+        matches!(
+            self.doc.get_map("meta").get("rewindReplay"),
+            Some(loro::ValueOrContainer::Value(LoroValue::Bool(true)))
+        )
+    }
+
+    pub fn set_rewind_replay(&self, owed: bool) -> Result<(), DocError> {
+        if self.rewind_replay() != owed {
+            let meta = self.doc.get_map("meta");
+            if owed {
+                meta.insert("rewindReplay", true)?;
+            } else {
+                meta.delete("rewindReplay")?;
+            }
+            self.doc.commit();
+        }
+        Ok(())
+    }
+
+    /// Drop the entry `message_id` and everything after it (an in-place
+    /// rewind), returning the removed entries. Malformed entries in the tail
+    /// are removed too but not returned.
+    pub fn truncate_messages_from(
+        &self,
+        message_id: &str,
+    ) -> Result<Vec<SessionMessageEntry>, DocError> {
+        use loro::{Container, ValueOrContainer};
+        let messages = self.doc.get_list("messages");
+        let index = (0..messages.len())
+            .find(|&index| {
+                let Some(ValueOrContainer::Container(Container::Map(entry))) = messages.get(index)
+                else {
+                    return false;
+                };
+                matches!(entry.get("id"), Some(ValueOrContainer::Value(LoroValue::String(id))) if id.as_str() == message_id)
+            })
+            .ok_or_else(|| DocError::Schema(format!("message {message_id} not found")))?;
+        let removed: Vec<serde_json::Value> = serde_json::from_value(
+            messages.get_deep_value().to_json_value(),
+        )?;
+        let removed = removed
+            .into_iter()
+            .skip(index)
+            .filter_map(|v| entry_from_json(v).ok())
+            .collect();
+        messages.delete(index, messages.len() - index)?;
+        self.doc.commit();
+        Ok(removed)
     }
 
     /// Parked runtimes may still own background work; scan only lifecycle fields.
@@ -1531,6 +1616,65 @@ pub fn materialize_tail(
 mod tests {
     use super::*;
     use crate::parts::fold_event_into_parts;
+
+    #[test]
+    fn rewind_truncates_from_the_boundary_and_tracks_owed_work() {
+        let doc = SessionDoc::init("chat").unwrap();
+        for (id, role) in [
+            ("u1", MessageRole::User),
+            ("a1", MessageRole::Assistant),
+            ("u2", MessageRole::User),
+            ("a2", MessageRole::Assistant),
+        ] {
+            doc.push_message(&SessionMessageEntry {
+                id: id.into(),
+                role,
+                parts: vec![MessagePart::Text {
+                    id: format!("{id}-text"),
+                    text: id.into(),
+                }],
+                created_at: 1,
+                device_id: "device".into(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+                duration_ms: None,
+                token_usage: None,
+            })
+            .unwrap();
+        }
+        let removed = doc.truncate_messages_from("u2").unwrap();
+        assert_eq!(
+            removed.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["u2", "a2"]
+        );
+        assert_eq!(
+            doc.read_entries()
+                .unwrap()
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            ["u1", "a1"]
+        );
+        assert!(doc.truncate_messages_from("u2").is_err());
+
+        assert!(doc.pending_rewind().is_none());
+        let rewind = PendingRewind {
+            session_id: "s".into(),
+            keep_through: "k".into(),
+            drop_turn: "u2".into(),
+        };
+        doc.set_pending_rewind(Some(&rewind)).unwrap();
+        assert_eq!(doc.pending_rewind(), Some(rewind));
+        doc.set_pending_rewind(None).unwrap();
+        doc.set_pending_rewind(None).unwrap();
+        assert!(doc.pending_rewind().is_none());
+
+        assert!(!doc.rewind_replay());
+        doc.set_rewind_replay(true).unwrap();
+        assert!(doc.rewind_replay());
+        doc.set_rewind_replay(false).unwrap();
+        assert!(!doc.rewind_replay());
+    }
 
     #[test]
     fn checkpoint_metadata_and_shallow_lifecycle_queries() {

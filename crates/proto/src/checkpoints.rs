@@ -65,6 +65,10 @@ pub struct RestoreCheckpointParams {
     pub operation_id: String,
     #[serde(default)]
     pub token: Option<String>,
+    /// Rewind the source thread itself instead of opening a restored copy
+    /// (`capabilities::CHECKPOINT_REWIND_V1`). Ignored for files-only restores.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_place: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +80,9 @@ pub struct RestoreCheckpointResult {
     pub backup_id: Option<String>,
     /// A failed file restore keeps its backup and reports any partial failure.
     pub error: Option<String>,
+    /// An in-place rewind's dropped prompt, for the composer to offer again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_prompt: Option<String>,
 }
 
 #[cfg(test)]
@@ -92,9 +99,12 @@ mod tests {
         assert!(request.mode.includes_files());
         assert!(request.mode.includes_conversation());
         assert_eq!(request.checkpoint.backup_id, None);
+        assert!(!request.in_place);
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["chatId"], "chat");
         assert_eq!(value["operationId"], "operation");
         assert!(value.get("checkpoint").is_none());
+        // Old hosts never see the field unless a rewind is asked for.
+        assert!(value.get("inPlace").is_none());
     }
 }

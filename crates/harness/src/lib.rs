@@ -77,10 +77,41 @@ impl SteerMessage {
 pub struct TurnControl {
     stop: std::sync::Arc<tokio::sync::Notify>,
     background: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    opening: std::sync::Arc<std::sync::Mutex<TurnOpening>>,
     pub shells: shells::ShellMonitor,
 }
 
+/// What the host knows about a fresh run's opening prompt. Kept off
+/// [`RunRequest`] because it describes one dispatch, not a run configuration.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TurnOpening {
+    /// The transcript id of the opening prompt; a driver may reuse it as the
+    /// provider-side message id so a later rewind can find this turn.
+    pub message_id: Option<String>,
+    /// Resume the session truncated before an earlier turn.
+    pub rewind: Option<Rewind>,
+}
+
+/// A truncating resume: the provider drops `drop_turn` and everything after it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rewind {
+    /// The provider's last kept entry (Claude: the dropped prompt's `parentUuid`).
+    pub keep_through: String,
+    /// The provider-side id of the first dropped prompt.
+    pub drop_turn: String,
+}
+
 impl TurnControl {
+    /// Host: describe the opening prompt before handing the controls to `run`.
+    pub fn set_opening(&self, opening: TurnOpening) {
+        *self.opening.lock().unwrap_or_else(|e| e.into_inner()) = opening;
+    }
+
+    /// Driver: the opening prompt's description (default when the host set none).
+    pub fn opening(&self) -> TurnOpening {
+        self.opening.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// Host: end the in-flight turn, keeping the runtime and its background work.
     pub fn stop_turn(&self) {
         self.stop.notify_one();

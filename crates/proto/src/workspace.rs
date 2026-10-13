@@ -17,6 +17,8 @@ pub mod capabilities {
     pub const HARNESS_UPDATES_V1: &str = "harness-updates-v1";
     pub const ASYNC_QUESTIONS_V1: &str = "async-questions-v1";
     pub const CHECKPOINTS_V1: &str = "checkpoints-v1";
+    /// Conversation restores can rewind the source thread in place.
+    pub const CHECKPOINT_REWIND_V1: &str = "checkpoint-rewind-v1";
     pub const SHELL_MONITOR_V1: &str = "shell-monitor-v1";
     pub const USAGE_HISTORY_V1: &str = "usage-history-v1";
     pub const ACCOUNT_USAGE_REFRESH_V1: &str = "account-usage-refresh-v1";
@@ -36,6 +38,7 @@ pub mod capabilities {
         PROJECTLESS_SCRATCH_V1,
         crate::voice::remote::CAPABILITY,
         CHECKPOINTS_V1,
+        CHECKPOINT_REWIND_V1,
         SHELL_MONITOR_V1,
         USAGE_HISTORY_V1,
         ACCOUNT_USAGE_REFRESH_V1,

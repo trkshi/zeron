@@ -6620,6 +6620,22 @@ impl Composer {
         cx.notify();
     }
 
+    /// Offer an in-place rewind's dropped prompt again, as the chat's draft.
+    /// Never replaces text the user already has there.
+    pub(crate) fn offer_rewound_prompt(&mut self, chat_id: &str, prompt: String, cx: &mut Context<Self>) {
+        if prompt.trim().is_empty() {
+            return;
+        }
+        if self.current_key == chat_id {
+            if self.wizard.is_none() && self.input.read(cx).text().is_empty() {
+                self.input.update(cx, |input, cx| input.set_text(prompt, cx));
+            }
+        } else if self.drafts.get(chat_id).is_none_or(|draft| draft.is_empty()) {
+            self.drafts.insert(chat_id.to_owned(), prompt);
+        }
+        cx.notify();
+    }
+
     /// Whether the draft holds anything a close would lose: text, staged
     /// attachments or appshots, or staged review comments.
     pub(crate) fn has_draft(&self, cx: &App) -> bool {

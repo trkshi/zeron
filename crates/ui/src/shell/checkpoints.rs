@@ -15,6 +15,10 @@ pub(super) struct CheckpointDialog {
     preview: Loadable<Arc<CheckpointPreview>>,
     error: Option<String>,
     operation: Option<RestoreCheckpointParams>,
+    /// The source host rewinds conversations in place (else it forks).
+    rewind_supported: bool,
+    /// Restore the conversation into a new thread even where rewind works.
+    new_thread: bool,
     busy: bool,
     focus: FocusHandle,
     focus_pending: bool,
@@ -22,6 +26,10 @@ pub(super) struct CheckpointDialog {
 }
 
 impl CheckpointDialog {
+    fn rewinds_in_place(&self) -> bool {
+        self.rewind_supported && !self.new_thread && self.mode.includes_conversation()
+    }
+
     fn can_restore(&self) -> bool {
         !self.busy
             && self.preview.ready().is_some_and(|preview| {
@@ -58,12 +66,14 @@ impl Shell {
             return;
         };
         let engine = state.read(cx).engine().cloned();
-        let supported = engine
-            .as_ref()
-            .is_some_and(|engine| engine.engine_info().supports(capabilities::CHECKPOINTS_V1))
-            && state
-                .read(cx)
-                .device_supports(&source.device_id, capabilities::CHECKPOINTS_V1);
+        let supports = |capability| {
+            engine
+                .as_ref()
+                .is_some_and(|engine| engine.engine_info().supports(capability))
+                && state.read(cx).device_supports(&source.device_id, capability)
+        };
+        let supported = supports(capabilities::CHECKPOINTS_V1);
+        let rewind_supported = supports(capabilities::CHECKPOINT_REWIND_V1);
         self.checkpoint_dialog = Some(CheckpointDialog {
             source,
             engine,
@@ -76,6 +86,8 @@ impl Shell {
             preview: Loadable::Idle,
             error: None,
             operation: None,
+            rewind_supported,
+            new_thread: false,
             busy: false,
             focus: cx.focus_handle(),
             focus_pending: true,
@@ -179,6 +191,17 @@ impl Shell {
         }
     }
 
+    fn toggle_checkpoint_new_thread(&mut self, cx: &mut Context<Self>) {
+        if let Some(dialog) = &mut self.checkpoint_dialog
+            && !dialog.busy
+        {
+            dialog.new_thread = !dialog.new_thread;
+            dialog.operation = None;
+            dialog.error = None;
+            cx.notify();
+        }
+    }
+
     fn confirm_checkpoint_restore(&mut self, cx: &mut Context<Self>) {
         let Some(dialog) = self
             .checkpoint_dialog
@@ -225,6 +248,7 @@ impl Shell {
         for surface in &surfaces {
             surface.update(cx, |files, cx| files.hold_mutation(Some(String::new()), cx));
         }
+        let in_place = dialog.rewinds_in_place();
         let request = dialog.operation.unwrap_or_else(|| RestoreCheckpointParams {
             checkpoint: dialog.params.clone(),
             mode: dialog.mode,
@@ -233,6 +257,7 @@ impl Shell {
                 .preview
                 .ready()
                 .and_then(|preview| preview.token.clone()),
+            in_place,
         });
         let mut params = serde_json::to_value(&request).expect("restore params serialize");
         params["targetDeviceId"] = serde_json::json!(dialog.source.device_id);
@@ -260,16 +285,24 @@ impl Shell {
                 match result {
                     Ok(result) if result.error.is_none() => {
                         shell.checkpoint_dialog = None;
+                        let rewound = result.restored_prompt.is_some();
                         if let Some(chat) = result.chat {
                             let id = chat.id.clone();
                             shell.state.update(cx, |state, cx| state.accept_restored_chat(chat, cx));
                             shell.open_chat(id, cx);
                         } else {
+                            if let (Some(chat_id), Some(prompt)) = (result.chat_id, result.restored_prompt) {
+                                shell.composer.update(cx, |composer, cx| composer.offer_rewound_prompt(&chat_id, prompt, cx));
+                            }
                             shell.focus_composer(cx);
                         }
-                        crate::toast::success(cx, if result.backup_id.is_some() {
-                            "Checkpoint restored. A recovery backup is available in the original thread's restore dialog."
-                        } else { "Conversation restored in a new thread. The original is unchanged." });
+                        let backup = result.backup_id.is_some();
+                        crate::toast::success(cx, match (rewound, backup) {
+                            (true, true) => "Conversation and files rewound. A recovery backup is available in the restore dialog.",
+                            (true, false) => "Conversation rewound.",
+                            (false, true) => "Checkpoint restored. A recovery backup is available in the original thread's restore dialog.",
+                            (false, false) => "Conversation restored in a new thread. The original is unchanged.",
+                        });
                     }
                     Ok(result) => {
                         flow.error = result.error;
@@ -513,6 +546,28 @@ impl Shell {
                 .child(label),
             );
         }
+        let new_thread_row = (dialog.rewind_supported
+            && dialog.mode.includes_conversation()
+            && dialog.params.backup_id.is_none())
+        .then(|| {
+            popover::menu_row(&theme, dialog.new_thread, "checkpoint-new-thread")
+                .id("checkpoint-new-thread")
+                .when(dialog.busy, |row| row.opacity(0.5).cursor_default())
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_checkpoint_new_thread(cx)))
+                .child(
+                    icon(icons::FORK)
+                        .size(px(14.0))
+                        .text_color(theme.text_muted),
+                )
+                .child("Open the restored conversation as a new thread")
+        });
+        let description = if dialog.params.backup_id.is_some() {
+            "Restore the project files saved before an earlier restore."
+        } else if dialog.rewinds_in_place() {
+            "Return to before this message. The conversation is rewound in this thread and the message goes back to the composer."
+        } else {
+            "Return to before this message. Conversation restore opens a new thread; the original stays intact."
+        };
         let card = popover::dialog_card(&theme).id("checkpoint-dialog-card").track_focus(&dialog.focus)
             .w(px(560.0_f32.min(f32::from(viewport.width) - 32.0).max(200.0)))
             .gap(px(14.0))
@@ -543,10 +598,9 @@ impl Shell {
                 cx.stop_propagation();
             }))
             .child(popover::dialog_title(&theme, if dialog.params.backup_id.is_some() { "Restore recovery backup" } else { "Restore checkpoint" }))
-            .child(popover::dialog_body(&theme, if dialog.params.backup_id.is_some() {
-                "Restore the project files saved before an earlier restore."
-            } else { "Return to before this message. Conversation restore opens a new thread; the original stays intact." }))
+            .child(popover::dialog_body(&theme, description))
             .when(dialog.params.backup_id.is_none(), |card| card.child(modes))
+            .children(new_thread_row)
             .child(body)
             .child(div().flex_none().flex().flex_wrap().justify_between().gap(px(8.0))
                 .child(popover::btn_ghost(&theme, "Refresh", "checkpoint-refresh").id("checkpoint-refresh")
