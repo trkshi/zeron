@@ -1,5 +1,6 @@
-//! Home's read-only account pool. Snapshots share the Accounts/footer cache;
-//! provider probes run only while Home is visible in an active window.
+//! Home's account pool. Snapshots share the Accounts/footer cache; provider
+//! probes run only while Home is visible in an active window. Clicking a
+//! switchable account makes it the active one, as in Settings → Accounts.
 
 use std::time::{Duration, Instant};
 
@@ -16,7 +17,8 @@ use zeron_rpc::methods;
 use crate::icons::{self, icon};
 use crate::motion::{self, DisclosureMotion};
 use crate::settings::accounts::{
-    AccountsSnapshotCache, format_reset, render_usage_meter, usage_color, usage_level,
+    AccountsSnapshotCache, format_reset, mark_switched, render_usage_meter, usage_color,
+    usage_level,
 };
 use crate::settings::widgets::text_tooltip;
 use crate::state::AppState;
@@ -292,7 +294,10 @@ pub(super) struct AccountPool {
     last_forced: Option<Instant>,
     auto_switch: Option<AccountAutoSwitchPrefs>,
     error: Option<String>,
+    switching: Option<String>,
+    switch_error: Option<String>,
     load_task: Option<Task<()>>,
+    switch_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
     _cache: Subscription,
     _activation: Option<Subscription>,
@@ -315,7 +320,10 @@ impl AccountPool {
             last_forced: None,
             auto_switch: None,
             error: None,
+            switching: None,
+            switch_error: None,
             load_task: None,
+            switch_task: None,
             poll_task: None,
             _cache: cx.observe_global::<AccountsSnapshotCache>(|_, cx| cx.notify()),
             _activation: None,
@@ -353,6 +361,9 @@ impl AccountPool {
             self.error = None;
             self.load_task = None;
             self.refreshing = false;
+            self.switching = None;
+            self.switch_error = None;
+            self.switch_task = None;
         }
         let presentation_changed = changed
             || self.visible != visible
@@ -433,7 +444,7 @@ impl AccountPool {
                     })
             })
             .sum();
-        let note = if self.error.is_some() || !self.online {
+        let note = if self.error.is_some() || self.switch_error.is_some() || !self.online {
             28.0
         } else {
             0.0
@@ -554,6 +565,64 @@ impl AccountPool {
                         pool.error = None;
                     }
                     Err(error) => pool.error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Make `account` its provider's active account, optimistically: the
+    /// cached snapshot flips at once and the engine's reply replaces it. A
+    /// refusal restores the previous snapshot.
+    fn switch_to(&mut self, account: &AgentAccount, cx: &mut Context<Self>) {
+        if !self.interactive || !self.online || self.switching.is_some() {
+            return;
+        }
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        // A list started before the switch must not repaint the old active row.
+        self.load_task = None;
+        self.refreshing = false;
+        let key = self.target.clone();
+        let cache = &mut cx.default_global::<AccountsSnapshotCache>().0;
+        let previous = cache.get(&key).cloned();
+        if let Some(snapshot) = cache.get_mut(&key) {
+            mark_switched(snapshot, account);
+        }
+        self.switching = Some(account.id.clone());
+        self.switch_error = None;
+        let params = serde_json::json!({
+            "id": account.id,
+            "accountId": account.id,
+            "harness": account.harness,
+            "targetDeviceId": key,
+        });
+        self.switch_task = Some(cx.spawn(async move |this, cx| {
+            let result = engine
+                .client()
+                .call(methods::ACTIVATE_AGENT_ACCOUNT, params)
+                .await;
+            this.update(cx, |pool, cx| {
+                if pool.target != key {
+                    return;
+                }
+                pool.switching = None;
+                let cache = &mut cx.default_global::<AccountsSnapshotCache>().0;
+                match result.map(serde_json::from_value::<AgentAccountsSnapshot>) {
+                    Ok(Ok(snapshot)) => {
+                        cache.insert(key, snapshot);
+                    }
+                    // An older engine's reply without the list: fetch it.
+                    Ok(Err(_)) => pool.load(false, cx),
+                    Err(error) => {
+                        if let Some(previous) = previous {
+                            cache.insert(key, previous);
+                        }
+                        pool.switch_error = Some(error.to_string());
+                    }
                 }
                 cx.notify();
             })
@@ -792,7 +861,7 @@ impl AccountPool {
                             div().w_full().flex().flex_col().children(
                                 accounts
                                     .iter()
-                                    .map(|account| self.account_row(account, theme)),
+                                    .map(|account| self.account_row(account, theme, cx)),
                             ),
                         ),
                 )
@@ -800,7 +869,12 @@ impl AccountPool {
             .into_any_element()
     }
 
-    fn account_row(&self, account: &AgentAccount, theme: &Theme) -> AnyElement {
+    fn account_row(
+        &self,
+        account: &AgentAccount,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let now = chrono::Utc::now();
         let status = quota_status(
             account,
@@ -817,8 +891,18 @@ impl AccountPool {
         if let Some(plan) = &account.plan_label {
             tooltip.push(plan.clone());
         }
+        let switching = self.switching.as_deref() == Some(account.id.as_str());
+        let can_switch = self.interactive
+            && self.online
+            && self.switching.is_none()
+            && !account.active
+            && account.switchable;
         if account.active {
             tooltip.push("Active account".into());
+        } else if switching {
+            tooltip.push("Switching...".into());
+        } else if can_switch {
+            tooltip.push("Click to switch to this account".into());
         }
         if let Some(error) = &account.usage_error {
             tooltip.push(error.clone());
@@ -860,6 +944,7 @@ impl AccountPool {
             .map(|window| render_usage_meter(window, theme))
             .collect();
         let has_meters = !meters.is_empty();
+        let switch_account = account.clone();
         div()
             .id(SharedString::from(format!(
                 "account-pool-account-{}",
@@ -874,7 +959,31 @@ impl AccountPool {
             .flex_col()
             .min_w_0()
             .overflow_hidden()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(gpui::transparent_black())
             .tooltip(text_tooltip(tooltip.join("\n")))
+            .when(can_switch, |row| {
+                row.cursor_pointer()
+                    .hover(|row| row.bg(theme.element_hover))
+                    .focus_visible(|row| row.border_color(theme.accent))
+                    .role(gpui::Role::Button)
+                    .aria_label(format!("Switch to {}", account_name(account)))
+                    .tab_index(0)
+                    .on_click(cx.listener({
+                        let account = switch_account.clone();
+                        move |pool, _, _, cx| {
+                            cx.stop_propagation();
+                            pool.switch_to(&account, cx);
+                        }
+                    }))
+                    .on_key_down(cx.listener(move |pool, event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            pool.switch_to(&switch_account, cx);
+                        }
+                    }))
+            })
             .child(
                 div()
                     .h(px(ACCOUNT_LINE_HEIGHT))
@@ -893,6 +1002,15 @@ impl AccountPool {
                     )
                     .when(account.active, |row| {
                         row.child(icon(icons::CHECK).size(px(10.0)).text_color(theme.accent))
+                    })
+                    .when(switching, |row| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_size(crate::typography::ui_rems(10.5))
+                                .text_color(theme.text_muted)
+                                .child("Switching..."),
+                        )
                     })
                     .child(
                         div()
@@ -943,6 +1061,8 @@ impl Render for AccountPool {
             Some("Device offline")
         } else if self.error.is_some() {
             Some("Refresh failed")
+        } else if self.switch_error.is_some() {
+            Some("Switch failed")
         } else {
             None
         };
@@ -1070,9 +1190,14 @@ impl Render for AccountPool {
                             .items_center()
                             .text_color(theme.warning)
                             .child(note)
-                            .tooltip(text_tooltip(self.error.clone().unwrap_or_else(|| {
-                                "Reconnect this device to refresh account usage.".into()
-                            })))
+                            .tooltip(text_tooltip(
+                                self.error
+                                    .clone()
+                                    .or_else(|| self.switch_error.clone())
+                                    .unwrap_or_else(|| {
+                                        "Reconnect this device to refresh account usage.".into()
+                                    }),
+                            ))
                     })),
             )
     }
