@@ -4970,6 +4970,22 @@ impl Shell {
 
     // ---- routes / settings ----
 
+    /// After a route change, ease the sidebar from the width it painted under
+    /// the old route instead of snapping to the new route's fit.
+    fn ease_sidebar_from(&mut self, from: f32) {
+        let to = self.sidebar_target();
+        if (from - to).abs() < 0.5 {
+            return;
+        }
+        if self.horizontal_fit().sidebar {
+            self.sidebar_tween = Some(self.panel_tween(from, to));
+        } else {
+            // The fit hides it here: slide it out like a fit eviction.
+            let content = self.sidebar_content_width();
+            self.fit_exits[0] = Some((self.panel_tween(from, 0.0), content));
+        }
+    }
+
     fn set_route(&mut self, route: Route, cx: &mut Context<Self>) {
         self.command_palette = None;
         if matches!(self.route, Route::Usage)
@@ -4985,7 +5001,15 @@ impl Shell {
                 page.update(cx, |page, _| page.on_hidden());
             }
         }
+        // Settings draws its own nav column; elsewhere the routes share the
+        // sidebar, whose width each route's fit may set differently.
+        let settings =
+            matches!(self.route, Route::Settings(_)) || matches!(route, Route::Settings(_));
+        let sidebar_from = (!settings).then(|| self.sidebar_now());
         self.route = route;
+        if let Some(from) = sidebar_from {
+            self.ease_sidebar_from(from);
+        }
         if !was_pull_requests && will_show_pull_requests {
             if let Some(page) = self.pull_requests_page.as_ref().cloned() {
                 page.update(cx, |page, cx| page.on_visible(cx));

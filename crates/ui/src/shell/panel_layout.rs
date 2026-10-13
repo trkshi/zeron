@@ -167,8 +167,14 @@ impl Shell {
     /// `closing: false` is the fit once every running close has landed.
     fn fit(&self, closing: bool) -> HorizontalPanelFit {
         if !matches!(self.route, Route::Chat) {
+            // A collapsing sidebar keeps its slot until its tween lands, as on
+            // the chat route; dropping it at once snapped Usage's sidebar shut.
+            let sidebar_closing = closing
+                && self
+                    .sidebar_tween
+                    .is_some_and(|tween| self.tween_active(Some(tween)) && tween.from > 0.5);
             return HorizontalPanelFit {
-                sidebar: !self.settings.sidebar_collapsed,
+                sidebar: !self.settings.sidebar_collapsed || sidebar_closing,
                 right: false,
                 files: false,
                 sidebar_limit: self.settings.sidebar_width,
