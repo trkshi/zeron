@@ -42,11 +42,12 @@ pub enum MessageRole {
 
 /// An in-place rewind owed to the chat's provider session: resume `session_id`
 /// truncated so `drop_turn` (a provider-side prompt id) and what followed are
-/// gone, keeping through `keep_through`.
+/// gone. `keep_through` is Claude's last kept entry, empty when unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingRewind {
     pub session_id: String,
+    #[serde(default)]
     pub keep_through: String,
     pub drop_turn: String,
 }

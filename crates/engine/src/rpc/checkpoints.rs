@@ -265,9 +265,9 @@ impl RestoreHost {
 
     /// Rewind the source thread itself: drop the boundary message and all
     /// after it, and settle how the next turn reaches a provider session that
-    /// no longer holds them. Claude sessions whose prompt carries its
-    /// transcript id resume truncated (`PendingRewind`); any other session is
-    /// dropped and the next one is seeded with the remaining transcript.
+    /// no longer holds them: a known session owes a `PendingRewind` (Claude
+    /// resumes truncated, Codex reverts its thread); without one the next
+    /// session is seeded with the remaining transcript.
     /// Returns the boundary prompt's text for the composer.
     fn rewind_in_place(
         &self,
@@ -294,16 +294,16 @@ impl RestoreHost {
             })
             .unwrap_or_default();
         let has_history = prefix.iter().any(|entry| entry.role == MessageRole::User);
+        // Claude needs the dropped prompt's parent entry; Codex finds the turn
+        // itself. Without either the next turn falls back (see sessions.rs).
         let precise = has_history
             .then(|| self.sessions.known_session(&source.id))
             .flatten()
-            .and_then(|session| {
-                let keep_through = zeron_harness::claude::rewind::rewind_anchor(&session, boundary)?;
-                Some(zeron_doc::PendingRewind {
-                    session_id: session,
-                    keep_through,
-                    drop_turn: boundary.to_owned(),
-                })
+            .map(|session| zeron_doc::PendingRewind {
+                keep_through: zeron_harness::claude::rewind::rewind_anchor(&session, boundary)
+                    .unwrap_or_default(),
+                session_id: session,
+                drop_turn: boundary.to_owned(),
             });
         doc.truncate_messages_from(boundary)?;
         match precise {

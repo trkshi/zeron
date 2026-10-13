@@ -885,6 +885,15 @@ impl SessionsEngine {
         zeron_proto::invocation::validate_harness_invocations(&request.prompt, harness_id)
             .map_err(EngineError::Other)?;
         let mut admission = self.checkpoint_admission().await;
+        // A warm start would resume the provider session before its owed
+        // rewind; the next prompt's own start applies the rewind instead.
+        if idle
+            && self
+                .doc_handle(chat_id)
+                .is_ok_and(|handle| handle.doc().pending_rewind().is_some())
+        {
+            return Err(EngineError::Other("a rewind is pending".into()));
+        }
         if !idle && admission.is_some() {
             self.prepare_account_auto_switch(harness_id, false).await;
         }
@@ -1080,16 +1089,39 @@ impl SessionsEngine {
         // session seeded with the remaining transcript. Never resume the
         // untruncated session: it still holds the rewound turns.
         let mut rewind = None;
+        let mut fallback_prompt = None;
         if !idle && let Some(pending) = handle.doc().pending_rewind() {
-            if harness_id == HarnessId::ClaudeCode
-                && !startup_retry
-                && request.resume.as_deref() == Some(pending.session_id.as_str())
-            {
+            let same_session = !startup_retry
+                && request.resume.as_deref() == Some(pending.session_id.as_str());
+            let precise = match harness_id {
+                HarnessId::ClaudeCode => !pending.keep_through.is_empty(),
+                // Codex reverts the thread itself; should that fail it starts
+                // a fresh thread with the transcript replayed instead.
+                HarnessId::Codex => {
+                    fallback_prompt = (!native_command(&request.prompt, harness_id))
+                        .then(|| {
+                            let entries: Vec<_> = handle
+                                .doc()
+                                .read_entries()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|entry| entry.id != user_id)
+                                .collect();
+                            history_prompt(&entries, &request.prompt)
+                        })
+                        .flatten()
+                        .map(|prompt| zeron_proto::invocation::harness_prompt(&prompt, harness_id));
+                    true
+                }
+                _ => false,
+            };
+            if same_session && precise {
                 rewind = Some(zeron_harness::Rewind {
                     keep_through: pending.keep_through,
                     drop_turn: pending.drop_turn,
                 });
             } else {
+                fallback_prompt = None;
                 request.resume = None;
                 resume_injected = false;
                 self.inner.drop_harness_session(chat_id, &request.cwd);
@@ -1139,6 +1171,7 @@ impl SessionsEngine {
         turn.set_opening(zeron_harness::TurnOpening {
             message_id: (!idle).then(|| user_id.clone()),
             rewind: rewind.clone(),
+            fallback_prompt,
         });
         let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let fork_history_sent = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2204,36 +2237,42 @@ impl Inner {
                 })?
             }
         };
-        let history: Vec<_> = entries[..end]
-            .iter()
-            .map(|entry| {
-                let text = entry
-                    .parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        zeron_doc::MessagePart::Text { text, .. } => Some(text.clone()),
-                        zeron_doc::MessagePart::Tool { call, output, .. } => Some(format!(
-                            "Tool: {}\n{}",
-                            serde_json::to_string(call).unwrap_or_default(),
-                            output.clone().unwrap_or_default()
-                        )),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (entry.role, text)
-            })
-            .filter(|(_, text)| !text.is_empty())
-            .map(|(role, text)| serde_json::json!({ "role": role, "text": text }))
-            .collect();
-        (!history.is_empty()).then(|| {
-            format!(
-                "Continue this conversation using the following prior conversation as context.\n<conversation>\n{}\n</conversation>\n\n{}",
-                serde_json::to_string(&history).unwrap_or_default(),
-                prompt
-            )
-        })
+        history_prompt(&entries[..end], prompt)
     }
+}
+
+/// `prompt` behind the conversation `entries`, for a provider session that
+/// holds none of it. `None` when nothing in `entries` carries text.
+fn history_prompt(entries: &[SessionMessageEntry], prompt: &str) -> Option<String> {
+    let history: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            let text = entry
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    zeron_doc::MessagePart::Text { text, .. } => Some(text.clone()),
+                    zeron_doc::MessagePart::Tool { call, output, .. } => Some(format!(
+                        "Tool: {}\n{}",
+                        serde_json::to_string(call).unwrap_or_default(),
+                        output.clone().unwrap_or_default()
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (entry.role, text)
+        })
+        .filter(|(_, text)| !text.is_empty())
+        .map(|(role, text)| serde_json::json!({ "role": role, "text": text }))
+        .collect();
+    (!history.is_empty()).then(|| {
+        format!(
+            "Continue this conversation using the following prior conversation as context.\n<conversation>\n{}\n</conversation>\n\n{}",
+            serde_json::to_string(&history).unwrap_or_default(),
+            prompt
+        )
+    })
 }
 
 /// Whether the provider routes this prompt as a native command: its delivered

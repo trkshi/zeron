@@ -90,6 +90,9 @@ pub struct TurnOpening {
     pub message_id: Option<String>,
     /// Resume the session truncated before an earlier turn.
     pub rewind: Option<Rewind>,
+    /// With `rewind`: the opening prompt with the kept transcript in front of
+    /// it, for a driver that can only rewind by starting a fresh session.
+    pub fallback_prompt: Option<String>,
 }
 
 /// A truncating resume: the provider drops `drop_turn` and everything after it.

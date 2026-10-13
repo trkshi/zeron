@@ -941,6 +941,51 @@ fn new_message_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// A canonical UUID: the only transcript id sent as `clientUserMessageId`.
+fn is_client_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.hyphenated().to_string() == id)
+}
+
+/// Revert `thread` to before the turn opened by the prompt sent with
+/// `client_id` (zeron's transcript id). The app-server keeps a turn whole, so a
+/// message that joined a turn mid-way (a steer) cannot be cut on its own.
+/// Duplicate ids are possible (the app-server does not dedupe): the newest
+/// turn wins, matching the transcript the rewind was taken from.
+async fn revert_before(client: &RpcClient, thread: &str, client_id: &str) -> Result<(), HarnessError> {
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut params = json!({ "threadId": thread });
+        if let Some(cursor) = &cursor {
+            params["cursor"] = Value::String(cursor.clone());
+        }
+        let page = client.request("thread/turns/list", params).await?;
+        let turns = page["data"].as_array().cloned().unwrap_or_default();
+        for turn in &turns {
+            let users: Vec<&Value> = turn["items"]
+                .as_array()
+                .map(|items| items.iter().filter(|item| item["type"] == "userMessage").collect())
+                .unwrap_or_default();
+            match users.iter().position(|item| item["clientId"].as_str() == Some(client_id)) {
+                Some(0) => {
+                    let turn_id = turn["id"].as_str().unwrap_or_default();
+                    client
+                        .request("thread/revert", json!({ "threadId": thread, "beforeTurnId": turn_id }))
+                        .await?;
+                    return Ok(());
+                }
+                Some(_) => {
+                    return Err(HarnessError::Protocol("the rewound message joined its turn mid-way".into()));
+                }
+                None => {}
+            }
+        }
+        match page["nextCursor"].as_str() {
+            Some(next) if !next.is_empty() && !turns.is_empty() => cursor = Some(next.to_owned()),
+            _ => return Err(HarnessError::Protocol("no turn opens with the rewound message".into())),
+        }
+    }
+}
+
 /// Rotate the assistant message id; returns (previous, next).
 fn rotate(id: &mut String) -> (String, String) {
     let prev = std::mem::replace(id, new_message_id());
@@ -1068,6 +1113,14 @@ async fn run_session(session: Session) {
         turn,
     } = controls;
     let request_input = Arc::new(request_input);
+    // What the host knows about the opening prompt: its transcript id, and a
+    // rewind owed to the resumed thread.
+    let opening = if title_only {
+        crate::TurnOpening::default()
+    } else {
+        turn.opening()
+    };
+    let opening_client_id = opening.message_id.clone().filter(|id| is_client_id(id));
 
     // ---- wire params ------------------------------------------------------
     // Parity with the Claude adapter, which auto-approves every `can_use_tool`
@@ -1175,11 +1228,31 @@ async fn run_session(session: Session) {
                 }
             }
         }
+        let rewind = opening.rewind.as_ref().filter(|_| !idle);
+        let mut replay = false;
         let thread = if let Some(resume) = &request.resume {
             let mut p = start_params.clone();
             p.insert("threadId".into(), Value::String(resume.clone()));
             match client.request("thread/resume", Value::Object(p)).await {
-                Ok(thread) => thread,
+                Ok(thread) => match rewind {
+                    None => thread,
+                    Some(rewind) => match revert_before(&client, resume, &rewind.drop_turn).await {
+                        Ok(()) => thread,
+                        // Never continue the unreverted thread: it still holds
+                        // the rewound turns. A fresh one gets the transcript.
+                        Err(e) if opening.fallback_prompt.is_some() => {
+                            tracing::info!(
+                                target: "zeron_harness::codex",
+                                "rewind by revert failed (fresh thread with history): {e}"
+                            );
+                            replay = true;
+                            client
+                                .request("thread/start", Value::Object(start_params.clone()))
+                                .await?
+                        }
+                        Err(e) => return Err(e),
+                    },
+                },
                 // A missing/foreign rollout falls back to a fresh thread.
                 Err(e) => {
                     if command_request(&request.prompt, resume)?.is_some() {
@@ -1189,6 +1262,7 @@ async fn run_session(session: Session) {
                         target: "zeron_harness::codex",
                         "thread/resume failed (starting fresh): {e}"
                     );
+                    replay = rewind.is_some() && opening.fallback_prompt.is_some();
                     client
                         .request("thread/start", Value::Object(start_params.clone()))
                         .await?
@@ -1206,9 +1280,9 @@ async fn run_session(session: Session) {
             cwd: thread["cwd"].as_str().unwrap_or(&request.cwd).to_owned(),
             model_provider: thread["modelProvider"].as_str().map(str::to_owned),
         };
-        Ok::<_, HarnessError>((thread_id, children, voice_context))
+        Ok::<_, HarnessError>((thread_id, children, voice_context, replay))
     };
-    let (thread_id, mut children, voice_context) = tokio::select! {
+    let (thread_id, mut children, voice_context, replay) = tokio::select! {
         res = setup => match res {
             Ok(thread_id) => thread_id,
             Err(e) => {
@@ -1242,10 +1316,14 @@ async fn run_session(session: Session) {
     // for later turns): a steer's in-place `config` takes effect from the
     // next turn the runtime starts.
     let mut live = request.clone();
-    let turn_params = |live: &RunRequest, text: &str| -> Value {
+    let turn_params = |live: &RunRequest, text: &str, client_id: Option<&str>| -> Value {
         let mut p = serde_json::Map::new();
         p.insert("threadId".into(), Value::String(thread_id.clone()));
         p.insert("input".into(), prompt_input(text));
+        // Zeron's transcript id, so a later rewind can find this turn.
+        if let Some(id) = client_id {
+            p.insert("clientUserMessageId".into(), Value::String(id.to_owned()));
+        }
         p.insert("approvalPolicy".into(), approval_policy.into());
         p.insert("sandboxPolicy".into(), sandbox_policy_value(live.sandbox));
         // Reasoning summaries stream (`item/reasoning/summaryTextDelta`) only
@@ -1294,7 +1372,11 @@ async fn run_session(session: Session) {
         )
     });
     if !idle {
-        match start_turn(&client, turn_params(&live, &request.prompt)).await {
+        let prompt = match (replay, &opening.fallback_prompt) {
+            (true, Some(prompt)) => prompt.as_str(),
+            _ => request.prompt.as_str(),
+        };
+        match start_turn(&client, turn_params(&live, prompt, opening_client_id.as_deref())).await {
             Ok(id) => router.adopt_started(id),
             Err(e) => {
                 let _ = event_tx
@@ -1324,7 +1406,7 @@ async fn run_session(session: Session) {
     // next `turn/start` when the expected turn's end notification arrives.
     // Each carries the configuration it was sent with, adopted when its own
     // `turn/start` goes out.
-    let mut queued_steers: VecDeque<(String, Option<Box<RunRequest>>)> = VecDeque::new();
+    let mut queued_steers: VecDeque<(String, Option<Box<RunRequest>>, String)> = VecDeque::new();
     // Steers the app-server accepted into the running turn, by the
     // `clientUserMessageId` they were sent with. Each is confirmed
     // (`Steered`) when its userMessage item joins the turn — not when
@@ -1662,14 +1744,14 @@ async fn run_session(session: Session) {
                         // this turn's end becomes the next turn now; otherwise
                         // stay alive for the mailbox — the caller owns teardown.
                         current_native = false;
-                        if let Some((text, config)) = queued_steers.pop_front() {
+                        if let Some((text, config, client_id)) = queued_steers.pop_front() {
                             if let Some(next) = config {
                                 live = *next;
                             }
                             current_native = command_request(&text, &thread_id).ok().flatten().is_some();
                             if !steer_as_new_turn(
                                 &client,
-                                turn_params(&live, &text),
+                                turn_params(&live, &text, Some(&client_id)),
                                 &mut router,
                                 &event_tx,
                                 &mut assistant_message_id,
@@ -1811,6 +1893,13 @@ async fn run_session(session: Session) {
 
             steer = steering.recv(), if steering_open && !interrupted => match steer {
                 Some(msg) => {
+                    // Zeron's transcript id rides the steer, so a rewind can
+                    // find the turn it opens when delivered as `turn/start`.
+                    let client_id = msg
+                        .message_id
+                        .clone()
+                        .filter(|id| is_client_id(id))
+                        .unwrap_or_else(new_message_id);
                     let text = msg.prompt;
                     // Native operations run at a turn boundary, never as text
                     // injected into an already running model turn. So does a
@@ -1825,18 +1914,17 @@ async fn run_session(session: Session) {
                             || msg.config.is_some()
                             || !matches!(command_request(&text, &thread_id), Ok(None)))
                     {
-                        queued_steers.push_back((text, msg.config));
+                        queued_steers.push_back((text, msg.config, client_id));
                         continue 'main;
                     }
                     if let Some(next) = msg.config {
                         live = *next;
                     }
                     if let Some(expected) = router.active.clone() {
-                        let client_id = new_message_id();
                         let steer_params = json!({
                             "threadId": thread_id,
                             "expectedTurnId": expected,
-                            "clientUserMessageId": client_id,
+                            "clientUserMessageId": &client_id,
                             "input": prompt_input(&text),
                         });
                         match client.request("turn/steer", steer_params).await {
@@ -1855,11 +1943,11 @@ async fn run_session(session: Session) {
                                 if router.active.as_deref() == Some(expected.as_str())
                                     && !router.is_completed(&expected)
                                 {
-                                    queued_steers.push_back((text, None));
+                                    queued_steers.push_back((text, None, client_id));
                                 } else {
                                     current_native = command_request(&text, &thread_id).ok().flatten().is_some();
                                     if !steer_as_new_turn(
-                                        &client, turn_params(&live, &text), &mut router, &event_tx,
+                                        &client, turn_params(&live, &text, Some(&client_id)), &mut router, &event_tx,
                                         &mut assistant_message_id, &mut done_current,
                                     ).await { break 'main; }
                                     turn_usage.reset();
@@ -1870,7 +1958,7 @@ async fn run_session(session: Session) {
                     } else {
                         current_native = command_request(&text, &thread_id).ok().flatten().is_some();
                         if !steer_as_new_turn(
-                            &client, turn_params(&live, &text), &mut router, &event_tx,
+                            &client, turn_params(&live, &text, Some(&client_id)), &mut router, &event_tx,
                             &mut assistant_message_id, &mut done_current,
                         ).await { break 'main; }
                         turn_usage.reset();
