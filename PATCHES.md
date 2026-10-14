@@ -3,10 +3,15 @@
 This public fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) keeps the
 app named Zeron. The `patched-windows` branch starts from upstream `v0.2.101`
 (`b42fc2b8fbf247dd92796c2917f277535cea91ac`) and incorporates upstream `main`
-through `09beace0` (version `v0.2.112`). It is a personal build, not an official
+through `75b72602` (version `v0.2.112`). It is a personal build, not an official
 Zeron release.
 
 ## Changes
+
+- Integrate upstream's PR side panes, multi-entry file selection, per-device
+  worktree locations, persistent browser profiles, and idle harness tab icons.
+  Preserve the Usage page's titlebar and profile isolation, checkpoint restores'
+  autosave freeze, Home account switching, and sidebar navigation animation.
 
 - Integrate upstream's tabbed workspace search, session-info panel, adaptive
   panel layout, projectless scratch folders, quieter Providers page, and MCP

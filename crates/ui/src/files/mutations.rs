@@ -84,7 +84,7 @@ impl FilesSurface {
     }
 
     pub(crate) fn checkpoint_restore_blocker(&self) -> Option<&'static str> {
-        if self.pending_mutation.is_some() || self.mutation_hold.is_some() {
+        if self.pending_mutation.is_some() || !self.mutation_hold.is_empty() {
             Some("Wait for the current file operation to finish before restoring files.")
         } else if self
             .preview
@@ -101,7 +101,7 @@ impl FilesSurface {
     }
 
     pub(crate) fn finish_checkpoint_restore(&mut self, cx: &mut Context<Self>) {
-        self.hold_mutation(None, cx);
+        self.hold_mutation(Vec::new(), cx);
         let paths = self.preview.documents.keys().cloned().collect::<Vec<_>>();
         for path in paths {
             self.reconcile_document(path, cx);
@@ -129,8 +129,8 @@ impl FilesSurface {
         })
     }
 
-    pub(crate) fn hold_mutation(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        self.mutation_hold = path;
+    pub(crate) fn hold_mutation(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        self.mutation_hold = paths;
         let paths = self.preview.documents.keys().cloned().collect::<Vec<_>>();
         for path in paths {
             if self.mutation_blocks_path(&path) {
@@ -143,8 +143,9 @@ impl FilesSurface {
     pub(super) fn mutation_blocks_path(&self, path: &str) -> bool {
         if self
             .mutation_hold
-            .as_deref()
-            .is_some_and(|hold| hold.is_empty() || contains_path(hold, path))
+            .iter()
+            // An empty path freezes every document during a checkpoint restore.
+            .any(|hold| hold.is_empty() || contains_path(hold, path))
         {
             return true;
         }
@@ -167,45 +168,69 @@ impl FilesSurface {
         destination: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.request_mutations(vec![(path.to_string(), destination)], cx);
+    }
+
+    /// Several entries become one queue that stops at its first failure.
+    pub(super) fn request_mutations(
+        &mut self,
+        requests: Vec<(String, Option<String>)>,
+        cx: &mut Context<Self>,
+    ) {
         if self.pending_mutation.is_some() {
             return;
         }
         let Some(origin) = self.interaction_origin(cx) else {
             return;
         };
-        let Some(entry) = self.tree.node(path).map(|n| n.entry.clone()) else {
-            return;
-        };
-        let available = self.mutation_capabilities.is_some_and(|c| {
-            if destination.is_some() {
-                c.move_entry
-            } else {
-                c.delete_entry
-            }
-        });
-        if !available
-            || origin.checkout_id.is_none()
-            || entry.mutation_revision.is_none()
-            || entry.kind == WorkspaceEntryKind::Symlink
-        {
+        if origin.checkout_id.is_none() {
             return;
         }
-        cx.emit(FilesEvent::Mutate(MutationIntent {
-            operation_id: uuid::Uuid::new_v4().to_string(),
-            origin,
-            entry,
-            destination,
-        }));
+        let mut intents = Vec::with_capacity(requests.len());
+        for (path, destination) in requests {
+            let Some(entry) = self.tree.node(&path).map(|n| n.entry.clone()) else {
+                return;
+            };
+            let available = self.mutation_capabilities.is_some_and(|c| {
+                if destination.is_some() {
+                    c.move_entry
+                } else {
+                    c.delete_entry
+                }
+            });
+            if !available
+                || entry.mutation_revision.is_none()
+                || entry.kind == WorkspaceEntryKind::Symlink
+            {
+                return;
+            }
+            intents.push(MutationIntent {
+                operation_id: uuid::Uuid::new_v4().to_string(),
+                origin: origin.clone(),
+                entry,
+                destination,
+            });
+        }
+        match intents.len() {
+            0 => {}
+            1 => cx.emit(FilesEvent::Mutate(intents.pop().unwrap())),
+            _ => cx.emit(FilesEvent::MutateMany(intents)),
+        }
     }
 
+    pub(crate) fn mutation_error(&self) -> Option<SharedString> {
+        self.mutation_error.clone()
+    }
+
+    /// Returns whether the operation was applied, so a queue may continue.
     pub(crate) fn finish_mutation(
         &mut self,
         intent: &MutationIntent,
         result: &Result<WorkspaceMutationOutcome, String>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.pending_mutation.as_ref().map(|p| &p.operation_id) != Some(&intent.operation_id) {
-            return;
+            return false;
         }
         // A semantic watch event is authoritative even if the RPC reply was lost.
         let observed = self
@@ -234,6 +259,12 @@ impl FilesSurface {
             }
             _ => self.mutation_error = Some("Workspace changed before operation completed".into()),
         }
+        let applied = observed_applied
+            || matches!(
+                result,
+                Ok(WorkspaceMutationOutcome::Applied { checkout_id, .. })
+                    if intent.origin.checkout_id.as_ref() == Some(checkout_id)
+            );
         if observed_applied || matches!(result, Ok(WorkspaceMutationOutcome::Applied { .. })) {
             self.tree_rename = None;
         } else if let Some(rename) = &mut self.tree_rename {
@@ -258,6 +289,7 @@ impl FilesSurface {
             self.on_search_edited(cx);
         }
         cx.notify();
+        applied
     }
 
     pub(super) fn apply_semantic_mutation(
@@ -399,11 +431,75 @@ mod tests {
             assert!(!files.mutation_busy());
         });
     }
+    #[gpui::test]
+    fn selection_requests_one_ordered_queue(cx: &mut TestAppContext) {
+        let (files, cx) = super::super::test_support::setup(cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = events.clone();
+        let _sub = cx.update(|_, cx| {
+            cx.subscribe(&files, move |_, event, _| {
+                recorded.borrow_mut().push(event.clone())
+            })
+        });
+        files.update(cx, |files, cx| {
+            files.request_mutations(vec![("folder".into(), None), ("a.txt".into(), None)], cx);
+            // An unknown entry rejects the whole request rather than a prefix.
+            files.request_mutations(vec![("a.txt".into(), None), ("missing".into(), None)], cx);
+        });
+        cx.run_until_parked();
+        let events = events.borrow();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, FilesEvent::Mutate(_)))
+        );
+        let batches = events
+            .iter()
+            .filter_map(|event| match event {
+                FilesEvent::MutateMany(intents) => Some(intents),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(batches.len(), 1);
+        let paths = batches[0]
+            .iter()
+            .map(|intent| intent.entry.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, ["folder", "a.txt"]);
+        assert_ne!(batches[0][0].operation_id, batches[0][1].operation_id);
+    }
+
     #[test]
     fn path_membership_uses_component_boundaries() {
         assert!(contains_path("a", "a/child"));
         assert!(contains_path("a", "a"));
         assert!(!contains_path("a", "ab/child"));
+    }
+
+    #[gpui::test]
+    fn checkpoint_freeze_and_multi_path_holds_release_without_losing_scope(
+        cx: &mut TestAppContext,
+    ) {
+        let (files, cx) = super::super::test_support::setup(cx);
+        files.update(cx, |files, cx| {
+            assert!(files.checkpoint_restore_blocker().is_none());
+            files.hold_mutation(vec!["folder".into(), "a.txt".into()], cx);
+            assert!(files.mutation_blocks_path("folder/child.txt"));
+            assert!(files.mutation_blocks_path("a.txt"));
+            assert!(!files.mutation_blocks_path("folder-other/child.txt"));
+            assert!(files.checkpoint_restore_blocker().is_some());
+
+            files.hold_mutation(Vec::new(), cx);
+            assert!(!files.mutation_blocks_path("a.txt"));
+            assert!(files.checkpoint_restore_blocker().is_none());
+            files.hold_mutation(vec![String::new()], cx);
+            assert!(files.mutation_blocks_path("a.txt"));
+            assert!(files.mutation_blocks_path("unrelated/nested.txt"));
+            assert!(files.checkpoint_restore_blocker().is_some());
+            files.hold_mutation(Vec::new(), cx);
+            assert!(!files.mutation_blocks_path("unrelated/nested.txt"));
+            assert!(files.checkpoint_restore_blocker().is_none());
+        });
     }
 
     #[gpui::test]

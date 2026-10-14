@@ -246,7 +246,7 @@ impl Shell {
             return;
         }
         for surface in &surfaces {
-            surface.update(cx, |files, cx| files.hold_mutation(Some(String::new()), cx));
+            surface.update(cx, |files, cx| files.hold_mutation(vec![String::new()], cx));
         }
         let in_place = dialog.rewinds_in_place();
         let request = dialog.operation.unwrap_or_else(|| RestoreCheckpointParams {
