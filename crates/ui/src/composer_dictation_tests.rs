@@ -634,6 +634,7 @@ fn dictation_question_takeover_stops_capture_without_losing_draft(cx: &mut TestA
             parts: vec![MessagePart::Input {
                 id: "input".into(),
                 request_id: "request".into(),
+                asynchronous: false,
                 resolved: false,
                 questions: vec![UserInputQuestion {
                     id: "q".into(),

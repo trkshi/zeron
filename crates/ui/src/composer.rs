@@ -11835,14 +11835,9 @@ mod tests {
                 Default::default(),
                 cx,
             );
-            crate::settings::init(
-                crate::settings::UiSettings {
-                    usage_display: crate::settings::UsageDisplay::Detailed,
-                    ..Default::default()
-                },
-                dir.path(),
-                cx,
-            );
+            let mut settings = crate::settings::UiSettings::default();
+            settings.usage_display = crate::settings::UsageDisplay::Detailed;
+            crate::settings::init(settings, dir.path(), cx);
         });
         let (composer, cx) = cx.add_window_view(|_, cx| {
             let state = cx.new(|_| {
