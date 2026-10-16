@@ -905,7 +905,8 @@ pub struct ContextUsage {
     pub window: Option<u64>,
 }
 
-/// One model request's measured generation window, not a whole agent turn.
+/// Output over the time a turn's model requests spent streaming, excluding
+/// waits for the first token and tool runs between requests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationUsage {
@@ -913,7 +914,8 @@ pub struct GenerationUsage {
     pub reasoning_output_tokens: Option<u64>,
     pub elapsed_ms: u64,
     pub ttft_ms: u64,
-    /// Client-observed streaming time rather than provider/server timing.
+    /// An older build's whole-turn arrival estimate, which buffered output
+    /// could inflate. Saved ones are not shown.
     #[serde(default)]
     pub estimated: bool,
 }

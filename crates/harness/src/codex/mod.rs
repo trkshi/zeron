@@ -1511,6 +1511,7 @@ async fn run_session(session: Session) {
                             continue;
                         }
                         streamed_text.insert(id);
+                        turn_usage.output_delta(std::time::Instant::now());
                         if let Some(text) = delta_text(&params)
                             && !send(&event_tx, AgentEvent::TextDelta { text }).await
                         {
@@ -1652,7 +1653,7 @@ async fn run_session(session: Session) {
                             .and_then(Value::as_str);
                         let active = !done_current && reported_turn
                             .is_none_or(|id| router.active.as_deref() == Some(id));
-                        if let Some(usage) = turn_usage.observe(&params, active)
+                        if let Some(usage) = turn_usage.observe(&params, active, std::time::Instant::now())
                             && !send(&event_tx, usage).await { break 'main; }
                     }
 

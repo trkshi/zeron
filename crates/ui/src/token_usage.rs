@@ -104,7 +104,7 @@ pub(crate) fn card(stats: TokenStats, theme: &Theme) -> gpui::Div {
                 .pb(px(6.0))
                 .text_size(px(11.0))
                 .text_color(theme.text_muted)
-                .child("Generation TPS excludes first-output wait and separately reported reasoning. Turn average includes tools and waiting."),
+                .child("Turn average includes tools and waiting."),
         )
 }
 
@@ -203,7 +203,7 @@ mod tests {
         let mut entries = [entry];
         let first = TokenStats::from_transcript(&entries, true);
         assert_eq!(first.label(), "75.0 tok/s");
-        assert_eq!(first.rate_description(), "Generation TPS (latest request)");
+        assert_eq!(first.rate_description(), "Generation TPS");
         assert_eq!(rows(first)[7].1, "20.0 tok/s");
         assert_eq!(rows(first)[9].1, "75.0 tok/s");
         entries[0].duration_ms = Some(40_000);

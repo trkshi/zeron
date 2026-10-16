@@ -198,12 +198,26 @@ pub(crate) struct TurnUsageTracker {
     previous_total: Option<TokenUsage>,
     current: Option<TokenUsage>,
     incomplete_turn: bool,
+    /// The request's visible-output window, from its first agent-message
+    /// delta to its usage report. Reasoning streams nothing, so its tokens
+    /// leave the measurement along with its time.
+    window: Option<crate::generation::StreamWindow>,
+    generation: Option<zeron_proto::GenerationUsage>,
 }
 
 impl TurnUsageTracker {
     pub fn reset(&mut self) {
         self.current = None;
         self.incomplete_turn = false;
+        self.window = None;
+        self.generation = None;
+    }
+
+    /// One streamed agent-message delta.
+    pub fn output_delta(&mut self, now: std::time::Instant) {
+        self.window
+            .get_or_insert_with(|| crate::generation::StreamWindow::open(now))
+            .chunk();
     }
 
     pub fn steer_in_place(&mut self) -> Option<AgentEvent> {
@@ -212,13 +226,21 @@ impl TurnUsageTracker {
         // request at that boundary; clear partial stats instead of guessing.
         let had_report = self.current.take().is_some();
         self.incomplete_turn = true;
+        self.window = None;
+        self.generation = None;
         had_report.then_some(AgentEvent::TurnUsage {
             usage: TokenUsage::default(),
         })
     }
 
-    pub fn observe(&mut self, params: &Value, active: bool) -> Option<AgentEvent> {
+    pub fn observe(
+        &mut self,
+        params: &Value,
+        active: bool,
+        now: std::time::Instant,
+    ) -> Option<AgentEvent> {
         let wire = field(params, &["tokenUsage", "token_usage"])?;
+        let window = self.window.take();
         let Some(total) = wire
             .get("total")
             .filter(|v| v.is_object())
@@ -238,6 +260,13 @@ impl TurnUsageTracker {
             return None;
         }
         let last = wire.get("last").map(token_counts).unwrap_or_default();
+        if let Some(elapsed) = window.and_then(|window| window.measured(now))
+            && let Some(visible) = last
+                .output_tokens
+                .and_then(|output| output.checked_sub(last.reasoning_output_tokens.unwrap_or(0)))
+        {
+            self.generation = crate::generation::accumulate(self.generation, visible, elapsed);
+        }
         let previous = self.previous_total.replace(total).unwrap_or_default();
         let delta = |now: Option<u64>, before: Option<u64>, last: Option<u64>| match (now, before) {
             (Some(now), Some(before)) => now.checked_sub(before),
@@ -290,8 +319,12 @@ impl TurnUsageTracker {
                     increment.reasoning_output_tokens,
                 ),
                 cost_usd: None,
-                generation: increment.generation,
+                generation: None,
             },
+        };
+        let usage = TokenUsage {
+            generation: self.generation,
+            ..usage
         };
         self.current = Some(usage);
         // An unknown/rewound report must also replace earlier known counts.
@@ -336,7 +369,7 @@ mod usage_tracker_tests {
     }
 
     fn observed(tracker: &mut TurnUsageTracker, value: &Value) -> TokenUsage {
-        match tracker.observe(value, true).unwrap() {
+        match tracker.observe(value, true, std::time::Instant::now()).unwrap() {
             AgentEvent::TurnUsage { usage } => usage,
             _ => panic!("expected turn usage"),
         }
@@ -364,6 +397,40 @@ mod usage_tracker_tests {
     }
 
     #[test]
+    fn generation_counts_visible_output_over_its_stream_window() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        let mut tracker = TurnUsageTracker::default();
+        for _ in 0..20 {
+            tracker.output_delta(start);
+        }
+        // 50 output tokens, 25 of them reasoning: 25 visible over 0.5 s.
+        let usage = match tracker
+            .observe(
+                &snapshot(1100, 250, 100, 50),
+                true,
+                start + Duration::from_millis(500),
+            )
+            .unwrap()
+        {
+            AgentEvent::TurnUsage { usage } => usage,
+            _ => panic!("expected turn usage"),
+        };
+        assert_eq!(usage.generation.unwrap().tps(), Some(50.0));
+        // A repeated report has no window and adds nothing.
+        let repeated = observed(&mut tracker, &snapshot(1100, 250, 100, 50));
+        assert_eq!(repeated.generation, usage.generation);
+        // A single-chunk request stays out of the reading.
+        tracker.output_delta(start);
+        let next = observed(&mut tracker, &snapshot(1300, 310, 200, 60));
+        assert_eq!(next.generation, usage.generation);
+        // A steer clears the turn's reading.
+        tracker.steer_in_place();
+        tracker.reset();
+        assert_eq!(tracker.generation, None);
+    }
+
+    #[test]
     fn native_usage_does_not_invent_request_generation_timing() {
         let mut tracker = TurnUsageTracker::default();
         let first = observed(&mut tracker, &snapshot(1100, 250, 100, 50));
@@ -384,7 +451,7 @@ mod usage_tracker_tests {
         let mut tracker = TurnUsageTracker::default();
         assert!(
             tracker
-                .observe(&snapshot(1100, 250, 100, 50), false)
+                .observe(&snapshot(1100, 250, 100, 50), false, std::time::Instant::now())
                 .is_none()
         );
         let usage = observed(
@@ -419,13 +486,14 @@ mod usage_tracker_tests {
             tracker
                 .observe(
                     &json!({"tokenUsage": {"last": {"inputTokens": 42, "outputTokens": 7}}}),
-                    true
+                    true,
+                    std::time::Instant::now(),
                 )
                 .is_none()
         );
         assert!(
             tracker
-                .observe(&snapshot(1100, 250, 100, 50), true)
+                .observe(&snapshot(1100, 250, 100, 50), true, std::time::Instant::now())
                 .is_none()
         );
     }
@@ -442,7 +510,7 @@ mod usage_tracker_tests {
         );
         assert!(
             tracker
-                .observe(&snapshot(1300, 310, 200, 60), true)
+                .observe(&snapshot(1300, 310, 200, 60), true, std::time::Instant::now())
                 .is_none()
         );
         tracker.reset();

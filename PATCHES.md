@@ -153,13 +153,20 @@ Zeron release.
   is needed for token statistics. Codex's configured provider and credentials
   are unchanged, as is the standalone proxy service. Historical recorded
   statistics remain readable; new Codex turns use the normal whole-turn average.
-- Use the earlier whole-turn average TPS for Claude Code and OpenCode, not
-  client-arrival generation estimates: buffered CLI output is not a reliable
-  measure of model-generation time. Ignore previously saved client estimates
-  in both live and completed-turn displays, without changing stored chats or
-  token/cache/cost totals. Keep bounded Claude request tracking and cached
-  footer statistics. Remote use
-  requires an updated Ubuntu engine as well as the Windows app.
+- Measure generation TPS per model request for Claude Code and Codex. Claude
+  times each request from `message_start` to `message_stop`, so hidden
+  thinking time pairs with the thinking tokens it reports. Codex times its
+  visible output from the first agent-message delta to the request's usage
+  report and leaves out hidden reasoning tokens. Waiting for the first token
+  and tool runs fall outside every window. A request shorter than 300 ms or
+  with fewer than 3 streamed chunks arrived as a burst and counts toward
+  neither tokens nor time. The footer shows generation TPS when a turn has a
+  measured request and the whole-turn average otherwise; the popover keeps
+  both. OpenCode keeps the whole-turn average. Saved client-arrival
+  estimates from older builds stay hidden, and stored chats and
+  token/cache/cost totals are unchanged. Keep bounded Claude request tracking
+  and cached footer statistics. Remote use requires an updated Ubuntu engine
+  as well as the Windows app.
 - Retain upstream's `Shift+Backspace` fix: holding Shift while pressing
   Backspace still deletes backward or removes the selected text in the
   composer and search inputs.

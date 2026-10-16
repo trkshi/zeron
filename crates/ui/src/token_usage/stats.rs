@@ -94,7 +94,7 @@ impl TokenStats {
         if self.generation_previous {
             "Generation TPS (previous turn)"
         } else {
-            "Generation TPS (latest request)"
+            "Generation TPS"
         }
     }
 

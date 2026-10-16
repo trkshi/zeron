@@ -1,6 +1,8 @@
 //! Frame → [`AgentEvent`] normalization (init dedupe, subagent tagging, tool
 //! decoding, error-code mapping).
 
+use std::time::Instant;
+
 use serde_json::Value;
 use zeron_proto::{AgentEvent, DoneStatus, HarnessId, TodoItem, TodoStatus, TokenUsage, ToolCall};
 
@@ -441,14 +443,17 @@ impl Normalizer {
             Frame::StreamEvent(f) => {
                 if f.parent_tool_use_id.is_none() {
                     let usage = match f.event.kind.as_str() {
-                        "message_start" => self.turn_usage.start(f.event.message.as_ref()),
+                        "message_start" => self
+                            .turn_usage
+                            .start(f.event.message.as_ref(), Instant::now()),
                         "message_delta" => f
                             .event
                             .usage
                             .as_ref()
                             .and_then(|usage| self.turn_usage.delta(usage)),
-                        "message_stop" => {
-                            self.turn_usage.stop();
+                        "message_stop" => self.turn_usage.stop(Instant::now()),
+                        "content_block_delta" => {
+                            self.turn_usage.chunk();
                             None
                         }
                         _ => None,
@@ -742,6 +747,7 @@ impl Normalizer {
                     .map(|(cost, previous)| cost - previous);
                 let turn_usage = TokenUsage {
                     cost_usd,
+                    generation: self.turn_usage.generation(),
                     ..f.usage.token_usage()
                 };
                 let had_live_usage = self.turn_usage.has_reports();
