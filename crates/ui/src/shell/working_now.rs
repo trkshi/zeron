@@ -408,7 +408,7 @@ impl Shell {
                 name.push(' ');
                 name.push_str(crate::pickers::reasoning_label(reasoning));
             }
-            (config.harness, name)
+            (crate::pickers::chat_brand_icon(config), name)
         });
         let status = if row.activity.status == ActivityStatus::Done {
             "Done".to_owned()
@@ -458,8 +458,7 @@ impl Shell {
             )
             .into_any_element()
         };
-        let model = model.map(|(harness, model)| {
-            let (path, tint) = crate::pickers::harness_brand_icon(harness);
+        let model = model.map(|((path, tint), model)| {
             div()
                 .flex()
                 .items_center()

@@ -1101,7 +1101,7 @@ impl Shell {
                 let harness = self
                     .settings
                     .sidebar_show_harness
-                    .then(|| chat.config.as_ref().map(|c| c.harness))
+                    .then(|| chat.config.as_ref().map(crate::pickers::chat_brand_icon))
                     .flatten();
                 self.render_chat_row(
                     id.clone(),

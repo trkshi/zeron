@@ -8207,7 +8207,7 @@ impl Shell {
         space_name: SharedString,
         branch: Option<SharedString>,
         change_request: Option<zeron_proto::ChangeRequestSummary>,
-        harness: Option<zeron_proto::HarnessId>,
+        brand: Option<(&'static str, Option<gpui::Hsla>)>,
         status: zeron_proto::ChatIndicator,
         selected: bool,
         archived: bool,
@@ -8741,23 +8741,18 @@ impl Shell {
                         SIDEBAR_ACTIVE_HARNESS_TITLE_GAP
                     }))
                     .children(compact_status)
-                    .when_some(
-                        harness.map(crate::pickers::harness_brand_icon),
-                        |el, (path, tint)| {
-                            el.child(
-                                icon(path)
-                                    .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
-                                    .flex_none()
-                                    .text_color(
-                                        tint.unwrap_or(subline).opacity(if archived_muted {
-                                            0.4
-                                        } else {
-                                            0.8
-                                        }),
-                                    ),
-                            )
-                        },
-                    )
+                    .when_some(brand, |el, (path, tint)| {
+                        el.child(
+                            icon(path)
+                                .size(px(SIDEBAR_ACTIVE_HARNESS_ICON_SIZE))
+                                .flex_none()
+                                .text_color(tint.unwrap_or(subline).opacity(if archived_muted {
+                                    0.4
+                                } else {
+                                    0.8
+                                })),
+                        )
+                    })
                     .children(project_icon)
                     .child(match rename_input {
                         Some(input) => chat_title_editor(
@@ -12527,14 +12522,15 @@ impl Shell {
                     tab.state
                         .read(cx)
                         .selected_chat_row()
-                        .and_then(|chat| chat.config.as_ref().map(|config| config.harness))
+                        .and_then(|chat| chat.config.as_ref().map(crate::pickers::chat_brand_icon))
                 }),
-                RightSurface::Subagent(id) => {
-                    self.subagent_tabs.get(&id).and_then(|tab| tab.harness)
-                }
+                RightSurface::Subagent(id) => self
+                    .subagent_tabs
+                    .get(&id)
+                    .and_then(|tab| tab.harness)
+                    .map(crate::pickers::harness_brand_icon),
                 _ => None,
-            }
-            .map(crate::pickers::harness_brand_icon);
+            };
             let icon_path = match surface {
                 RightSurface::File(_) => icons::DOCUMENT,
                 RightSurface::Diff(id) => self

@@ -400,14 +400,18 @@ impl Shell {
         // header over the empty canvas was noise); the bar keeps its height,
         // drag region, and buttons. Where a session runs, and its side-chat
         // and project actions, live in the session card.
-        let (title, harness, on_canvas): (SharedString, Option<zeron_proto::HarnessId>, bool) = {
+        let (title, brand, on_canvas): (
+            SharedString,
+            Option<(&'static str, Option<gpui::Hsla>)>,
+            bool,
+        ) = {
             let state = self.state.read(cx);
             match state.selected_chat_row() {
                 Some(chat) => (
                     SharedString::from(transcript::single_line(
                         &chat.title.clone().unwrap_or_else(|| "New session".into()),
                     )),
-                    chat.config.as_ref().map(|c| c.harness),
+                    chat.config.as_ref().map(crate::pickers::chat_brand_icon),
                     false,
                 ),
                 None => (SharedString::from(""), None, true),
@@ -629,17 +633,14 @@ impl Shell {
                         .flex_row()
                         .items_center()
                         .gap(px(6.0))
-                        .when_some(
-                            harness.map(crate::pickers::harness_brand_icon),
-                            |el, (path, tint)| {
-                                el.child(
-                                    icon(path)
-                                        .size(px(14.0))
-                                        .flex_none()
-                                        .text_color(tint.unwrap_or(theme.text_muted)),
-                                )
-                            },
-                        )
+                        .when_some(brand, |el, (path, tint)| {
+                            el.child(
+                                icon(path)
+                                    .size(px(14.0))
+                                    .flex_none()
+                                    .text_color(tint.unwrap_or(theme.text_muted)),
+                            )
+                        })
                         .child(
                             div()
                                 .min_w_0()

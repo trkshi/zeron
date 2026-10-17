@@ -6000,10 +6000,16 @@ pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Ve
             }
             // A custom endpoint's `[1m]` names its window: keep it in the id
             // the run sends (an unpicked option default is never sent, so a
-            // folded row would run at 200K) and say so in the label instead.
+            // folded row would run at 200K). The label drops the suffix, and
+            // only says "(1M)" when the bare id is listed beside it.
             if zeron_harness::claude::endpoints::backend(Some(model.id.as_str())).is_some() {
                 if let Some(base) = model.label.strip_suffix("[1m]") {
-                    model.label = format!("{base} (1M)");
+                    let bare = model.id.strip_suffix("[1m]").unwrap_or(&model.id);
+                    model.label = if ids.iter().any(|other| other == bare) {
+                        format!("{base} (1M)")
+                    } else {
+                        base.to_owned()
+                    };
                 }
                 return Some(model);
             }
@@ -6083,6 +6089,13 @@ pub(crate) fn model_brand_icon(
         ),
         _ => harness_brand_icon(harness),
     }
+}
+
+/// A chat's mark, from its saved harness and model.
+pub(crate) fn chat_brand_icon(
+    config: &zeron_proto::ChatConfig,
+) -> (&'static str, Option<gpui::Hsla>) {
+    model_brand_icon(config.harness, config.model.as_deref())
 }
 
 /// `ZERON_HARNESS=mock` (the e2e/dev rig) opts the mock harness into the UI;
@@ -9430,13 +9443,16 @@ mod tests {
             vec![
                 bare_model("endpoint:deepseek:deepseek-flash[1m]", "deepseek-flash[1m]"),
                 bare_model("endpoint:deepseek:deepseek-v4-pro", "deepseek-v4-pro"),
+                bare_model("endpoint:deepseek:deepseek-v4-pro[1m]", "deepseek-v4-pro[1m]"),
             ],
         );
         // The run must send the suffix itself: unpicked defaults aren't sent.
         assert_eq!(models[0].id, "endpoint:deepseek:deepseek-flash[1m]");
-        assert_eq!(models[0].label, "deepseek-flash (1M)");
+        assert_eq!(models[0].label, "deepseek-flash");
         assert!(models[0].options.is_empty());
         assert_eq!(models[1].label, "deepseek-v4-pro");
+        // Both windows listed: the label tells them apart.
+        assert_eq!(models[2].label, "deepseek-v4-pro (1M)");
     }
 
     #[test]

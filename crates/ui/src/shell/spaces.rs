@@ -5335,7 +5335,7 @@ impl Shell {
                 let harness = self
                     .settings
                     .sidebar_show_harness
-                    .then(|| chat.config.as_ref().map(|c| c.harness))
+                    .then(|| chat.config.as_ref().map(crate::pickers::chat_brand_icon))
                     .flatten();
                 let height = sidebar_row_height(
                     self.settings.sidebar_compact,
@@ -5905,7 +5905,7 @@ impl Shell {
                 let harness = self
                     .settings
                     .sidebar_show_harness
-                    .then(|| chat.config.as_ref().map(|c| c.harness))
+                    .then(|| chat.config.as_ref().map(crate::pickers::chat_brand_icon))
                     .flatten();
                 list = list.child(
                     self.render_chat_row(
