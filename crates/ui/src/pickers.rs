@@ -5998,6 +5998,15 @@ pub(crate) fn normalize_model_rows(harness: HarnessId, models: Vec<Model>) -> Ve
             if has_real && model.id.eq_ignore_ascii_case("default") {
                 return None;
             }
+            // A custom endpoint's `[1m]` names its window: keep it in the id
+            // the run sends (an unpicked option default is never sent, so a
+            // folded row would run at 200K) and say so in the label instead.
+            if zeron_harness::claude::endpoints::backend(Some(model.id.as_str())).is_some() {
+                if let Some(base) = model.label.strip_suffix("[1m]") {
+                    model.label = format!("{base} (1M)");
+                }
+                return Some(model);
+            }
             if let Some(base) = strip_1m(&model.id.clone()) {
                 if ids.iter().any(|other| other == base) {
                     // The bare base is listed too — the engine already gave
@@ -9412,6 +9421,22 @@ mod tests {
             flags.contains(&("glm", false)),
             "other harness: not a clash"
         );
+    }
+
+    #[test]
+    fn normalize_keeps_endpoint_1m_ids_and_labels_them() {
+        let models = normalize_model_rows(
+            HarnessId::ClaudeCode,
+            vec![
+                bare_model("endpoint:deepseek:deepseek-flash[1m]", "deepseek-flash[1m]"),
+                bare_model("endpoint:deepseek:deepseek-v4-pro", "deepseek-v4-pro"),
+            ],
+        );
+        // The run must send the suffix itself: unpicked defaults aren't sent.
+        assert_eq!(models[0].id, "endpoint:deepseek:deepseek-flash[1m]");
+        assert_eq!(models[0].label, "deepseek-flash (1M)");
+        assert!(models[0].options.is_empty());
+        assert_eq!(models[1].label, "deepseek-v4-pro");
     }
 
     #[test]
