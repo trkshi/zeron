@@ -160,9 +160,13 @@ Zeron release.
   report and leaves out hidden reasoning tokens. Waiting for the first token
   and tool runs fall outside every window. A request shorter than 300 ms or
   with fewer than 3 streamed chunks arrived as a burst and counts toward
-  neither tokens nor time. The footer shows generation TPS when a turn has a
+  neither tokens nor time. OpenCode uses its server's own timestamps on both
+  protocols: each request runs from its first text or reasoning start to its
+  last text or reasoning end or tool call, so tool runs inside a request stay
+  out. Without a streamed reasoning part, hidden reasoning tokens are left
+  out. The footer shows generation TPS when a turn has a
   measured request and the whole-turn average otherwise; the popover keeps
-  both. OpenCode keeps the whole-turn average. Saved client-arrival
+  both. Saved client-arrival
   estimates from older builds stay hidden, and stored chats and
   token/cache/cost totals are unchanged. Keep bounded Claude request tracking
   and cached footer statistics. Remote use requires an updated Ubuntu engine

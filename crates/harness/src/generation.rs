@@ -32,8 +32,13 @@ impl StreamWindow {
     /// The window closed at `end`, when it streamed long enough to measure.
     pub fn measured(self, end: Instant) -> Option<Duration> {
         let elapsed = end.checked_duration_since(self.start)?;
-        (self.chunks >= MIN_CHUNKS && elapsed >= MIN_WINDOW).then_some(elapsed)
+        qualifies(self.chunks, elapsed).then_some(elapsed)
     }
+}
+
+/// Whether a window streamed long enough, in enough chunks, to be measured.
+pub(crate) fn qualifies(chunks: u32, elapsed: Duration) -> bool {
+    chunks >= MIN_CHUNKS && elapsed >= MIN_WINDOW
 }
 
 /// Add one measured request to the turn's generation reading.

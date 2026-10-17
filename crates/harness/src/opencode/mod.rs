@@ -3091,6 +3091,9 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                 return BusOutcome::Continue;
             };
             if session == session_id {
+                if turn.active {
+                    turn.usage.observe_part(part);
+                }
                 let events = part_snapshot_events(
                     main_feed,
                     part,
@@ -3162,6 +3165,11 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                 return BusOutcome::Continue;
             }
             if session == session_id {
+                if turn.active
+                    && let Some(message) = props.get("messageID").and_then(Value::as_str)
+                {
+                    turn.usage.chunk(message);
+                }
                 let events = part_delta_events(main_feed, props, part_id, delta);
                 mark_content(turn, &events);
                 return forward(event_tx, events).await;
@@ -4096,6 +4104,7 @@ fn normalize_v2_frame_with_session_models(
                 &data,
                 "text",
                 data.get("text").cloned().unwrap_or(json!("")),
+                kind.ends_with(".ended"),
             )]
         }
         "session.text.delta" | "session.reasoning.delta" => vec![json!({
@@ -4112,6 +4121,7 @@ fn normalize_v2_frame_with_session_models(
             &data,
             "reasoning",
             data.get("text").cloned().unwrap_or(json!("")),
+            kind.ends_with(".ended"),
         )],
         "session.tool.input.started" => {
             let id = data.get("id").and_then(Value::as_str).unwrap_or_default();
@@ -4130,10 +4140,14 @@ fn normalize_v2_frame_with_session_models(
                 .get(&tool_key())
                 .map(String::as_str)
                 .unwrap_or_default();
-            let state = json!({
+            let mut state = json!({
                 "status": "running",
                 "input": data.get("input").cloned().unwrap_or(json!({})),
             });
+            // Like 1.x's running state, the call time ends its streamed input.
+            if let Some(at) = data.get("timestamp").and_then(Value::as_u64) {
+                state["time"] = json!({ "start": at });
+            }
             vec![v2_tool_part(&data, id, name, &state)]
         }
         "session.tool.success" => {
@@ -4358,18 +4372,24 @@ fn v2_part_id(data: &Value, kind: char) -> String {
     format!("{message}:{kind}{ordinal}")
 }
 
-/// A text/reasoning item snapshot in the 1.x part shape.
-fn v2_stream_part(data: &Value, part_type: &str, text: Value) -> Value {
+/// A text/reasoning item snapshot in the 1.x part shape. The frame's server
+/// timestamp becomes the part's `time.start`, or `time.end` once it ended.
+fn v2_stream_part(data: &Value, part_type: &str, text: Value, ended: bool) -> Value {
     let kind_char = if part_type == "text" { 't' } else { 'r' };
+    let mut part = json!({
+        "sessionID": data.get("sessionID").cloned().unwrap_or(Value::Null),
+        "id": v2_part_id(data, kind_char),
+        "messageID": data.get("assistantMessageID").cloned().unwrap_or(Value::Null),
+        "type": part_type,
+        "text": text,
+    });
+    if let Some(at) = data.get("timestamp").and_then(Value::as_u64) {
+        let key = if ended { "end" } else { "start" };
+        part["time"] = json!({ key: at });
+    }
     json!({
         "type": "message.part.updated",
-        "properties": { "part": {
-            "sessionID": data.get("sessionID").cloned().unwrap_or(Value::Null),
-            "id": v2_part_id(data, kind_char),
-            "messageID": data.get("assistantMessageID").cloned().unwrap_or(Value::Null),
-            "type": part_type,
-            "text": text,
-        }}
+        "properties": { "part": part }
     })
 }
 

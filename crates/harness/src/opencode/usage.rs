@@ -1,18 +1,96 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use serde_json::Value;
-use zeron_proto::TokenUsage;
+use zeron_proto::{GenerationUsage, TokenUsage};
+
+use crate::generation;
 
 /// Request snapshots for the active user turn, keyed by assistant message ID.
 #[derive(Default)]
 pub(super) struct TurnUsageTracker {
     reports: HashMap<String, Option<TokenUsage>>,
+    windows: HashMap<String, RequestWindow>,
     incomplete: bool,
+}
+
+/// One request's streaming window, from OpenCode's own server timestamps
+/// (epoch ms) rather than SSE arrival, which can batch. It runs from the
+/// first text/reasoning start to the last text/reasoning end or tool call.
+/// Tools execute after their call timestamp, so tool runs stay outside it,
+/// as does the wait before the first token.
+#[derive(Default, Clone, Copy)]
+struct RequestWindow {
+    start: Option<u64>,
+    end: Option<u64>,
+    chunks: u32,
+    reasoning: bool,
+}
+
+impl RequestWindow {
+    fn include(&mut self, at: Option<u64>) {
+        let Some(at) = at else { return };
+        self.start = Some(self.start.map_or(at, |start| start.min(at)));
+        self.end_at(Some(at));
+    }
+
+    fn end_at(&mut self, at: Option<u64>) {
+        let Some(at) = at else { return };
+        self.end = Some(self.end.map_or(at, |end| end.max(at)));
+    }
+
+    /// Streamed output over this window, when it qualifies. Without a
+    /// reasoning part the hidden thinking time is unmeasured, so its tokens
+    /// are left out too.
+    fn generation(self, usage: &TokenUsage) -> Option<(u64, Duration)> {
+        let elapsed = Duration::from_millis(self.end?.checked_sub(self.start?)?);
+        if !generation::qualifies(self.chunks, elapsed) {
+            return None;
+        }
+        let output = usage.output_tokens?;
+        let output = if self.reasoning {
+            output
+        } else {
+            output.checked_sub(usage.reasoning_output_tokens.unwrap_or(0))?
+        };
+        Some((output, elapsed))
+    }
 }
 
 impl TurnUsageTracker {
     pub fn register(&mut self, message: &str) {
         self.reports.entry(message.to_owned()).or_default();
+        self.windows.entry(message.to_owned()).or_default();
+    }
+
+    /// Fold a main-session part snapshot's server timestamps into its
+    /// request's window. Parts of unregistered messages are ignored.
+    pub fn observe_part(&mut self, part: &Value) {
+        let Some(window) = part
+            .get("messageID")
+            .and_then(Value::as_str)
+            .and_then(|id| self.windows.get_mut(id))
+        else {
+            return;
+        };
+        let at = |pointer| part.pointer(pointer).and_then(Value::as_u64);
+        match part.get("type").and_then(Value::as_str) {
+            Some(kind @ ("text" | "reasoning")) => {
+                window.reasoning |= kind == "reasoning";
+                window.include(at("/time/start"));
+                window.include(at("/time/end"));
+            }
+            // A call's start marks the end of its streamed input.
+            Some("tool") => window.end_at(at("/state/time/start")),
+            _ => {}
+        }
+    }
+
+    /// Count one streamed text/reasoning delta for a request.
+    pub fn chunk(&mut self, message: &str) {
+        if let Some(window) = self.windows.get_mut(message) {
+            window.chunks = window.chunks.saturating_add(1);
+        }
     }
 
     pub fn invalidate(&mut self) {
@@ -87,7 +165,18 @@ impl TurnUsageTracker {
                 generation: None,
             };
         }
+        total.generation = self.generation();
         Some(total)
+    }
+
+    /// Generation over every completed request whose window qualifies.
+    fn generation(&self) -> Option<GenerationUsage> {
+        self.reports
+            .iter()
+            .filter_map(|(id, usage)| self.windows.get(id)?.generation(usage.as_ref()?))
+            .fold(None, |total, (output, elapsed)| {
+                generation::accumulate(total, output, elapsed)
+            })
     }
 }
 
@@ -243,6 +332,75 @@ mod tests {
         assert_eq!(usage.cached_input_tokens, None);
         assert_eq!(usage.output_tokens, Some(25));
         assert_eq!(usage.reasoning_output_tokens, Some(5));
+    }
+
+    fn part(message: &str, kind: &str, time: Value) -> Value {
+        json!({"messageID": message, "type": kind, "time": time})
+    }
+
+    fn stream(tracker: &mut TurnUsageTracker, message: &str, chunks: u32) {
+        for _ in 0..chunks {
+            tracker.chunk(message);
+        }
+    }
+
+    #[test]
+    fn generation_spans_server_part_times_and_ends_at_the_tool_call() {
+        let mut tracker = TurnUsageTracker::default();
+        tracker.register("first");
+        tracker.observe_part(&part("first", "reasoning", json!({"start": 1_000, "end": 1_200})));
+        tracker.observe_part(&part("first", "text", json!({"start": 1_300, "end": 1_800})));
+        tracker.observe_part(&json!({
+            "messageID": "first", "type": "tool",
+            "state": {"status": "completed", "time": {"start": 2_000, "end": 9_000}}
+        }));
+        stream(&mut tracker, "first", 5);
+        assert_eq!(tracker.reported(), None);
+        tracker.observe(&report("first"));
+        let generation = tracker.total().unwrap().generation.unwrap();
+        // Streamed reasoning counts toward both tokens and time; the tool's
+        // own run (2s to 9s) does not.
+        assert_eq!(generation.output_tokens, 25);
+        assert_eq!(generation.elapsed_ms, 1_000);
+        assert_eq!(generation.tps(), Some(25.0));
+    }
+
+    #[test]
+    fn hidden_reasoning_is_left_out_and_requests_add_up() {
+        let mut tracker = TurnUsageTracker::default();
+        tracker.register("first");
+        tracker.register("second");
+        tracker.observe_part(&part("first", "text", json!({"start": 1_000, "end": 2_000})));
+        tracker.observe_part(&part("second", "text", json!({"start": 5_000})));
+        tracker.observe_part(&part("second", "text", json!({"end": 6_000})));
+        stream(&mut tracker, "first", 3);
+        stream(&mut tracker, "second", 3);
+        tracker.observe(&report("first"));
+        tracker.observe(&report("second"));
+        let generation = tracker.total().unwrap().generation.unwrap();
+        assert_eq!(generation.output_tokens, 40);
+        assert_eq!(generation.elapsed_ms, 2_000);
+    }
+
+    #[test]
+    fn bursts_short_windows_and_unfinished_requests_are_not_measured() {
+        let mut tracker = TurnUsageTracker::default();
+        for message in ["burst", "short", "running"] {
+            tracker.register(message);
+        }
+        tracker.observe_part(&part("burst", "text", json!({"start": 1_000, "end": 3_000})));
+        stream(&mut tracker, "burst", 2);
+        tracker.observe_part(&part("short", "text", json!({"start": 1_000, "end": 1_100})));
+        stream(&mut tracker, "short", 10);
+        tracker.observe_part(&part("running", "text", json!({"start": 1_000, "end": 3_000})));
+        stream(&mut tracker, "running", 10);
+        tracker.observe(&report("burst"));
+        tracker.observe(&report("short"));
+        assert_eq!(tracker.reported().unwrap().generation, None);
+        // Parts of messages outside the turn are ignored.
+        tracker.observe_part(&part("retired", "text", json!({"start": 0, "end": 9_000})));
+        tracker.chunk("retired");
+        assert_eq!(tracker.reported().unwrap().generation, None);
     }
 
     #[test]

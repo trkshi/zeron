@@ -1644,6 +1644,27 @@ fn directory_header_percent_encodes() {
 }
 
 #[test]
+fn v2_frame_timestamps_become_part_times() {
+    let mut tools = HashMap::new();
+    let part = |kind: &str, tools: &mut HashMap<_, _>| {
+        let mut out = normalize_v2_frame(
+            json!({"type": kind, "data": {
+                "sessionID": "ses_1", "assistantMessageID": "msg_a", "ordinal": 0,
+                "id": "call_1", "timestamp": 1_000
+            }}),
+            tools,
+        );
+        out.remove(0)["properties"]["part"].take()
+    };
+    assert_eq!(part("session.text.started", &mut tools)["time"], json!({"start": 1_000}));
+    assert_eq!(part("session.reasoning.ended", &mut tools)["time"], json!({"end": 1_000}));
+    assert_eq!(
+        part("session.tool.called", &mut tools)["state"]["time"],
+        json!({"start": 1_000})
+    );
+}
+
+#[test]
 fn v2_frames_normalize_to_v1_payloads() {
     let mut tools = HashMap::new();
     // Lifecycle: busy on start, idle on the terminal frames.
