@@ -45,6 +45,7 @@
 
 pub mod catalog;
 mod discovery;
+pub mod endpoints;
 mod normalize;
 pub mod rewind;
 mod shells;
@@ -107,9 +108,10 @@ fn mcp_config_arg(mcp: &zeron_proto::McpServer) -> String {
 }
 
 /// The `--model` value: the 1M context window is selected via a model-id
-/// suffix (`sonnet[1m]`), exactly how the CLI itself does it.
+/// suffix (`sonnet[1m]`), exactly how the CLI itself does it. An endpoint
+/// model passes the provider's own name.
 fn model_arg(request: &RunRequest) -> Option<String> {
-    let model = request.model.as_ref()?;
+    let model = endpoints::provider_model(request.model.as_ref()?);
     let one_m = request
         .model_options
         .get("contextWindow")
@@ -118,8 +120,13 @@ fn model_arg(request: &RunRequest) -> Option<String> {
     Some(if one_m {
         format!("{model}[1m]")
     } else {
-        model.clone()
+        model.to_owned()
     })
+}
+
+/// Both requests run on the same backend: Anthropic or one endpoint.
+fn same_backend(live: &RunRequest, next: &RunRequest) -> bool {
+    endpoints::backend(live.model.as_deref()) == endpoints::backend(next.model.as_deref())
 }
 
 /// Every flag-layer setting a request launches with, for
@@ -271,9 +278,18 @@ impl ClaudeHarness {
         args
     }
 
-    fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Command {
+    fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Result<Command, HarnessError> {
         let mut cmd = Command::new(exe);
         crate::compose_child_path(&mut cmd, exe);
+        // Env, not `--settings`: arguments are visible to other processes.
+        if let Some(env) = endpoints::launch_env(request.model.as_deref(), &endpoints::list())? {
+            for key in env.remove {
+                cmd.env_remove(key);
+            }
+            for (key, value) in env.set {
+                cmd.env(key, value);
+            }
+        }
         cmd.args(Self::launch_args(request));
         if let Some(resume) = &request.resume {
             cmd.arg(format!("--resume={resume}"));
@@ -285,7 +301,7 @@ impl ClaudeHarness {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        cmd
+        Ok(cmd)
     }
 
     /// Share the complete initialize response between model and command discovery.
@@ -465,18 +481,24 @@ impl Harness for ClaudeHarness {
     /// Same launch arguments and cwd. The CLI ignores the sandbox level, and
     /// option spellings that launch the same flags are the same runtime.
     fn same_runtime(&self, live: &RunRequest, next: &RunRequest) -> bool {
-        live.cwd == next.cwd && Self::launch_args(live) == Self::launch_args(next)
+        live.cwd == next.cwd
+            && same_backend(live, next)
+            && Self::launch_args(live) == Self::launch_args(next)
     }
     /// Model, context window, effort, fast mode, thinking and ultracode all
     /// change on the live process (`set_model`, `apply_flag_settings`). Only
-    /// the directory and the permission mode it launched with need a new one.
+    /// the directory, the permission mode and the backend it launched with
+    /// (an endpoint's environment) need a new one.
     fn reconfigures_in_place(&self, live: &RunRequest, next: &RunRequest) -> bool {
-        live.cwd == next.cwd && live.auto_approve == next.auto_approve
+        live.cwd == next.cwd && live.auto_approve == next.auto_approve && same_backend(live, next)
     }
 
-    /// Credential and executable identity scopes both initialize and catalog caches.
+    /// Credential and executable identity scopes both initialize and catalog
+    /// caches; the endpoints file is part of it, so saved endpoints refresh
+    /// the catalog.
     fn model_context(&self) -> Result<Option<crate::ModelContext>, HarnessError> {
-        crate::model_context::context(self.id(), &self.resolve_executable()?, &[]).map(Some)
+        let extra: Vec<PathBuf> = endpoints::path().into_iter().collect();
+        crate::model_context::context(self.id(), &self.resolve_executable()?, &extra).map(Some)
     }
     fn fallback_models(&self) -> Vec<Model> {
         catalog::configured_models()
@@ -587,7 +609,7 @@ impl ClaudeHarness {
         title_only: bool,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
-        let mut cmd = self.build_command(&exe, &request);
+        let mut cmd = self.build_command(&exe, &request)?;
         let opening = if title_only {
             crate::TurnOpening::default()
         } else {
@@ -627,6 +649,11 @@ impl ClaudeHarness {
             Normalizer::for_resume(&config, session_id).await
         } else {
             Normalizer::new()
+        };
+        let normalizer = if endpoints::backend(request.model.as_deref()).is_some() {
+            normalizer.without_cost()
+        } else {
+            normalizer
         };
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {

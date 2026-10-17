@@ -33,6 +33,7 @@ use crate::motion;
 use crate::pickers::visible_harnesses;
 use crate::popover::{self, Loadable};
 use crate::settings::accounts::{self, AccountsPage};
+use crate::settings::claude_endpoints::ClaudeEndpointsSection;
 use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -185,6 +186,8 @@ pub struct HarnessesPage {
     /// The expanded provider's Accounts section — one page, retargeted as
     /// providers expand, so every provider shares the same sign-in flow.
     accounts_page: Option<Entity<AccountsPage>>,
+    /// Claude Code's Custom endpoints section, made when it first expands.
+    claude_endpoints: Option<Entity<ClaudeEndpointsSection>>,
     update_task: Option<Task<()>>,
     update_action_task: Option<Task<()>>,
     account_auto_switch: Loadable<AccountAutoSwitchPrefs>,
@@ -215,6 +218,7 @@ impl HarnessesPage {
 
             expanded_harness: None,
             accounts_page: None,
+            claude_endpoints: None,
             update_task: None,
             update_action_task: None,
             account_auto_switch: Loadable::Idle,
@@ -239,6 +243,12 @@ impl HarnessesPage {
             self.expanded_harness = None;
         } else {
             self.expanded_harness = Some(harness);
+            if harness == HarnessId::ClaudeCode && self.claude_endpoints.is_none() {
+                let state = self.state.clone();
+                let target = self.target_device.clone();
+                self.claude_endpoints =
+                    Some(cx.new(|cx| ClaudeEndpointsSection::new(state, target, cx)));
+            }
             if accounts::signs_in(harness) {
                 if let Some(accounts) = &self.accounts_page {
                     accounts.update(cx, |page, cx| page.set_embedded_harness(harness, cx));
@@ -276,6 +286,12 @@ impl HarnessesPage {
             .child(self.render_completion_for(harness, theme, cx))
             .children(self.render_updates_for(harness, theme, cx))
             .children(self.render_account_auto_switch_for(harness, theme, cx))
+            .when_some(
+                self.claude_endpoints
+                    .clone()
+                    .filter(|_| harness == HarnessId::ClaudeCode),
+                |details, section| details.child(section),
+            )
             .when_some(accounts, |details, accounts| details.child(accounts));
         if motion::reduced_motion(cx) {
             content.into_any_element()
@@ -470,6 +486,13 @@ impl HarnessesPage {
     /// Escape that reached Settings unclaimed goes to the expanded provider's
     /// accounts (an open login) first. Returns whether it was consumed.
     pub(crate) fn dismiss_on_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.expanded_harness == Some(HarnessId::ClaudeCode)
+            && self.claude_endpoints.as_ref().is_some_and(|section| {
+                section.update(cx, |section, cx| section.dismiss_on_escape(cx))
+            })
+        {
+            return true;
+        }
         self.expanded_harness.is_some()
             && self
                 .accounts_page
@@ -519,6 +542,11 @@ impl HarnessesPage {
         if let Some(accounts) = &self.accounts_page {
             accounts.update(cx, |page, cx| {
                 page.set_target_device(self.target_device.clone(), cx)
+            });
+        }
+        if let Some(section) = &self.claude_endpoints {
+            section.update(cx, |section, cx| {
+                section.set_target_device(self.target_device.clone(), cx)
             });
         }
         self.error = None;

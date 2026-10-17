@@ -894,7 +894,10 @@ impl SessionsEngine {
         {
             return Err(EngineError::Other("a rewind is pending".into()));
         }
-        if !idle && admission.is_some() {
+        if !idle
+            && admission.is_some()
+            && !on_custom_endpoint(harness_id, request.model.as_deref())
+        {
             self.prepare_account_auto_switch(harness_id, false).await;
         }
         let routed = lock(&self.inner.runs).get(chat_id).map(|h| {
@@ -1306,7 +1309,11 @@ impl SessionsEngine {
         let mut admission = self.checkpoint_admission().await;
         let harness = lock(&self.inner.runs)
             .get(chat_id)
-            .map(|run| run.runtime_config.harness_id);
+            .map(|run| &run.runtime_config)
+            .filter(|config| {
+                !on_custom_endpoint(config.harness_id, config.request.model.as_deref())
+            })
+            .map(|config| config.harness_id);
         if admission.is_some()
             && let Some(harness) = harness
         {
@@ -2693,6 +2700,12 @@ fn cursor_unstarted_history(
     ))
 }
 
+/// A Claude Code run on a custom endpoint bills that endpoint, not the
+/// signed-in Anthropic account, so account usage and auto-switch skip it.
+fn on_custom_endpoint(harness: HarnessId, model: Option<&str>) -> bool {
+    harness == HarnessId::ClaudeCode && zeron_harness::claude::endpoints::backend(model).is_some()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_run(
     inner: Arc<Inner>,
@@ -2712,9 +2725,13 @@ async fn drive_run(
     let device_id = inner.device_id.clone();
     // Captured for post-run auto-titling (the request moves into the harness).
     let harness_id = harness.id();
-    let mut usage_run = inner.agent_accounts.get().map(|accounts| {
-        accounts.usage_run(run_id.clone(), harness_id, !resume_state.idle)
-    });
+    // Fixed for the runtime: a different backend always starts a new one.
+    let on_endpoint = on_custom_endpoint(harness_id, request.model.as_deref());
+    let mut usage_run = inner
+        .agent_accounts
+        .get()
+        .filter(|_| !on_endpoint)
+        .map(|accounts| accounts.usage_run(run_id.clone(), harness_id, !resume_state.idle));
     let mut turn_model = request.model.clone();
     let user_prompt = request.prompt.clone();
     let run_cwd = request.cwd.clone();
@@ -4054,6 +4071,7 @@ async fn drive_run(
     inner.set_status_with_completion(&chat_id, final_status, false, final_completed_turn);
     if final_status == SessionStatus::Errored
         && matches!(harness_id, HarnessId::Codex | HarnessId::ClaudeCode)
+        && !on_endpoint
         && inner.registry.account_auto_switch().enabled(harness_id)
         && !inner
             .shutting_down

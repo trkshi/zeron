@@ -52,6 +52,9 @@ pub mod methods {
     pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
     pub const GET_ACCOUNT_AUTO_SWITCH: &str = "GetAccountAutoSwitch";
     pub const SET_ACCOUNT_AUTO_SWITCH: &str = "SetAccountAutoSwitch";
+    pub const LIST_CLAUDE_ENDPOINTS: &str = "ListClaudeEndpoints";
+    pub const SAVE_CLAUDE_ENDPOINT: &str = "SaveClaudeEndpoint";
+    pub const REMOVE_CLAUDE_ENDPOINT: &str = "RemoveClaudeEndpoint";
     pub const LIST_MODELS: &str = "ListModels";
     pub const READ_USAGE_HISTORY: &str = "ReadUsageHistory";
     pub const LIST_SKILLS: &str = "ListSkills";

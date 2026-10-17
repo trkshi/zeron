@@ -215,6 +215,9 @@ pub(crate) struct Normalizer {
     /// per-result token counts. Keep the baseline across warm turns.
     last_cost_usd: Option<f64>,
     turn_usage: TurnUsageTracker,
+    /// Off on custom endpoints: the CLI prices their tokens at Anthropic's
+    /// rates, so its cost would be made up.
+    report_cost: bool,
 }
 
 impl Normalizer {
@@ -229,7 +232,14 @@ impl Normalizer {
             session_id: None,
             last_cost_usd: Some(0.0),
             turn_usage: TurnUsageTracker::default(),
+            report_cost: true,
         }
+    }
+
+    /// Leave cost unreported (a custom endpoint run).
+    pub fn without_cost(mut self) -> Self {
+        self.report_cost = false;
+        self
     }
 
     /// Restore only spawn identity from Claude's native history. The CLI
@@ -743,7 +753,7 @@ impl Normalizer {
                 let previous_cost = std::mem::replace(&mut self.last_cost_usd, reported_cost);
                 let cost_usd = reported_cost
                     .zip(previous_cost)
-                    .filter(|(cost, previous)| cost >= previous)
+                    .filter(|(cost, previous)| self.report_cost && cost >= previous)
                     .map(|(cost, previous)| cost - previous);
                 let turn_usage = TokenUsage {
                     cost_usd,

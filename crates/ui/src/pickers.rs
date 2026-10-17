@@ -2346,6 +2346,17 @@ impl Pickers {
             },
             |harness, model| favorites.contains(&(harness, model)),
         );
+        // A chat stays on its Claude Code backend (Anthropic or one custom
+        // endpoint): providers sign their thinking blocks, so another backend
+        // can't resume the conversation.
+        if self.harness_locked(cx) && effective == Some(HarnessId::ClaudeCode) {
+            use zeron_harness::claude::endpoints::backend;
+            let current = backend(self.effective_model_id(cx)).map(str::to_owned);
+            rows.retain(|row| {
+                row.harness != HarnessId::ClaudeCode
+                    || backend(Some(row.model.id.as_str())) == current.as_deref()
+            });
+        }
         // This row belongs only to the current selection. It is never merged
         // into the fresh catalog or made available as a new choice elsewhere.
         if self.model_rail == ModelRail::Harness
@@ -4698,7 +4709,7 @@ impl Pickers {
                 == Some(row.model.id.as_str());
         let is_active = ix == self.active;
         let is_fav = self.defaults.is_favorite(row.harness, &row.model.id);
-        let (icon_path, tint) = harness_brand_icon(row.harness);
+        let (icon_path, tint) = model_brand_icon(row.harness, Some(row.model.id.as_str()));
         let label: SharedString = row.model.label.clone().into();
         let harness_name = row.harness_name.clone();
         let harness = row.harness;
@@ -6050,6 +6061,21 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
     }
 }
 
+/// A model's mark: a Claude Code custom endpoint shows its provider's mark
+/// when it is a known one (DeepSeek), otherwise the harness's.
+pub(crate) fn model_brand_icon(
+    harness: HarnessId,
+    model: Option<&str>,
+) -> (&'static str, Option<gpui::Hsla>) {
+    match zeron_harness::claude::endpoints::backend(model) {
+        Some(endpoint) if harness == HarnessId::ClaudeCode && endpoint.contains("deepseek") => (
+            crate::icons::DEEPSEEK_MARK,
+            Some(crate::icons::deepseek_brand()),
+        ),
+        _ => harness_brand_icon(harness),
+    }
+}
+
 /// `ZERON_HARNESS=mock` (the e2e/dev rig) opts the mock harness into the UI;
 /// production launches never set it, so the mock never surfaces there.
 fn mock_harness_enabled() -> bool {
@@ -6358,8 +6384,12 @@ impl Render for Pickers {
             Some(title) => title.harness,
             None => self.effective_harness(cx),
         };
+        let chip_model = match &self.title {
+            Some(title) => title.model.as_deref(),
+            None => self.effective_model_id(cx),
+        };
         let harness_icon: (&'static str, Option<gpui::Hsla>) = match chip_harness {
-            Some(harness) => harness_brand_icon(harness),
+            Some(harness) => model_brand_icon(harness, chip_model),
             None if self.title.is_some() => (crate::icons::CHAT_ROUND_LINE, Some(theme.text_muted)),
             None if no_agents => (crate::icons::TERMINAL, Some(theme.text_muted)),
             None => (

@@ -231,6 +231,8 @@ icon_assets![
     (PI_MARK, "pi-mark"),
     (OPENCODE_MARK, "opencode-mark"),
     (ANTIGRAVITY_MARK, "antigravity-mark"),
+    // DeepSeek's whale (LobeHub Icons, MIT) for Claude Code endpoint models.
+    (DEEPSEEK_MARK, "deepseek-mark"),
 ];
 
 /// Serves both the compact control-icon set and the complete file-identity
@@ -256,6 +258,11 @@ impl AssetSource for Assets {
 /// monochrome surface.
 pub fn claude_brand() -> Hsla {
     gpui::rgb(0xD97757).into()
+}
+
+/// DeepSeek's brand blue (`#4D6BFE`), applied to its mark like Claude's.
+pub fn deepseek_brand() -> Hsla {
+    gpui::rgb(0x4D6BFE).into()
 }
 
 /// An icon element for an embedded asset path. Size and colour are set by the

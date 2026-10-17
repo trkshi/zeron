@@ -230,6 +230,8 @@ impl EngineCore {
         // This device's harness enablement (Settings → Providers) rides the
         // engine data dir — per-device, like the CLI installs it gates.
         registry.load_prefs(data_dir);
+        // Claude Code's custom endpoints (tokens included) stay per device too.
+        zeron_harness::claude::endpoints::init(data_dir);
         let store = Arc::new(DocsStore::open(profile.store_root())?);
         let store_for_import = store.clone();
         let journal = Arc::new(RunJournal::open(profile.store_root().join("journals"))?);

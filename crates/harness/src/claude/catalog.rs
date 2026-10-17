@@ -155,7 +155,9 @@ pub(crate) fn configured_models() -> Vec<Model> {
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| crate::executable::home_or_current_dir().join(".claude"));
-    models_with_settings(&root.join("settings.json"))
+    let mut models = models_with_settings(&root.join("settings.json"));
+    models.extend(super::endpoints::models(&super::endpoints::list()));
+    models
 }
 
 fn models_with_settings(path: &std::path::Path) -> Vec<Model> {

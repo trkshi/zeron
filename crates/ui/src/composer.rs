@@ -11675,9 +11675,14 @@ impl Render for Composer {
                 surface_width
             };
             if session_chrome_opacity > 0.0 {
+                // A custom endpoint doesn't draw on the signed-in account's
+                // subscription, so its chats show no account usage.
                 let harness = (!self.side_chat)
-                    .then(|| self.pickers.read(cx).resolved(cx).harness)
-                    .flatten();
+                    .then(|| self.pickers.read(cx).resolved(cx))
+                    .filter(|run| {
+                        zeron_harness::claude::endpoints::backend(run.model.as_deref()).is_none()
+                    })
+                    .and_then(|run| run.harness);
                 let target = {
                     let state = self.state.read(cx);
                     state

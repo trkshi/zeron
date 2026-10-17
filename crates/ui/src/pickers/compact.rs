@@ -164,7 +164,7 @@ impl Pickers {
                 .selected_model(cx)
                 .is_some_and(|model| model.id == row.model.id);
         let favorite = self.defaults.is_favorite(row.harness, &row.model.id);
-        let (icon, tint) = harness_brand_icon(row.harness);
+        let (icon, tint) = super::model_brand_icon(row.harness, Some(row.model.id.as_str()));
         let harness = row.harness;
         let model = row.model.id.clone();
         let label: SharedString = row.model.label.clone().into();

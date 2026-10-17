@@ -30,6 +30,15 @@ Zeron bundles the SVG icon set and filename/folder associations from
 Symbols is MIT licensed. The complete upstream license and copyright notice is
 retained at `crates/ui/assets/file-icons/LICENSE.symbols`.
 
+## DeepSeek mark
+
+`crates/ui/assets/icons/deepseek-mark.svg` is the DeepSeek icon from
+[LobeHub Icons](https://github.com/lobehub/lobe-icons)
+(`@lobehub/icons-static-svg` 1.95.1), MIT licensed, Copyright (c) LobeHub.
+DeepSeek is a trademark of its owner; Zeron is not affiliated with or
+endorsed by DeepSeek. The mark only identifies models served by a DeepSeek
+endpoint.
+
 ## Bundled theme palette adaptations
 
 Zeron includes manually curated palette adaptations derived from the projects

@@ -226,6 +226,22 @@ Zeron release.
   state prevent unsafe file restores. See [checkpoint restore](docs/checkpoint-restore.md)
   for limits and compatibility with older turns. The engine needs this feature
   as well as the client; upstream's temporary diff snapshots remain separate.
+- Run Claude Code on an Anthropic-compatible API such as DeepSeek. Add an
+  endpoint under **Settings > Providers > Claude Code > Custom endpoints**
+  with a name, base URL, API key, and models; **Use DeepSeek** fills in
+  everything except the key. The endpoint's models join the Claude Code model
+  picker. Their runs start `claude` with the endpoint's base URL and key in
+  the environment, and every model slot points at the endpoint, including
+  background and subagent requests. Inherited Anthropic keys and provider
+  switches are cleared for those runs only. Endpoints and keys are stored
+  per device in the engine's `claude-endpoints.json` (0600), are never
+  synced, and only a key's last four characters reach the UI. A chat keeps
+  the backend it started on: once it exists, the picker offers only models
+  from that backend, because providers sign their thinking blocks; start a
+  new chat to switch. Endpoint runs leave account usage, auto-switch, and
+  Claude's own cost reports aside, since the CLI would price them at
+  Anthropic's rates. Token counts and TPS still work. The engine on the
+  device running the agent needs this update.
 - Keep the app name, version, installer identity, account handling, and
   conversation storage unchanged.
 

@@ -1524,6 +1524,9 @@ fn forwardable(method: &str) -> bool {
             | methods::SET_HARNESS_ENABLED
             | methods::GET_ACCOUNT_AUTO_SWITCH
             | methods::SET_ACCOUNT_AUTO_SWITCH
+            | methods::LIST_CLAUDE_ENDPOINTS
+            | methods::SAVE_CLAUDE_ENDPOINT
+            | methods::REMOVE_CLAUDE_ENDPOINT
             | methods::LIST_MODELS
             | methods::LIST_SKILLS
             | methods::LIST_COMMANDS
@@ -1966,6 +1969,26 @@ impl RpcService for EngineRpc {
                     .set_account_auto_switch(p.harness, p.enabled)
                     .map_err(RpcError::Failed)?;
                 RpcReply::value(&self.registry.account_auto_switch())
+            }
+            // Replies never carry tokens, only their last four characters.
+            methods::LIST_CLAUDE_ENDPOINTS => {
+                RpcReply::value(&zeron_harness::claude::endpoints::summaries())
+            }
+            methods::SAVE_CLAUDE_ENDPOINT => {
+                let input: zeron_harness::claude::endpoints::EndpointInput = parse_params(params)?;
+                let list =
+                    zeron_harness::claude::endpoints::save(input).map_err(RpcError::Failed)?;
+                RpcReply::value(&list)
+            }
+            methods::REMOVE_CLAUDE_ENDPOINT => {
+                #[derive(Deserialize)]
+                struct Params {
+                    id: String,
+                }
+                let p: Params = parse_params(params)?;
+                let list =
+                    zeron_harness::claude::endpoints::remove(&p.id).map_err(RpcError::Failed)?;
+                RpcReply::value(&list)
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
@@ -4571,6 +4594,14 @@ mod tests {
         assert!(forwardable(methods::SET_ACCOUNT_AUTO_SWITCH));
         assert!(!is_stream_method(methods::GET_ACCOUNT_AUTO_SWITCH));
         assert!(!is_stream_method(methods::SET_ACCOUNT_AUTO_SWITCH));
+        for method in [
+            methods::LIST_CLAUDE_ENDPOINTS,
+            methods::SAVE_CLAUDE_ENDPOINT,
+            methods::REMOVE_CLAUDE_ENDPOINT,
+        ] {
+            assert!(forwardable(method));
+            assert!(!is_stream_method(method));
+        }
         assert!(forwardable(methods::GET_SESSION_COMMAND));
         assert!(forwardable(methods::SEARCH_FILES));
         assert!(forwardable(methods::SEARCH_GIT_HISTORY));
