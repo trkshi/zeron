@@ -3,10 +3,15 @@
 This public fork of [zeronsh/zeron](https://github.com/zeronsh/zeron) keeps the
 app named Zeron. The `patched-windows` branch starts from upstream `v0.2.101`
 (`b42fc2b8fbf247dd92796c2917f277535cea91ac`) and incorporates upstream `main`
-through `3b2f7802` (version `v0.2.113`). It is a personal build, not an official
+through `c526d6f7` (version `v0.2.114`). It is a personal build, not an official
 Zeron release.
 
 ## Changes
+
+- Integrate upstream's LaTeX math rendering, session card side-chat and
+  subagent lanes, sidebar hover cards, draggable sidebar section order, and
+  iPhone Duo layout. Keep the Usage display setting beside the new math rows,
+  and give the lanes card the same model-aware brand marks as the sidebar.
 
 - Integrate upstream's native Luau visuals, bulk deletion of archived sessions,
   the sidebar Archived toggle, OpenCode v2 question forms, Cmd+K Recent Files
