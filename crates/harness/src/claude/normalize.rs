@@ -552,6 +552,22 @@ impl Normalizer {
                     }
                     return out;
                 }
+                // Local slash commands (`/usage`, `/context`, …) answer with a
+                // `<synthetic>` message that streams no deltas: its text is the
+                // reply. Errored ones keep the error path below.
+                if f.message.model.as_deref() == Some("<synthetic>") && f.error.is_none() {
+                    let mut out: Vec<AgentEvent> = f
+                        .message
+                        .blocks()
+                        .filter(|b| b.kind == "text" && !b.text.is_empty())
+                        .map(|b| AgentEvent::TextDelta { text: b.text })
+                        .collect();
+                    let (prev, _next) = self.rotate_for_steer();
+                    out.push(AgentEvent::AssistantMessageCompleted {
+                        assistant_message_id: prev,
+                    });
+                    return out;
+                }
                 // Record spawn tool ids up front: `task_notification` keys on
                 // them; a task may finish before a `task_started` arrives.
                 for b in f.message.blocks() {
@@ -917,6 +933,24 @@ mod tests {
     fn normalize_one(raw: &str) -> Vec<AgentEvent> {
         let frame = crate::claude::wire::parse_frame(raw).expect("frame parses");
         Normalizer::new().normalize(frame, false)
+    }
+
+    #[test]
+    fn local_command_output_becomes_the_reply() {
+        let mut normalizer = Normalizer::new();
+        let events = normalizer.normalize(
+            crate::claude::wire::parse_frame(
+                r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Current session: 20% used"}]}}"#,
+            )
+            .unwrap(),
+            false,
+        );
+        assert!(matches!(
+            events.as_slice(),
+            [AgentEvent::TextDelta { text }, AgentEvent::AssistantMessageCompleted { .. }]
+                if text == "Current session: 20% used"
+        ));
+        assert_eq!(normalizer.last_model, None);
     }
 
     #[test]
