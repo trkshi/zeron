@@ -6077,17 +6077,25 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
 }
 
 /// A model's mark: a Claude Code custom endpoint shows its provider's mark
-/// when it is a known one (DeepSeek), otherwise the harness's.
+/// when it is a known one (DeepSeek), otherwise the harness's. Chat configs
+/// carry the endpoint id (`endpoint:deepseek:…`); usage history the bare name.
 pub(crate) fn model_brand_icon(
     harness: HarnessId,
     model: Option<&str>,
 ) -> (&'static str, Option<gpui::Hsla>) {
-    match zeron_harness::claude::endpoints::backend(model) {
-        Some(endpoint) if harness == HarnessId::ClaudeCode && endpoint.contains("deepseek") => (
+    use zeron_harness::claude::endpoints;
+    let deepseek = harness == HarnessId::ClaudeCode
+        && model.is_some_and(|model| {
+            endpoints::backend(Some(model)).is_some_and(|id| id.contains("deepseek"))
+                || endpoints::provider_model(model).starts_with("deepseek")
+        });
+    if deepseek {
+        (
             crate::icons::DEEPSEEK_MARK,
             Some(crate::icons::deepseek_brand()),
-        ),
-        _ => harness_brand_icon(harness),
+        )
+    } else {
+        harness_brand_icon(harness)
     }
 }
 

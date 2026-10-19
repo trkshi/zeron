@@ -144,7 +144,7 @@ pub fn backend(model: Option<&str>) -> Option<&str> {
 }
 
 /// The model name the CLI receives: the provider's own for endpoint models.
-pub(crate) fn provider_model(model: &str) -> &str {
+pub fn provider_model(model: &str) -> &str {
     split(model).map_or(model, |(_, model)| model)
 }
 

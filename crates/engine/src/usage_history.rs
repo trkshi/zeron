@@ -557,7 +557,12 @@ fn aggregate(
             .entry((record.harness, None))
             .or_default()
             .add(record, pricing);
-        let key = (record.harness, record.model.clone());
+        // Endpoint runs record either the endpoint id or the provider's bare
+        // name; group them as one model.
+        let model = record.model.as_deref().map(|model| {
+            zeron_harness::claude::endpoints::provider_model(model).to_owned()
+        });
+        let key = (record.harness, model);
         models.entry(key.clone()).or_default().add(record, pricing);
         let bucket = (record.started_at + offset).div_euclid(interval) * interval - offset;
         buckets
@@ -732,6 +737,30 @@ mod tests {
         assert_eq!(summary.totals.usage.total(), Some(240));
         assert_eq!(summary.totals.incomplete_cache_turns, 2);
         assert_eq!(summary.totals.uncached_input_tokens, None);
+    }
+
+    #[test]
+    fn endpoint_model_ids_group_with_their_bare_name() {
+        let mut one = record("one", TokenUsage::default());
+        one.harness = Some(HarnessId::ClaudeCode);
+        one.model = Some("endpoint:deepseek:deepseek-flash[1m]".into());
+        let mut two = one.clone();
+        two.message_id = "two".into();
+        two.model = Some("deepseek-flash[1m]".into());
+        let summary = aggregate(
+            "device",
+            &[one, two],
+            &Pricing::default(),
+            0,
+            DAY_MS * 2,
+            false,
+            0,
+            None,
+            0,
+        );
+        assert_eq!(summary.models.len(), 1);
+        assert_eq!(summary.models[0].model.as_deref(), Some("deepseek-flash[1m]"));
+        assert_eq!(summary.models[0].totals.turns, 2);
     }
 
     #[test]

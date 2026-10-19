@@ -961,7 +961,7 @@ impl UsageDashboard {
                                             .rounded_full()
                                             .bg(provider_color(provider.harness, theme)),
                                     )
-                                    .child(provider_mark(provider.harness, 16.0, theme))
+                                    .child(provider_mark(provider.harness, None, 16.0, theme))
                                     .child(
                                         div()
                                             .min_w_0()
@@ -1276,7 +1276,12 @@ impl UsageDashboard {
                                         .items_center()
                                         .gap(px(8.0))
                                         .text_color(theme.text)
-                                        .child(provider_mark(group.harness, 14.0, theme))
+                                        .child(provider_mark(
+                                            group.harness,
+                                            group.model.as_deref(),
+                                            14.0,
+                                            theme,
+                                        ))
                                         .child(div().min_w_0().truncate().child(name)),
                                 )
                                 .child(
@@ -1550,7 +1555,7 @@ impl UsageDashboard {
                                 .gap(px(6.0))
                                 .min_w_0()
                                 .text_color(theme.text_muted)
-                                .child(provider_mark(*harness, 12.0, theme))
+                                .child(provider_mark(*harness, None, 12.0, theme))
                                 .child(div().truncate().child(provider_label(*harness))),
                         )
                         .child(format_value(*value, metric))
@@ -1807,7 +1812,7 @@ impl UsageDashboard {
                     .gap(px(8.0))
                     .text_size(px(13.0))
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child(provider_mark(Some(harness), 16.0, theme))
+                    .child(provider_mark(Some(harness), None, 16.0, theme))
                     .child(provider_label(Some(harness))),
             );
             for (label, labels) in [
@@ -2138,7 +2143,7 @@ impl UsageDashboard {
                     })
                     .children(self.reset_credits(account, now, theme, cx));
                 (
-                    Some(account.harness),
+                    (Some(account.harness), None),
                     account_name(account),
                     format!(
                         "{} · {}{}",
@@ -2246,7 +2251,7 @@ impl UsageDashboard {
                         )
                     });
                 (
-                    group.harness,
+                    (group.harness, group.model.clone()),
                     group
                         .model
                         .clone()
@@ -2302,7 +2307,7 @@ impl UsageDashboard {
                                     .flex()
                                     .items_center()
                                     .gap(px(8.0))
-                                    .child(provider_mark(mark, 20.0, theme))
+                                    .child(provider_mark(mark.0, mark.1.as_deref(), 20.0, theme))
                                     .child(
                                         div()
                                             .min_w_0()
@@ -2828,8 +2833,14 @@ fn reset_outcome_text(outcome: AgentResetOutcome) -> &'static str {
     }
 }
 
-/// Brand mark for the harness a row belongs to, centred in a square box.
-fn provider_mark(harness: Option<HarnessId>, size: f32, theme: &Theme) -> gpui::Div {
+/// Brand mark for the harness (and, on model rows, the model) a row belongs
+/// to, centred in a square box.
+fn provider_mark(
+    harness: Option<HarnessId>,
+    model: Option<&str>,
+    size: f32,
+    theme: &Theme,
+) -> gpui::Div {
     let mark = div()
         .flex_none()
         .size(px(size))
@@ -2838,7 +2849,7 @@ fn provider_mark(harness: Option<HarnessId>, size: f32, theme: &Theme) -> gpui::
         .justify_center();
     match harness {
         Some(harness) => {
-            let (path, tint) = crate::pickers::harness_brand_icon(harness);
+            let (path, tint) = crate::pickers::model_brand_icon(harness, model);
             mark.child(
                 icon(path)
                     .size(px(size))
