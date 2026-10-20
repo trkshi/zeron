@@ -26,6 +26,7 @@ pub mod diff_sync;
 pub mod doc_host;
 mod fs_watch;
 pub mod harness_updates;
+mod home_stats;
 pub(crate) mod home_index;
 mod http_error;
 pub mod instance_lock;
@@ -232,6 +233,7 @@ impl EngineCore {
         registry.load_prefs(data_dir);
         // Claude Code's custom endpoints (tokens included) stay per device too.
         zeron_harness::claude::endpoints::init(data_dir);
+        home_stats::mark_started();
         let store = Arc::new(DocsStore::open(profile.store_root())?);
         let store_for_import = store.clone();
         let journal = Arc::new(RunJournal::open(profile.store_root().join("journals"))?);

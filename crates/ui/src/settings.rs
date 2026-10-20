@@ -24,6 +24,7 @@ pub mod composer;
 pub mod devices;
 pub mod files;
 pub mod harnesses;
+pub mod home;
 pub mod notifications;
 pub(crate) mod profile_image;
 pub mod shortcuts;
@@ -529,6 +530,23 @@ pub fn current(cx: &App) -> UiSettings {
 pub fn compact_model_picker(cx: &App) -> bool {
     cx.try_global::<SettingsStore>()
         .is_some_and(|store| store.current.compact_model_picker)
+}
+
+pub fn home_hidden_panels(cx: &App) -> &[String] {
+    cx.try_global::<SettingsStore>()
+        .map(|store| store.current.home_hidden_panels.as_slice())
+        .unwrap_or_default()
+}
+
+pub fn home_services_all_ports(cx: &App) -> bool {
+    cx.try_global::<SettingsStore>()
+        .is_some_and(|store| store.current.home_services_all_ports)
+}
+
+pub fn set_home_services_all_ports(all_ports: bool, cx: &mut App) {
+    update(SavePolicy::Immediate, cx, |settings| {
+        settings.home_services_all_ports = all_ports;
+    });
 }
 
 pub fn usage_display(cx: &App) -> UsageDisplay {
@@ -1183,6 +1201,10 @@ pub struct UiSettings {
     pub transcript_compact_mode: bool,
     /// Composer footer: compact rings or explicit counts and reset countdowns.
     pub usage_display: UsageDisplay,
+    /// Home panels turned off in Customize, by key (`devices`, `git`, …).
+    pub home_hidden_panels: Vec<String>,
+    /// Home's Running services: every listening port, not only project ones.
+    pub home_services_all_ports: bool,
     /// Destination shared by PR badges and the pull-request board.
     pub pull_request_destination: PullRequestDestination,
     /// Last explicitly selected PR scope, restored when no project is selected.
@@ -1308,6 +1330,8 @@ impl Default for UiSettings {
             open_web_links_in_zeron: true,
             transcript_compact_mode: false,
             usage_display: UsageDisplay::Circles,
+            home_hidden_panels: Vec::new(),
+            home_services_all_ports: false,
             pull_request_destination: PullRequestDestination::Native,
             last_pull_request_repository: None,
             last_pull_request_device: None,
@@ -1971,6 +1995,8 @@ impl UiSettings {
             open_web_links_in_zeron,
             transcript_compact_mode,
             usage_display,
+            home_hidden_panels,
+            home_services_all_ports,
             files_autosave_enabled,
             files_autosave_delay_ms,
             files_word_wrap,

@@ -37,6 +37,8 @@ sha2.workspace = true
 reqwest.workspace = true
 ignore.workspace = true
 fff-search.workspace = true
+# Home device health: CPU and memory readings across platforms.
+sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 
 same-file = "1"
 tempfile.workspace = true

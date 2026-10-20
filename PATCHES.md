@@ -69,6 +69,21 @@ Zeron release.
   Use `#141414` home panels in dark mode, retain light-theme surfaces, and
   stack them on narrow windows. Account switching stays in Providers; the
   panel itself needs no engine update.
+- Add Home stats panels under **Working now** and the account pool:
+  **Git activity** (your non-merge commits on local branches over 14 days,
+  per-day bars, lines added/removed, project filter), **Builds** (latest
+  GitHub Actions runs of each project's `origin`, via `gh`, cached 60 s),
+  **Devices** (CPU, memory, and data-disk use per online device, engine
+  version and uptime, red memory bar under Linux memory pressure), and
+  **Spend** (today's and seven-day cost by provider, linking to Usage), and
+  **Running services** (ports your processes listen on, labelled by project;
+  Projects/All ports switch; local ports open in the browser; Linux and
+  macOS hosts only). Panels after Working now fill the shorter of two
+  columns. The summary pill counts commits; **Customize** and the new
+  **Settings → Home** page hide any panel but Working now. New forwardable
+  `GetDeviceHealth`, `GetGitActivity`, `ListCiRuns`, and
+  `ListListeningServices` engine RPCs back them, so every device needs the
+  engine update.
 - Open the new-chat canvas by default after the chat list loads. Turn off
   **Start with a new chat** in **Settings > General** to open the most recently
   active conversation instead on the next startup. Sidebar selections,

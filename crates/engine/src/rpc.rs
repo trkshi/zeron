@@ -1527,6 +1527,10 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_CLAUDE_ENDPOINTS
             | methods::SAVE_CLAUDE_ENDPOINT
             | methods::REMOVE_CLAUDE_ENDPOINT
+            | methods::GET_DEVICE_HEALTH
+            | methods::GET_GIT_ACTIVITY
+            | methods::LIST_CI_RUNS
+            | methods::LIST_LISTENING_SERVICES
             | methods::LIST_MODELS
             | methods::LIST_SKILLS
             | methods::LIST_COMMANDS
@@ -1989,6 +1993,21 @@ impl RpcService for EngineRpc {
                 let list =
                     zeron_harness::claude::endpoints::remove(&p.id).map_err(RpcError::Failed)?;
                 RpcReply::value(&list)
+            }
+            methods::GET_DEVICE_HEALTH => {
+                RpcReply::value(&crate::home_stats::device_health(self.repos.data_dir()).await)
+            }
+            methods::GET_GIT_ACTIVITY => {
+                let query: zeron_proto::GitActivityQuery = parse_params(params)?;
+                RpcReply::value(&crate::home_stats::git_activity(query).await)
+            }
+            methods::LIST_CI_RUNS => {
+                let query: zeron_proto::CiRunsQuery = parse_params(params)?;
+                RpcReply::value(&crate::home_stats::ci_runs(query).await)
+            }
+            methods::LIST_LISTENING_SERVICES => {
+                let query: zeron_proto::ListeningServicesQuery = parse_params(params)?;
+                RpcReply::value(&crate::home_stats::listening_services(query).await)
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
@@ -4598,6 +4617,10 @@ mod tests {
             methods::LIST_CLAUDE_ENDPOINTS,
             methods::SAVE_CLAUDE_ENDPOINT,
             methods::REMOVE_CLAUDE_ENDPOINT,
+            methods::GET_DEVICE_HEALTH,
+            methods::GET_GIT_ACTIVITY,
+            methods::LIST_CI_RUNS,
+            methods::LIST_LISTENING_SERVICES,
         ] {
             assert!(forwardable(method));
             assert!(!is_stream_method(method));

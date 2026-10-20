@@ -55,6 +55,12 @@ pub mod methods {
     pub const LIST_CLAUDE_ENDPOINTS: &str = "ListClaudeEndpoints";
     pub const SAVE_CLAUDE_ENDPOINT: &str = "SaveClaudeEndpoint";
     pub const REMOVE_CLAUDE_ENDPOINT: &str = "RemoveClaudeEndpoint";
+    /// Home panels: the target device's health, its projects' recent git
+    /// activity, and their GitHub repos' latest CI runs.
+    pub const GET_DEVICE_HEALTH: &str = "GetDeviceHealth";
+    pub const GET_GIT_ACTIVITY: &str = "GetGitActivity";
+    pub const LIST_CI_RUNS: &str = "ListCiRuns";
+    pub const LIST_LISTENING_SERVICES: &str = "ListListeningServices";
     pub const LIST_MODELS: &str = "ListModels";
     pub const READ_USAGE_HISTORY: &str = "ReadUsageHistory";
     pub const LIST_SKILLS: &str = "ListSkills";

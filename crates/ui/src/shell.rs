@@ -80,6 +80,7 @@ mod navigation_focus;
 #[cfg(test)]
 mod navigation_tests;
 mod account_pool;
+pub(crate) mod home_stats;
 mod profile_image;
 mod panel_layout;
 use panel_layout::{AuxiliaryPanel, FitInputs, HorizontalPanelFit, panel_content_tween};
@@ -573,13 +574,16 @@ pub enum SettingsSection {
     General,
     Appshots,
     Archived,
+    /// Which Home panels show, and Running services' port scope.
+    Home,
 }
 
 impl SettingsSection {
     /// Sections shown in Settings. `Agents` is a legacy Accounts route alias.
-    pub const ALL: [SettingsSection; 10] = [
+    pub const ALL: [SettingsSection; 11] = [
         SettingsSection::General,
         SettingsSection::Appearance,
+        SettingsSection::Home,
         SettingsSection::Notifications,
         SettingsSection::Voice,
         SettingsSection::Shortcuts,
@@ -630,6 +634,7 @@ impl SettingsSection {
             SettingsSection::General => "general",
             SettingsSection::Appshots => "appshots",
             SettingsSection::Archived => "archived",
+            SettingsSection::Home => "home",
         }
     }
 
@@ -647,6 +652,7 @@ impl SettingsSection {
             "general" | "conversations" => SettingsSection::General,
             "appshots" => SettingsSection::Appshots,
             "archived" => SettingsSection::Archived,
+            "home" => SettingsSection::Home,
             _ => return None,
         })
     }
@@ -672,6 +678,7 @@ impl SettingsSection {
             SettingsSection::General => "General",
             SettingsSection::Appshots => "Appshots",
             SettingsSection::Archived => "Archived sessions",
+            SettingsSection::Home => "Home",
         }
     }
 }
@@ -1993,6 +2000,9 @@ pub struct Shell {
     account_pool: Entity<account_pool::AccountPool>,
     account_usage_watch: Entity<crate::account_usage_watch::AccountUsageWatch>,
     _account_pool_observation: Subscription,
+    /// Home's device, git, build, and spend panels.
+    home_stats: Entity<home_stats::HomeStats>,
+    _home_stats_subscriptions: [Subscription; 2],
     /// The window's voice orchestrator: independent of the selected chat.
     voice: Entity<crate::voice::VoiceController>,
     /// Sidebar footer orb (session live) and the full-window stage's orb.
@@ -2122,6 +2132,7 @@ pub struct Shell {
         std::rc::Rc<std::cell::RefCell<crate::pull_request_detail::PullRequestCache>>,
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
+    home_settings_page: Option<Entity<crate::settings::home::HomeSettingsPage>>,
     appearance_page: Option<Entity<AppearancePage>>,
     files_settings_page: Option<Entity<FilesSettingsPage>>,
     notifications_page: Option<Entity<NotificationsPage>>,
@@ -2435,6 +2446,16 @@ impl Shell {
         let account_usage_watch =
             cx.new(|_| crate::account_usage_watch::AccountUsageWatch::new(state.clone()));
         let account_pool_observation = cx.observe(&account_pool, |_: &mut Shell, _, cx| cx.notify());
+        let home_stats = cx.new(|_| home_stats::HomeStats::new(state.clone()));
+        let home_stats_subscriptions = [
+            cx.observe(&home_stats, |_: &mut Shell, _, cx| cx.notify()),
+            cx.subscribe(&home_stats, |shell: &mut Shell, _, event, cx| match event {
+                home_stats::HomeStatsEvent::OpenUsage => shell.open_usage(cx),
+                home_stats::HomeStatsEvent::OpenSettings => {
+                    shell.open_settings(SettingsSection::Home, cx)
+                }
+            }),
+        ];
         let voice = cx.new(|_| crate::voice::VoiceController::default());
         let voice_footer_orb = cx.new(|_| {
             crate::orb::Orb::new()
@@ -2592,6 +2613,8 @@ impl Shell {
             account_pool,
             account_usage_watch,
             _account_pool_observation: account_pool_observation,
+            home_stats,
+            _home_stats_subscriptions: home_stats_subscriptions,
             voice,
             voice_footer_orb,
             voice_stage_orb,
@@ -2668,6 +2691,7 @@ impl Shell {
             pull_request_cache: Default::default(),
             devices_page: None,
             archived_page: None,
+            home_settings_page: None,
             appearance_page: None,
             files_settings_page: None,
             notifications_page: None,
@@ -5973,6 +5997,11 @@ impl Shell {
                     None => Empty.into_any_element(),
                 }
             }
+            SettingsSection::Home => self
+                .home_settings_page
+                .get_or_insert_with(|| cx.new(|_| crate::settings::home::HomeSettingsPage))
+                .clone()
+                .into_any_element(),
             SettingsSection::Archived => {
                 if self.archived_page.is_none() {
                     let state = self.state.clone();
@@ -8113,6 +8142,7 @@ impl Shell {
             SettingsSection::General => icons::SETTINGS,
             SettingsSection::Appshots => icons::MONITOR,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
+            SettingsSection::Home => icons::HOME,
         };
         settings::widgets::scroll_faded(
             "settings-nav-scroll",
@@ -13777,6 +13807,9 @@ impl Render for Shell {
         self.account_pool.update(cx, |pool, cx| {
             pool.track(home_visible, window.is_window_active(), cx);
         });
+        self.home_stats.update(cx, |stats, cx| {
+            stats.track(home_visible, window.is_window_active(), cx);
+        });
         self.clock
             .arm(wake, now, |shell: &mut Shell| &mut shell.clock, cx);
         let active_files_key = self.panel_key(cx);
@@ -19376,6 +19409,7 @@ mod settings_modal_regressions {
             ("settings/files", SettingsSection::Files),
             ("settings/appshots", SettingsSection::Appshots),
             ("settings/archived", SettingsSection::Archived),
+            ("settings/home", SettingsSection::Home),
         ] {
             assert_eq!(
                 settings_open_route(route, remembered),

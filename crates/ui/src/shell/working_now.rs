@@ -8,6 +8,7 @@ use gpui::{
 use std::collections::HashMap;
 use zeron_proto::{Chat, Session, view::project_label};
 
+use super::home_stats::{HomePanel, panel_shown};
 use super::*;
 
 const HEADER_HEIGHT: f32 = 40.0;
@@ -19,6 +20,8 @@ const HOME_PANEL_GAP: f32 = 12.0;
 const TWO_PANEL_MIN_WIDTH: f32 = 652.0;
 const MAX_HOME_WIDTH: f32 = MAX_PANEL_WIDTH * 2.0 + HOME_PANEL_GAP;
 const MAX_HOME_HEIGHT: f32 = 360.0;
+/// Columns holding more than one panel scroll within this height.
+const MAX_STACK_HEIGHT: f32 = 760.0;
 /// The summary pill above the panels, and the space it keeps from them.
 const SUMMARY_HEIGHT: f32 = 30.0;
 const SUMMARY_GAP: f32 = 12.0;
@@ -220,17 +223,37 @@ impl Shell {
         if done_count > 0 {
             summary_parts.push(format!("{done_count} to review"));
         }
+        if let Some(commits) = self.home_stats.read(cx).commit_count(cx) {
+            summary_parts.push(format!(
+                "{commits} commit{}",
+                if commits == 1 { "" } else { "s" }
+            ));
+        }
         if summary_parts.is_empty() {
             summary_parts.push("Nothing running".to_owned());
         }
         summary_parts.extend(self.account_pool.read(cx).headroom(cx));
+        let customize = self
+            .home_stats
+            .update(cx, |stats, cx| stats.render_customize(cx));
         let summary = div()
             .id("home-summary")
             .debug_selector(|| "home-summary".into())
+            .relative()
             .size_full()
             .flex()
             .justify_center()
             .opacity(opacity)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .child(customize),
+            )
             .child(
                 div()
                     .h_full()
@@ -341,30 +364,63 @@ impl Shell {
             .when(opacity < 0.95, |panel| {
                 panel.child(div().absolute().inset_0().occlude())
             });
+        // Faded panels must not take clicks or focus during the dock handoff.
+        let fade = |panel: AnyElement| {
+            div()
+                .relative()
+                .size_full()
+                .opacity(opacity)
+                .child(panel)
+                .when(opacity < 0.95, |panel| {
+                    panel.child(div().absolute().inset_0().occlude())
+                })
+                .into_any_element()
+        };
+        // Working now leads the left column; each further panel joins the
+        // shorter column, so hiding panels never leaves one side empty.
+        let mut panels = vec![(panel.into_any_element(), desired_height)];
+        let stats = self.home_stats.clone();
+        for kind in HomePanel::ALL {
+            if !panel_shown(kind, cx) {
+                continue;
+            }
+            let (element, height) = match kind {
+                HomePanel::Accounts => {
+                    let height = self.account_pool.update(cx, |pool, cx| {
+                        pool.set_interactive(opacity >= 0.95, cx);
+                        pool.desired_height(cx)
+                    });
+                    (
+                        self.account_pool.clone().into_any_element(),
+                        height.min(MAX_HOME_HEIGHT),
+                    )
+                }
+                HomePanel::Git => {
+                    stats.update(cx, |stats, cx| (stats.render_git(cx), stats.git_height()))
+                }
+                HomePanel::Builds => stats.update(cx, |stats, cx| {
+                    (stats.render_builds(cx), stats.builds_height())
+                }),
+                HomePanel::Devices => stats.update(cx, |stats, cx| {
+                    (stats.render_devices(cx), stats.devices_height(cx))
+                }),
+                HomePanel::Services => stats.update(cx, |stats, cx| {
+                    (stats.render_services(cx), stats.services_height(cx))
+                }),
+                HomePanel::Spend => stats.update(cx, |stats, cx| {
+                    (stats.render_spend(cx), stats.spend_height())
+                }),
+            };
+            panels.push((fade(element), height));
+        }
+        let [left, right] = masonry(panels);
         div()
             .absolute()
             .inset_0()
             .child(BelowComposer {
                 summary: Some(summary),
                 footer_clearance: Some(footer_clearance),
-                child: Some(panel.into_any_element()),
-                secondary: Some((
-                    div()
-                        .size_full()
-                        .opacity(opacity)
-                        .child(self.account_pool.clone())
-                        .when(opacity < 0.95, |panel| {
-                            panel.relative().child(div().absolute().inset_0().occlude())
-                        })
-                        .into_any_element(),
-                    {
-                        self.account_pool.update(cx, |pool, cx| {
-                            pool.set_interactive(opacity >= 0.95, cx);
-                        });
-                        self.account_pool.read(cx).desired_height(cx)
-                    },
-                )),
-                desired_height,
+                columns: [left, right],
                 available_width,
                 viewport_height: self.viewport_height,
                 bottom_clearance,
@@ -564,6 +620,26 @@ impl Shell {
     }
 }
 
+/// Split panels into two columns, in order, each joining the shorter one.
+fn masonry<T>(panels: Vec<(T, f32)>) -> [Vec<(T, f32)>; 2] {
+    let mut columns = [Vec::new(), Vec::new()];
+    let mut heights = [0.0f32; 2];
+    for (panel, height) in panels {
+        let column = usize::from(heights[1] < heights[0]);
+        heights[column] += height + HOME_PANEL_GAP;
+        columns[column].push((panel, height));
+    }
+    columns
+}
+
+/// Height of a column of stacked panels with their gaps.
+fn column_height(panels: &[(AnyElement, f32)]) -> f32 {
+    let gaps = panels.len().saturating_sub(1) as f32 * HOME_PANEL_GAP;
+    panels.iter().map(|(_, height)| height).sum::<f32>() + gaps
+}
+
+/// [`home_bounds`] for one or two unstacked panels.
+#[cfg(test)]
 fn panel_bounds(
     composer: Bounds<Pixels>,
     surface: Option<Bounds<Pixels>>,
@@ -572,6 +648,29 @@ fn panel_bounds(
     bottom_clearance: f32,
     desired_height: f32,
     secondary_height: Option<f32>,
+) -> Option<Bounds<Pixels>> {
+    home_bounds(
+        composer,
+        surface,
+        available_width,
+        viewport_height,
+        bottom_clearance,
+        desired_height,
+        secondary_height,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn home_bounds(
+    composer: Bounds<Pixels>,
+    surface: Option<Bounds<Pixels>>,
+    available_width: f32,
+    viewport_height: f32,
+    bottom_clearance: f32,
+    desired_height: f32,
+    secondary_height: Option<f32>,
+    stacked: bool,
 ) -> Option<Bounds<Pixels>> {
     let top = f32::from(composer.bottom()) + PANEL_GAP;
     let available = viewport_height - bottom_clearance - top;
@@ -595,7 +694,9 @@ fn panel_bounds(
         Some(secondary) => desired_height + HOME_PANEL_GAP + secondary,
         None => desired_height,
     };
-    let max_height = if secondary_height.is_some() {
+    let max_height = if stacked {
+        MAX_STACK_HEIGHT
+    } else if secondary_height.is_some() {
         MAX_HOME_HEIGHT
     } else {
         MAX_PANEL_HEIGHT
@@ -615,9 +716,9 @@ struct BelowComposer {
     /// Space kept under the input surface for rows shown beneath it. `None`
     /// anchors to the composer's full measured bounds.
     footer_clearance: Option<f32>,
-    child: Option<AnyElement>,
-    secondary: Option<(AnyElement, f32)>,
-    desired_height: f32,
+    /// Left and right stacks of `(panel, height)`; the first left panel is
+    /// Working now. Narrow layouts stack the right column under the left.
+    columns: [Vec<(AnyElement, f32)>; 2],
     available_width: f32,
     viewport_height: f32,
     bottom_clearance: f32,
@@ -686,18 +787,23 @@ impl Element for BelowComposer {
                 bottom - composer.origin.y + px(reserve),
             ),
         );
-        let Some(bounds) = panel_bounds(
+        let [left, right] = std::mem::take(&mut self.columns);
+        if left.is_empty() {
+            return Vec::new();
+        }
+        let left_height = column_height(&left);
+        let right_height = (!right.is_empty()).then(|| column_height(&right));
+        let stacked = left.len() > 1 || right.len() > 1;
+        let Some(bounds) = home_bounds(
             anchor,
             self.surface.get(),
             self.available_width,
             self.viewport_height,
             self.bottom_clearance + self.terminal.get().height,
-            self.desired_height,
-            self.secondary.as_ref().map(|(_, height)| *height),
+            left_height,
+            right_height,
+            stacked,
         ) else {
-            return Vec::new();
-        };
-        let Some(primary) = self.child.take() else {
             return Vec::new();
         };
         let mut painted = Vec::new();
@@ -710,44 +816,38 @@ impl Element for BelowComposer {
             );
             painted.push(summary);
         }
-        let mut child = match self.secondary.take() {
-            Some((secondary, height)) => {
-                let wide = f32::from(bounds.size.width) >= TWO_PANEL_MIN_WIDTH;
-                div()
-                    .id("home-status-panels")
-                    .w(bounds.size.width)
-                    .h(bounds.size.height)
-                    .flex()
-                    .when(!wide, |panels| panels.flex_col())
-                    .items_start()
-                    .gap(px(HOME_PANEL_GAP))
-                    .overflow_y_scroll()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .h(px(self.desired_height))
-                            .max_h_full()
-                            .when(wide, |panel| panel.flex_1())
-                            .when(!wide, |panel| panel.w_full().flex_none())
-                            .child(primary),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .h(px(height.min(MAX_HOME_HEIGHT)))
-                            .max_h_full()
-                            .when(wide, |panel| panel.flex_1())
-                            .when(!wide, |panel| panel.w_full().flex_none())
-                            .child(secondary),
-                    )
-                    .into_any_element()
-            }
-            None => div()
-                .w(bounds.size.width)
-                .h(bounds.size.height)
-                .child(primary)
-                .into_any_element(),
+        let column = |panels: Vec<(AnyElement, f32)>, wide: bool| {
+            // A lone panel fits the area; stacked ones keep their heights and scroll.
+            let single = panels.len() == 1 && !stacked;
+            div()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(HOME_PANEL_GAP))
+                .when(wide, |column| column.flex_1())
+                .when(!wide, |column| column.w_full().flex_none())
+                .children(panels.into_iter().map(move |(panel, height)| {
+                    div()
+                        .w_full()
+                        .flex_none()
+                        .h(px(height))
+                        .when(single, |slot| slot.max_h_full())
+                        .child(panel)
+                }))
         };
+        let wide = right_height.is_some() && f32::from(bounds.size.width) >= TWO_PANEL_MIN_WIDTH;
+        let mut child = div()
+            .id("home-status-panels")
+            .w(bounds.size.width)
+            .h(bounds.size.height)
+            .flex()
+            .when(!wide, |panels| panels.flex_col())
+            .items_start()
+            .gap(px(HOME_PANEL_GAP))
+            .overflow_y_scroll()
+            .child(column(left, wide))
+            .when(!right.is_empty(), |panels| panels.child(column(right, wide)))
+            .into_any_element();
         child.prepaint_as_root(
             bounds.origin,
             bounds.size.map(AvailableSpace::Definite),
@@ -815,6 +915,16 @@ mod tests {
             updated_at: now(),
             running_subagents: 0,
         }
+    }
+
+    #[test]
+    fn masonry_fills_the_shorter_column_in_order() {
+        let [left, right] = masonry(vec![("work", 200.0), ("a", 100.0), ("b", 80.0), ("c", 60.0)]);
+        let names = |column: &[(&str, f32)]| column.iter().map(|(n, _)| *n).collect::<Vec<_>>();
+        assert_eq!(names(&left), ["work", "c"]);
+        assert_eq!(names(&right), ["a", "b"]);
+        let [left, right] = masonry(vec![("work", 200.0)]);
+        assert_eq!((left.len(), right.len()), (1, 0));
     }
 
     #[test]

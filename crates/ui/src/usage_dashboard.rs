@@ -2860,7 +2860,7 @@ fn provider_mark(
     }
 }
 
-fn provider_label(harness: Option<HarnessId>) -> &'static str {
+pub(crate) fn provider_label(harness: Option<HarnessId>) -> &'static str {
     match harness {
         Some(HarnessId::Codex) => "Codex",
         Some(HarnessId::ClaudeCode) => "Claude Code",
@@ -3039,7 +3039,7 @@ fn axis_value(value: f64, metric: Metric) -> String {
     }
 }
 
-fn money(value: f64) -> String {
+pub(crate) fn money(value: f64) -> String {
     let cents = (value * 100.0).round() as i64;
     let sign = if cents < 0 { "-" } else { "" };
     let cents = cents.abs();
@@ -3054,7 +3054,7 @@ fn money(value: f64) -> String {
     format!("{sign}${grouped}.{:02}", cents % 100)
 }
 
-fn compact(value: f64) -> String {
+pub(crate) fn compact(value: f64) -> String {
     if value >= 1e9 {
         format!("{:.2}B", value / 1e9)
     } else if value >= 1e6 {
