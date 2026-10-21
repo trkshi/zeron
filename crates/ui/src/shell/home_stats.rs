@@ -25,6 +25,9 @@ const CI_EVERY: Duration = Duration::from_secs(60);
 const GIT_EVERY: Duration = Duration::from_secs(120);
 const SPEND_EVERY: Duration = Duration::from_secs(120);
 const SERVICES_EVERY: Duration = Duration::from_secs(15);
+/// How often to re-ask a device whose engine predates a panel's RPC, in case
+/// it was updated meanwhile.
+const UNSUPPORTED_EVERY: Duration = Duration::from_secs(600);
 const SERVICE_ROW_HEIGHT: f32 = 32.0;
 const MAX_SERVICE_ROWS: usize = 6;
 const GIT_DAYS: u32 = 14;
@@ -123,6 +126,9 @@ struct Reading<T> {
     error: Option<String>,
     at: Option<Instant>,
     loading: bool,
+    /// The device's engine answered "unknown method": it predates this panel,
+    /// so the panel leaves the device out rather than showing an error.
+    unsupported: bool,
 }
 
 impl<T> Default for Reading<T> {
@@ -132,14 +138,25 @@ impl<T> Default for Reading<T> {
             error: None,
             at: None,
             loading: false,
+            unsupported: false,
         }
     }
 }
 
 impl<T> Reading<T> {
     fn due(&self, every: Duration) -> bool {
+        let every = if self.unsupported {
+            UNSUPPORTED_EVERY
+        } else {
+            every
+        };
         !self.loading && self.at.is_none_or(|at| at.elapsed() >= every)
     }
+}
+
+fn unknown_method(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("unknown method") || message.contains("unknownmethod")
 }
 
 /// A device the panels read, with the RPC target that addresses it (`None`
@@ -392,6 +409,12 @@ impl HomeStats {
                     Ok(value) => {
                         reading.value = Some(value);
                         reading.error = None;
+                        reading.unsupported = false;
+                    }
+                    Err(error) if unknown_method(&error) => {
+                        reading.value = None;
+                        reading.error = None;
+                        reading.unsupported = true;
                     }
                     Err(error) => reading.error = Some(error),
                 }
@@ -731,13 +754,20 @@ impl HomeStats {
 
     // ---- devices ----
 
+    /// Online devices whose engine can report its health.
+    fn health_hosts(&self, cx: &gpui::App) -> Vec<Host> {
+        let mut hosts = self.hosts(cx);
+        hosts.retain(|host| !self.health.get(&host.id).is_some_and(|r| r.unsupported));
+        hosts
+    }
+
     pub(super) fn devices_height(&self, cx: &gpui::App) -> f32 {
-        HEADER_HEIGHT + 8.0 + DEVICE_ROW_HEIGHT * self.hosts(cx).len().max(1) as f32
+        HEADER_HEIGHT + 8.0 + DEVICE_ROW_HEIGHT * self.health_hosts(cx).len().max(1) as f32
     }
 
     pub(super) fn render_devices(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let hosts = self.hosts(cx);
+        let hosts = self.health_hosts(cx);
         let rows: Vec<AnyElement> = hosts
             .iter()
             .map(|host| {

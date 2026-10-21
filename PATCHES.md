@@ -83,7 +83,8 @@ Zeron release.
   **Settings → Home** page hide any panel but Working now. New forwardable
   `GetDeviceHealth`, `GetGitActivity`, `ListCiRuns`, and
   `ListListeningServices` engine RPCs back them, so every device needs the
-  engine update.
+  engine update. Devices whose engine predates an RPC are left out of that
+  panel instead of showing "unknown method", and re-checked every 10 minutes.
 - Open the new-chat canvas by default after the chat list loads. Turn off
   **Start with a new chat** in **Settings > General** to open the most recently
   active conversation instead on the next startup. Sidebar selections,
