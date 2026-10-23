@@ -31,6 +31,7 @@
 
 mod antigravity_paths;
 mod devin_models;
+mod dsh_usage;
 mod normalize;
 mod subagent;
 mod subagent_devin;
@@ -3100,6 +3101,12 @@ fn usage_from_response(res: &Result<Value, HarnessError>) -> Option<AgentEvent> 
     })
 }
 
+/// The turn DSH just settled, read from its session log.
+async fn dsh_turn_usage(log: &mut Option<dsh_usage::DshUsageLog>) -> Option<AgentEvent> {
+    let usage = log.as_mut()?.settle().await?;
+    Some(AgentEvent::TurnUsage { usage })
+}
+
 /// Map a finished `session/prompt` result to the run's terminal status.
 fn stop_outcome(
     res: &Result<Value, HarnessError>,
@@ -4111,6 +4118,12 @@ async fn run_session(session: Session) {
     // The text of the prompt in flight (re-sent by a preempt when the agent
     // drops an unstarted cancelled prompt).
     let mut current_prompt_text = prompt_transform(request.reasoning, &request.prompt);
+    // DSH reports turn usage only in its session log (see `dsh_usage`).
+    let mut dsh_log = if harness == HarnessId::Dsh {
+        Some(dsh_usage::DshUsageLog::open(&session_id).await)
+    } else {
+        None
+    };
     let mut turn: Option<BoxFuture<'static, Result<Value, HarnessError>>> = Some({
         prompt_turn(
             client.clone(),
@@ -4360,6 +4373,11 @@ async fn run_session(session: Session) {
                 {
                     break 'main;
                 }
+                if let Some(usage) = dsh_turn_usage(&mut dsh_log).await
+                    && !send(&event_tx, usage).await
+                {
+                    break 'main;
+                }
                 // A steer preempted this turn: the session lives on and the
                 // steers continue it below, so there is no turn end to report.
                 let stopped = std::mem::take(&mut stopping);
@@ -4580,6 +4598,9 @@ async fn run_session(session: Session) {
                         )
                         .await;
                         if let Some(usage) = usage_from_response(&res) {
+                            let _ = send(&event_tx, usage).await;
+                        }
+                        if let Some(usage) = dsh_turn_usage(&mut dsh_log).await {
                             let _ = send(&event_tx, usage).await;
                         }
                         let (status, error) = stop_outcome(&res, interrupted);

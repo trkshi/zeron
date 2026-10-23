@@ -41,6 +41,8 @@ tracing.workspace = true
 sha2.workspace = true
 semver = "1"
 zip.workspace = true
+# DeepSeek Harness session logs (turn usage).
+zstd = { version = "0.13", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

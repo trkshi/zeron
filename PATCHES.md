@@ -48,8 +48,11 @@ Zeron release.
   characters ever leave the host. It is separate from Claude Code's custom
   endpoint keys. Zeron launches DSH with a patch overlay making
   `danger-full-access` (no sandbox, never ask) the session default, as it runs
-  every agent unattended; DSH web keeps its own default. DSH reports context size but no per-turn token counts over
-  ACP, so its turns stay out of Usage. DSH must be
+  every agent unattended; DSH web keeps its own default. DSH's ACP adapter reports only context size,
+  so after each turn the host reads that turn's token counts from DSH's own
+  session log (`~/.dsh/sessions/…/session.v4.jsonl.zstd`): the token card,
+  tok/s and Usage then work as for other agents. If a DSH update changes that
+  private format, the counts read as not reported. DSH must be
   installed on the device hosting the chat, and both the UI and host engine
   need this update: engines and apps without it cannot read the new harness id.
 - Add a **Usage** dashboard from the sidebar footer, with **Cost**, **Tokens**,
