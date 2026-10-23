@@ -166,6 +166,7 @@ pub fn harness_label(id: &str) -> String {
         "cursor" => "Cursor",
         "opencode" => "OpenCode",
         "antigravity" => "Antigravity",
+        "dsh" => "DeepSeek Harness",
         "mock" => "Mock",
         other => return other.to_owned(),
     }
@@ -538,7 +539,18 @@ pub fn model_label(harness: &str, model_id: &str) -> String {
     }
     learned_label(harness, model_id)
         .or_else(|| curated_label(model_id, &curated_catalog(harness)))
+        .or_else(|| dsh_route_model(model_id))
         .unwrap_or_else(|| model_id.to_owned())
+}
+
+/// DSH's model ids are JSON `["provider", "model"]` routes; before the live
+/// catalog names one, show its model half rather than the JSON.
+fn dsh_route_model(model_id: &str) -> Option<String> {
+    let route: Vec<String> = serde_json::from_str(model_id).ok()?;
+    match route.as_slice() {
+        [_, model] if !model.is_empty() => Some(model.clone()),
+        _ => None,
+    }
 }
 
 /// Last-known live catalogs on disk (`{data_dir}/catalogs/{device}.json`):

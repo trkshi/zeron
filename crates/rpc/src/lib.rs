@@ -55,6 +55,9 @@ pub mod methods {
     pub const LIST_CLAUDE_ENDPOINTS: &str = "ListClaudeEndpoints";
     pub const SAVE_CLAUDE_ENDPOINT: &str = "SaveClaudeEndpoint";
     pub const REMOVE_CLAUDE_ENDPOINT: &str = "RemoveClaudeEndpoint";
+    /// DeepSeek Harness's saved DeepSeek API key: status (last four only) and save/remove.
+    pub const GET_DSH_API_KEY: &str = "GetDshApiKey";
+    pub const SAVE_DSH_API_KEY: &str = "SaveDshApiKey";
     /// Home panels: the target device's health, its projects' recent git
     /// activity, and their GitHub repos' latest CI runs.
     pub const GET_DEVICE_HEALTH: &str = "GetDeviceHealth";

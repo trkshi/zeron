@@ -796,6 +796,23 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::AcpHarness::antigravity().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::antigravity()) as Arc<dyn Harness>)),
     );
+    // DeepSeek Harness over its ACP profile, same lazy pattern: the static
+    // descriptor mirrors AcpHarness::dsh() exactly. Turn-boundary steering;
+    // the effort ladder is discovered per model.
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Dsh,
+            name: "DeepSeek Harness".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            can_install: false,
+            enabled: None,
+        },
+        Box::new(|| zeron_harness::AcpHarness::dsh().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::dsh()) as Arc<dyn Harness>)),
+    );
     registry
 }
 
@@ -878,7 +895,8 @@ mod tests {
                 HarnessId::Hermes,
                 HarnessId::Pi,
                 HarnessId::Opencode,
-                HarnessId::Antigravity
+                HarnessId::Antigravity,
+                HarnessId::Dsh
             ]
         );
         assert!(registry.resolve(HarnessId::Mock).is_ok());

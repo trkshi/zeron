@@ -329,6 +329,7 @@ pub use catalog_failure::{CatalogFailure, CatalogFailureCode};
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod dsh_credentials;
 pub(crate) mod executable;
 pub(crate) mod generation;
 pub mod install;

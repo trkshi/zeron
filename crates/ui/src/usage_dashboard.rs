@@ -62,7 +62,7 @@ enum ResetState {
 const LIMIT_PROVIDERS: [HarnessId; 2] = [HarnessId::Codex, HarnessId::ClaudeCode];
 
 /// Reading order shared by the summary, chart, tooltip, and tables.
-const PROVIDER_ORDER: [Option<HarnessId>; 11] = [
+const PROVIDER_ORDER: [Option<HarnessId>; 12] = [
     Some(HarnessId::Codex),
     Some(HarnessId::ClaudeCode),
     Some(HarnessId::Grok),
@@ -72,6 +72,7 @@ const PROVIDER_ORDER: [Option<HarnessId>; 11] = [
     Some(HarnessId::Pi),
     Some(HarnessId::Devin),
     Some(HarnessId::Hermes),
+    Some(HarnessId::Dsh),
     Some(HarnessId::Mock),
     None,
 ];
@@ -2871,6 +2872,7 @@ pub(crate) fn provider_label(harness: Option<HarnessId>) -> &'static str {
         Some(HarnessId::Devin) => "Devin",
         Some(HarnessId::Hermes) => "Hermes",
         Some(HarnessId::Pi) => "Pi",
+        Some(HarnessId::Dsh) => "DeepSeek Harness",
         Some(HarnessId::Mock) => "Mock",
         None => "Unknown provider",
     }
@@ -2886,6 +2888,7 @@ fn provider_color(harness: Option<HarnessId>, theme: &Theme) -> Hsla {
         Some(HarnessId::Opencode) => Hsla::from(gpui::rgb(0x5b9bbd)),
         Some(HarnessId::Antigravity) => Hsla::from(gpui::rgb(0x8c7bd1)),
         Some(HarnessId::Pi) => Hsla::from(gpui::rgb(0x4d9f8a)),
+        Some(HarnessId::Dsh) => icons::deepseek_brand(),
         _ => theme.text_muted,
     }
 }

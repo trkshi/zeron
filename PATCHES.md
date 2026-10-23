@@ -36,6 +36,20 @@ Zeron release.
   probes target active logins only; explicit refreshes and auto-switch checks
   retain access to saved accounts. Older engines keep the previous UI polling.
 
+- Add **DeepSeek Harness** as an agent, driven over ACP through DSH's shipped
+  automation profile (`dsh --profile acp`, created on first launch). Models
+  come from the profile's providers, so plugins installed into it
+  (`dsh plugin --profile acp add …`) add theirs; each model row names its
+  provider. Effort maps onto DSH's Off/Low/High/Max. ACP model selects grouped
+  by provider now read as one flat list for every ACP agent. **Settings →
+  Providers → DeepSeek Harness → API key** sets or removes DSH's DeepSeek key
+  over forwarded RPCs, writing DSH's own `~/.dsh/.credentials.yaml` (0600,
+  under DSH's writer lock) so `dsh web` shares it; only its last four
+  characters ever leave the host. It is separate from Claude Code's custom
+  endpoint keys. DSH reports context size but no per-turn token counts over
+  ACP, so its turns stay out of Usage. DSH must be
+  installed on the device hosting the chat, and both the UI and host engine
+  need this update: engines and apps without it cannot read the new harness id.
 - Add a **Usage** dashboard from the sidebar footer, with **Cost**, **Tokens**,
   and **Limits** views, device selection, 24-hour/7-day/30-day/90-day periods,
   provider trends, billing-category bars, model details, and pooled account

@@ -71,6 +71,9 @@ const DEFAULT_MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 // The one-file server unpacks on launch. A local cold probe took 1.903s, but
 // slower disks need substantially more headroom than the generic 10s budget.
 const ANTIGRAVITY_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(90);
+// DSH composes its whole plugin tree before answering: about 9s to the first
+// `session/new` on a warm 8-core Linux box.
+const DSH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 /// Per-agent configuration: which binary to spawn and what to tell the picker.
 struct AcpAgentSpec {
     id: HarnessId,
@@ -405,6 +408,80 @@ fn hermes_spec() -> AcpAgentSpec {
         reasoning_levels: &[],
         prompt_transform: identity_transform,
         effort_values: default_effort_values,
+        ladder_extras: &[],
+        prompt_complete_extension: false,
+        prompt_stall: None,
+        stall_hint: "The agent process is likely wedged.",
+        effort_in_model_id: false,
+        auth_method: None,
+        skill_dirs: Vec::new,
+        hidden_commands: &[],
+        drops_unstarted_cancelled_prompt: false,
+    }
+}
+
+fn dsh_install_paths() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = crate::executable::home_dir() {
+        dirs.push(home.join(".bun").join("bin").join("dsh"));
+        dirs.push(home.join(".local").join("bin").join("dsh"));
+        dirs.push(home.join(".npm-global").join("bin").join("dsh"));
+    }
+    dirs.push(PathBuf::from("/opt/homebrew/bin/dsh"));
+    dirs.push(PathBuf::from("/usr/local/bin/dsh"));
+    dirs
+}
+
+/// DSH's `reasoning_effort` select offers `off`, `low`, `high`, and `max`.
+fn dsh_effort_values(reasoning: Option<ReasoningLevel>, model: Option<&str>) -> Vec<&'static str> {
+    match reasoning {
+        Some(ReasoningLevel::Minimal) => vec!["off", "low"],
+        Some(ReasoningLevel::Medium) => vec!["high"],
+        _ => default_effort_values(reasoning, model),
+    }
+}
+
+fn dsh_spec() -> AcpAgentSpec {
+    AcpAgentSpec {
+        id: HarnessId::Dsh,
+        display_name: "DeepSeek Harness",
+        executable: "dsh",
+        env_override: "DSH_EXECUTABLE",
+        // The shipped automation-only ACP profile; `dsh` creates it from the
+        // template on first launch. Plugins installed into that profile
+        // (`dsh plugin --profile acp add …`) add their providers' models.
+        args: &["--profile", "acp"],
+        npm_package: None,
+        archive: None,
+        extra_paths: dsh_install_paths,
+        cli_executable: "dsh",
+        cli_extra_paths: dsh_install_paths,
+        install_hint: "dsh (searched PATH, the login shell's PATH, ~/.bun/bin, ~/.local/bin, \
+             ~/.npm-global/bin, /opt/homebrew/bin, /usr/local/bin, and fnm/nvm/volta/pnpm/bun \
+             install dirs; install with `bun add -g @deepseek-ai/dsh` and sign in once \
+             with `dsh web`; set DSH_EXECUTABLE to override)",
+        // Fallback metadata only: discovery reads the provider-grouped
+        // `model` select, whose ids are DSH's JSON `[provider, model]` routes.
+        models: || {
+            vec![Model {
+                id: r#"["deepseek-official","deepseek-v4-flash"]"#.into(),
+                label: "deepseek-v4-flash".into(),
+                description: Some("DeepSeek".into()),
+                reasoning_levels: vec![
+                    ReasoningLevel::Minimal,
+                    ReasoningLevel::Low,
+                    ReasoningLevel::High,
+                    ReasoningLevel::Max,
+                ],
+                options: Vec::new(),
+            }]
+        },
+        // No steering extension: steers deliver at turn boundaries.
+        steering_mode: SteeringMode::TurnBoundary,
+        // Discovered per model from the `thought_level` select.
+        reasoning_levels: &[],
+        prompt_transform: identity_transform,
+        effort_values: dsh_effort_values,
         ladder_extras: &[],
         prompt_complete_extension: false,
         prompt_stall: None,
@@ -1286,6 +1363,11 @@ impl AcpHarness {
         Self::with_spec(hermes_spec())
     }
 
+    /// DeepSeek Harness over its ACP profile (`dsh --profile acp`).
+    pub fn dsh() -> Self {
+        Self::with_spec(dsh_spec()).with_model_discovery_timeout(DSH_DISCOVERY_TIMEOUT)
+    }
+
     /// google antigravity over its acp server (`agy_acp_server`).
     pub fn antigravity() -> Self {
         Self::with_spec(antigravity_spec())
@@ -1889,9 +1971,37 @@ impl AcpHarness {
     }
 }
 
+/// A select config option's choices, each with the name of the group it sits
+/// in. ACP lets `options` hold either choices or `{group, name, options}`
+/// groups of them (DSH groups its models by provider); both read as one flat
+/// list here.
+fn select_choices(option: &Value) -> Vec<(Option<&str>, &Value)> {
+    let mut choices = Vec::new();
+    for entry in option
+        .get("options")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        match entry.get("options").and_then(Value::as_array) {
+            Some(grouped) if entry.get("value").is_none() => {
+                let group = entry
+                    .get("name")
+                    .or_else(|| entry.get("group"))
+                    .and_then(Value::as_str);
+                choices.extend(grouped.iter().map(|choice| (group, choice)));
+            }
+            _ => choices.push((None, entry)),
+        }
+    }
+    choices
+}
+
 /// Map an advertised `thought_level` value id onto zeron's ladder.
 fn reasoning_from_value(value: &str) -> Option<ReasoningLevel> {
     match norm_id(value).as_str() {
+        // DSH's "no reasoning" choice.
+        "off" => Some(ReasoningLevel::Minimal),
         "minimal" => Some(ReasoningLevel::Minimal),
         "low" => Some(ReasoningLevel::Low),
         "medium" => Some(ReasoningLevel::Medium),
@@ -1926,10 +2036,10 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
     let mut ladder: Vec<ReasoningLevel> = config_options
         .iter()
         .find(|o| o.get("category").and_then(Value::as_str) == Some("thought_level"))
-        .and_then(|o| o.get("options").and_then(Value::as_array))
-        .map(|opts| {
-            opts.iter()
-                .filter_map(|o| o.get("value").and_then(Value::as_str))
+        .map(|o| {
+            select_choices(o)
+                .into_iter()
+                .filter_map(|(_, c)| c.get("value").and_then(Value::as_str))
                 .filter_map(reasoning_from_value)
                 .collect()
         })
@@ -1983,16 +2093,15 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
         }
     };
 
-    let model_select: Vec<&Value> = config_options
+    let model_select: Vec<(Option<&str>, &Value)> = config_options
         .iter()
         .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))
-        .and_then(|o| o.get("options").and_then(Value::as_array))
-        .map(|opts| opts.iter().collect())
+        .map(select_choices)
         .unwrap_or_default();
     if !model_select.is_empty() {
         let raw_ids: Vec<&str> = model_select
             .iter()
-            .filter_map(|o| o.get("value").and_then(Value::as_str))
+            .filter_map(|(_, o)| o.get("value").and_then(Value::as_str))
             .collect();
         // `default` is an ALIAS row (Claude Code's "Default (recommended)"),
         // duplicating whichever real model the CLI resolves it to — dropped
@@ -2002,13 +2111,15 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
         let has_real = raw_ids.iter().any(|id| norm_id(id) != "default");
         return model_select
             .iter()
-            .filter_map(|o| {
+            .filter_map(|(group, o)| {
                 let id = o.get("value").and_then(Value::as_str)?;
                 if has_real && norm_id(id) == "default" {
                     return None;
                 }
                 let name = o.get("name").and_then(Value::as_str);
-                let description = o.get("description").and_then(Value::as_str);
+                // A grouped choice without its own description names its
+                // group (DSH's provider), so same-named models stay apart.
+                let description = o.get("description").and_then(Value::as_str).or(*group);
                 let mut options = wire_options.clone();
                 if let Some(base) = strip_context_hint(id) {
                     // A 1M variant with its bare base advertised too folds
@@ -2084,11 +2195,10 @@ fn trait_from_config_option(option: &Value) -> Option<ModelOption> {
     let label = option.get("name").and_then(Value::as_str).unwrap_or(id);
     match option.get("type").and_then(Value::as_str)? {
         "select" => {
-            let choices: Vec<ModelOptionChoice> = option
-                .get("options")
-                .and_then(Value::as_array)?
-                .iter()
-                .filter_map(|c| {
+            option.get("options").and_then(Value::as_array)?;
+            let choices: Vec<ModelOptionChoice> = select_choices(option)
+                .into_iter()
+                .filter_map(|(_, c)| {
                     let id = c.get("value").and_then(Value::as_str)?;
                     Some(ModelOptionChoice {
                         id: id.to_owned(),
@@ -2725,13 +2835,9 @@ fn validate_config_model_selection(
     else {
         return Ok(());
     };
-    let available: Vec<&str> = option
-        .get("options")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|choice| choice.get("value").and_then(Value::as_str))
+    let available: Vec<&str> = select_choices(option)
+        .into_iter()
+        .filter_map(|(_, choice)| choice.get("value").and_then(Value::as_str))
         .collect();
     let context_1m = model_options
         .get("contextWindow")
@@ -2794,13 +2900,9 @@ fn config_option_sets(
         let kind = option.get("type").and_then(Value::as_str).unwrap_or("");
         let category = option.get("category").and_then(Value::as_str);
         let current = option.get("currentValue");
-        let available: Vec<&str> = option
-            .get("options")
-            .and_then(Value::as_array)
-            .map(|a| a.as_slice())
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|o| o.get("value").and_then(Value::as_str))
+        let available: Vec<&str> = select_choices(option)
+            .into_iter()
+            .filter_map(|(_, o)| o.get("value").and_then(Value::as_str))
             .collect();
 
         let wanted: Option<Value> = match (kind, category) {
@@ -3351,11 +3453,10 @@ fn effort_variant_id(
                 .iter()
                 .find(|o| o.get("category").and_then(Value::as_str) == Some("model"))
         })
-        .and_then(|o| o.get("options").and_then(Value::as_array))
-        .map(|choices| {
-            choices
-                .iter()
-                .filter_map(|c| {
+        .map(|o| {
+            select_choices(o)
+                .into_iter()
+                .filter_map(|(_, c)| {
                     let id = c.get("value").and_then(Value::as_str)?;
                     Some((id, c.get("name").and_then(Value::as_str).unwrap_or(id)))
                 })
@@ -5842,6 +5943,74 @@ mod tests {
             vec!["fast-mode"]
         );
         assert_eq!(models[0].options[0].default_choice, "off");
+    }
+
+    #[test]
+    fn dsh_grouped_models_flatten_with_their_provider() {
+        // DSH 0.2.1's `session/new`: models grouped by provider, JSON route ids.
+        let flash = r#"["deepseek-official","deepseek-v4-flash"]"#;
+        let free = r#"["our-free-model","deepseek-v4.1-flash-free"]"#;
+        let response = json!({
+            "sessionId": "s-1",
+            "configOptions": [
+                {
+                    "id": "model",
+                    "name": "Model",
+                    "category": "model",
+                    "type": "select",
+                    "currentValue": flash,
+                    "options": [
+                        { "group": "deepseek-official", "name": "DeepSeek", "options": [
+                            { "value": flash, "name": "deepseek-v4-flash" },
+                        ] },
+                        { "group": "our-free-model", "name": "Our Free Model", "options": [
+                            { "value": free, "name": "deepseek-v4.1-flash-free" },
+                        ] },
+                    ],
+                },
+                {
+                    "id": "reasoning_effort",
+                    "name": "Reasoning effort",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": "high",
+                    "options": [
+                        { "value": "off", "name": "Off" },
+                        { "value": "low", "name": "Low" },
+                        { "value": "high", "name": "High" },
+                        { "value": "max", "name": "Max" },
+                    ],
+                },
+            ],
+        });
+        let models = models_from_session(&response, &(dsh_spec().models)());
+        let rows = models
+            .iter()
+            .map(|m| (m.id.as_str(), m.description.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![(flash, Some("DeepSeek")), (free, Some("Our Free Model"))]
+        );
+        assert_eq!(
+            models[1].reasoning_levels,
+            vec![
+                ReasoningLevel::Minimal,
+                ReasoningLevel::Low,
+                ReasoningLevel::High,
+                ReasoningLevel::Max,
+            ]
+        );
+        assert!(models.iter().all(|m| m.options.is_empty()));
+        assert_eq!(
+            dsh_effort_values(Some(ReasoningLevel::Minimal), None)[0],
+            "off"
+        );
+        let available = [flash, free];
+        assert_eq!(
+            pick_model_value(free, &available, false),
+            Some(free.to_owned())
+        );
     }
 
     #[test]

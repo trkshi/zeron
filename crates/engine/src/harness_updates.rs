@@ -264,6 +264,14 @@ fn provider(id: HarnessId) -> ProviderSpec {
             update_args: None,
             manual_command: "devin --version",
         },
+        HarnessId::Dsh => ProviderSpec {
+            version_args: &["--version"],
+            latest: LatestSource::Npm("@deepseek-ai/dsh"),
+            // Installed with bun or npm globally; which one owns it is unknown,
+            // so updates stay manual.
+            update_args: None,
+            manual_command: "bun add -g @deepseek-ai/dsh",
+        },
         HarnessId::Antigravity => ProviderSpec {
             version_args: &["--version"],
             latest: LatestSource::AntigravityAcp,

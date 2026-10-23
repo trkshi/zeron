@@ -34,6 +34,7 @@ use crate::pickers::visible_harnesses;
 use crate::popover::{self, Loadable};
 use crate::settings::accounts::{self, AccountsPage};
 use crate::settings::claude_endpoints::ClaudeEndpointsSection;
+use crate::settings::dsh_key::DshKeySection;
 use crate::settings::widgets;
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -113,6 +114,7 @@ pub fn cli_name(harness: HarnessId) -> &'static str {
         HarnessId::Pi => "pi",
         HarnessId::Opencode => "opencode",
         HarnessId::Antigravity => "Antigravity",
+        HarnessId::Dsh => "dsh",
         HarnessId::Mock => "mock",
     }
 }
@@ -188,6 +190,8 @@ pub struct HarnessesPage {
     accounts_page: Option<Entity<AccountsPage>>,
     /// Claude Code's Custom endpoints section, made when it first expands.
     claude_endpoints: Option<Entity<ClaudeEndpointsSection>>,
+    /// DeepSeek Harness's API key section, made when it first expands.
+    dsh_key: Option<Entity<DshKeySection>>,
     update_task: Option<Task<()>>,
     update_action_task: Option<Task<()>>,
     account_auto_switch: Loadable<AccountAutoSwitchPrefs>,
@@ -219,6 +223,7 @@ impl HarnessesPage {
             expanded_harness: None,
             accounts_page: None,
             claude_endpoints: None,
+            dsh_key: None,
             update_task: None,
             update_action_task: None,
             account_auto_switch: Loadable::Idle,
@@ -248,6 +253,11 @@ impl HarnessesPage {
                 let target = self.target_device.clone();
                 self.claude_endpoints =
                     Some(cx.new(|cx| ClaudeEndpointsSection::new(state, target, cx)));
+            }
+            if harness == HarnessId::Dsh && self.dsh_key.is_none() {
+                let state = self.state.clone();
+                let target = self.target_device.clone();
+                self.dsh_key = Some(cx.new(|cx| DshKeySection::new(state, target, cx)));
             }
             if accounts::signs_in(harness) {
                 if let Some(accounts) = &self.accounts_page {
@@ -290,6 +300,10 @@ impl HarnessesPage {
                 self.claude_endpoints
                     .clone()
                     .filter(|_| harness == HarnessId::ClaudeCode),
+                |details, section| details.child(section),
+            )
+            .when_some(
+                self.dsh_key.clone().filter(|_| harness == HarnessId::Dsh),
                 |details, section| details.child(section),
             )
             .when_some(accounts, |details, accounts| details.child(accounts));
@@ -493,6 +507,13 @@ impl HarnessesPage {
         {
             return true;
         }
+        if self.expanded_harness == Some(HarnessId::Dsh)
+            && self.dsh_key.as_ref().is_some_and(|section| {
+                section.update(cx, |section, cx| section.dismiss_on_escape(cx))
+            })
+        {
+            return true;
+        }
         self.expanded_harness.is_some()
             && self
                 .accounts_page
@@ -545,6 +566,11 @@ impl HarnessesPage {
             });
         }
         if let Some(section) = &self.claude_endpoints {
+            section.update(cx, |section, cx| {
+                section.set_target_device(self.target_device.clone(), cx)
+            });
+        }
+        if let Some(section) = &self.dsh_key {
             section.update(cx, |section, cx| {
                 section.set_target_device(self.target_device.clone(), cx)
             });

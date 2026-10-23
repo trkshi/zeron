@@ -1527,6 +1527,8 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_CLAUDE_ENDPOINTS
             | methods::SAVE_CLAUDE_ENDPOINT
             | methods::REMOVE_CLAUDE_ENDPOINT
+            | methods::GET_DSH_API_KEY
+            | methods::SAVE_DSH_API_KEY
             | methods::GET_DEVICE_HEALTH
             | methods::GET_GIT_ACTIVITY
             | methods::LIST_CI_RUNS
@@ -1977,6 +1979,17 @@ impl RpcService for EngineRpc {
             // Replies never carry tokens, only their last four characters.
             methods::LIST_CLAUDE_ENDPOINTS => {
                 RpcReply::value(&zeron_harness::claude::endpoints::summaries())
+            }
+            methods::GET_DSH_API_KEY => RpcReply::value(&zeron_harness::dsh_credentials::status()),
+            methods::SAVE_DSH_API_KEY => {
+                let input: zeron_harness::dsh_credentials::DshKeyInput = parse_params(params)?;
+                let status = tokio::task::spawn_blocking(move || {
+                    zeron_harness::dsh_credentials::save(input)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(error.to_string()))?
+                .map_err(RpcError::Failed)?;
+                RpcReply::value(&status)
             }
             methods::SAVE_CLAUDE_ENDPOINT => {
                 let input: zeron_harness::claude::endpoints::EndpointInput = parse_params(params)?;
@@ -4617,6 +4630,8 @@ mod tests {
             methods::LIST_CLAUDE_ENDPOINTS,
             methods::SAVE_CLAUDE_ENDPOINT,
             methods::REMOVE_CLAUDE_ENDPOINT,
+            methods::GET_DSH_API_KEY,
+            methods::SAVE_DSH_API_KEY,
             methods::GET_DEVICE_HEALTH,
             methods::GET_GIT_ACTIVITY,
             methods::LIST_CI_RUNS,
