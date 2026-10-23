@@ -47,6 +47,8 @@ zip.workspace = true
 tar = "0.4"
 flate2 = "1"
 bzip2 = "0.6"
+# DeepSeek Harness session logs (turn usage).
+zstd = { version = "0.13", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
