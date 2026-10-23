@@ -60,6 +60,8 @@ fn methods(id: HarnessId, platform: Platform) -> Vec<Method> {
         Antigravity => vec![Archive],
         Muse if windows => vec![PowerShell("irm https://dev.meta.ai/install.ps1 | iex")],
         Muse => vec![Shell("curl -fsSL https://dev.meta.ai/install.sh | sh", "sh")],
+        // DSH ships through npm-compatible registries only; no vendor script.
+        Dsh => vec![Npm("@deepseek-ai/dsh", false)],
         ClaudeCode if windows => vec![PowerShell("irm https://claude.ai/install.ps1 | iex")],
         ClaudeCode => vec![Shell(
             "curl -fsSL https://claude.ai/install.sh | bash",
@@ -166,6 +168,7 @@ pub fn manual_command(id: HarnessId) -> Option<&'static str> {
         Devin => "curl -fsSL https://cli.devin.ai/install.sh | bash",
         Muse => "curl -fsSL https://dev.meta.ai/install.sh | sh",
         Fx => "curl -fsSL https://fx.sh/setup.sh | bash",
+        Dsh => "npm install -g @deepseek-ai/dsh",
         Antigravity | Mock | Registry(_) => return None,
     })
 }
@@ -183,6 +186,7 @@ fn cli_and_dir(id: HarnessId) -> (&'static str, &'static str) {
         Devin => ("devin", "~/.local/bin"),
         Antigravity => ("agy_acp_server", "~/.zeron/adapters"),
         Muse => ("muse", "~/.local/bin"),
+        Dsh => ("dsh", "~/.bun/bin or the npm global bin"),
         Mock => ("mock", "PATH"),
         Fx => ("fx", "~/.local/bin"),
         Registry(agent) => (agent.registry_id(), "~/.zeron/agents"),
@@ -202,6 +206,7 @@ pub fn installed(id: HarnessId) -> bool {
         Devin => crate::AcpHarness::devin().installed(),
         Antigravity => crate::AcpHarness::antigravity().installed(),
         Muse => crate::MuseHarness::new().installed(),
+        Dsh => crate::AcpHarness::dsh().installed(),
         Mock => false,
         Fx => crate::AcpHarness::fx().installed(),
         Registry(agent) => crate::acp_registry::installed(agent),

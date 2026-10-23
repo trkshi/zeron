@@ -2492,6 +2492,8 @@ fn forwardable(method: &str) -> bool {
             | methods::GET_NATIVE_SUBAGENTS
             | methods::SET_NATIVE_SUBAGENTS
             | methods::SET_HARNESS_ENABLED
+            | methods::GET_DSH_API_KEY
+            | methods::SAVE_DSH_API_KEY
             | methods::LIST_MODELS
             | methods::LIST_SKILLS
             | methods::LIST_COMMANDS
@@ -3384,6 +3386,18 @@ impl RpcService for EngineRpc {
                 // Fresh catalog in the reply: the page repaints from it in one
                 // round trip, and a refused/raced toggle self-corrects.
                 RpcReply::value(&self.registry.descriptors_for(include))
+            }
+            // DSH's DeepSeek key: replies carry only its last four characters.
+            methods::GET_DSH_API_KEY => RpcReply::value(&zeron_harness::dsh_credentials::status()),
+            methods::SAVE_DSH_API_KEY => {
+                let input: zeron_harness::dsh_credentials::DshKeyInput = parse_params(params)?;
+                let status = tokio::task::spawn_blocking(move || {
+                    zeron_harness::dsh_credentials::save(input)
+                })
+                .await
+                .map_err(|error| RpcError::Failed(error.to_string()))?
+                .map_err(RpcError::Failed)?;
+                RpcReply::value(&status)
             }
             methods::LIST_MODELS => {
                 let p: ListModelsParams = parse_params(params)?;
@@ -6549,6 +6563,10 @@ mod tests {
         assert!(forwardable(methods::RENAME_AGENT_ACCOUNT));
         assert!(!zeron_rpc::local_only(methods::RENAME_AGENT_ACCOUNT));
         assert!(forwardable(methods::QUEUE_COMMAND));
+        for method in [methods::GET_DSH_API_KEY, methods::SAVE_DSH_API_KEY] {
+            assert!(forwardable(method));
+            assert!(!is_stream_method(method));
+        }
         assert!(forwardable(methods::SEARCH_FILES));
         assert!(forwardable(methods::SEARCH_GIT_HISTORY));
         assert!(forwardable(methods::FETCH_ALL));

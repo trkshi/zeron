@@ -1048,6 +1048,7 @@ pub const SKILL_COMPLETION_HARNESSES: [(zeron_proto::HarnessId, &str); 10] = [
     (zeron_proto::HarnessId::Codex, "Codex"),
     (zeron_proto::HarnessId::Cursor, "Cursor"),
     (zeron_proto::HarnessId::Devin, "Devin"),
+    (zeron_proto::HarnessId::Dsh, "DeepSeek Harness"),
     (zeron_proto::HarnessId::Grok, "Grok"),
     (zeron_proto::HarnessId::Hermes, "Hermes"),
     (zeron_proto::HarnessId::Fx, "fx"),

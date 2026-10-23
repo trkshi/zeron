@@ -83,6 +83,17 @@ pub(crate) fn context(
             }
             files
         }
+        // The key decides which providers answer, and the ACP profile's
+        // manifest and patch decide which plugins (and their models) load.
+        HarnessId::Dsh => {
+            let root = root("DSH_HOME", home.join(".dsh"));
+            let profile = root.join("profiles/acp");
+            vec![
+                root.join(".credentials.yaml"),
+                profile.join("package.json"),
+                profile.join("cordis.patch.yml"),
+            ]
+        }
         _ => vec![],
     };
     let binary = binary
@@ -114,6 +125,7 @@ pub(crate) fn context(
         HarnessId::Antigravity => &["GEMINI_", "GOOGLE_"],
         HarnessId::Cursor => &["CURSOR_"],
         HarnessId::Fx => &["FX_", "AI_GATEWAY_", "OPENAI_", "ANTHROPIC_"],
+        HarnessId::Dsh => &["DSH_", "DEEPSEEK_"],
         _ => &[],
     };
     let mut env: Vec<_> = std::env::vars_os()

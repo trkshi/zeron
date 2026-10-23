@@ -6760,6 +6760,8 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
         // An agent added from the ACP registry (in another app): no mark of
         // its own here.
         HarnessId::Registry(_) => (crate::icons::BOT, None),
+        // DeepSeek Harness: no mark of its own in this interface.
+        HarnessId::Dsh => (crate::icons::BOT, None),
     }
 }
 

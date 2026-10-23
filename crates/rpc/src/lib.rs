@@ -86,6 +86,9 @@ pub mod methods {
     pub const GET_NATIVE_SUBAGENTS: &str = "GetNativeSubagents";
     pub const SET_NATIVE_SUBAGENTS: &str = "SetNativeSubagents";
     pub const SET_HARNESS_ENABLED: &str = "SetHarnessEnabled";
+    /// DeepSeek Harness's saved DeepSeek API key: status (last four only) and save/remove.
+    pub const GET_DSH_API_KEY: &str = "GetDshApiKey";
+    pub const SAVE_DSH_API_KEY: &str = "SaveDshApiKey";
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_SKILLS: &str = "ListSkills";
     pub const LIST_COMMANDS: &str = "ListCommands";
