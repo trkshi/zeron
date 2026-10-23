@@ -52,7 +52,12 @@ Zeron release.
   so after each turn the host reads that turn's token counts from DSH's own
   session log (`~/.dsh/sessions/…/session.v4.jsonl.zstd`): the token card,
   tok/s and Usage then work as for other agents. If a DSH update changes that
-  private format, the counts read as not reported. DSH must be
+  private format, the counts read as not reported. DSH's ACP adapter sends
+  every prompt to the model, so the overlay also loads a small Zeron plugin
+  (`~/.zeron/adapters/dsh/zeron-acp-commands.mjs`) that runs a message that is
+  exactly `/compact`, `/goal …` or `/feedback …` through DSH's own command
+  registry; the `/` menu lists them, and the command's result (for example
+  "Compacted 3 history items") is read from the log as the reply. DSH must be
   installed on the device hosting the chat, and both the UI and host engine
   need this update: engines and apps without it cannot read the new harness id.
 - Add a **Usage** dashboard from the sidebar footer, with **Cost**, **Tokens**,

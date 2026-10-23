@@ -31,7 +31,7 @@
 
 mod antigravity_paths;
 mod devin_models;
-mod dsh_usage;
+mod dsh_log;
 mod normalize;
 mod subagent;
 mod subagent_devin;
@@ -455,18 +455,87 @@ const DSH_FULL_ACCESS_PATCH: &str = "\
     defaultPreset: danger-full-access
 ";
 
-/// The overlay's file in the managed adapters dir, rewritten when stale.
-fn dsh_full_access_patch() -> Result<PathBuf, HarnessError> {
+/// Zeron's DSH plugin: runs a prompt that is exactly a slash command line
+/// through DSH's command registry, since DSH's ACP bridge sends every prompt
+/// to the model. Self-contained (no imports), so it loads from any directory.
+const DSH_COMMANDS_PLUGIN: &str = include_str!("dsh_commands.mjs");
+
+/// The commands Zeron's DSH plugin can run, for the `/` menu: DSH's ACP
+/// surface advertises none.
+fn dsh_commands() -> Vec<SlashCommand> {
+    [
+        ("compact", "Compact older conversation history", None),
+        (
+            "goal",
+            "Set or view the goal for a long-running task",
+            Some("objective | clear | pause | resume"),
+        ),
+        (
+            "feedback",
+            "Record feedback about this session",
+            Some("text"),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, description, hint)| SlashCommand {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        input_hint: hint.map(str::to_owned),
+    })
+    .collect()
+}
+
+/// The full launch overlay: full access plus Zeron's command plugin, loaded
+/// by its `file:` URL.
+fn dsh_launch_overlay(plugin: &Path) -> String {
+    format!(
+        "{DSH_FULL_ACCESS_PATCH}- insert:\n    - id: zeron-acp-commands\n      name: '{}'\n",
+        file_url(plugin)
+    )
+}
+
+/// A `file:` URL for an absolute path, percent-encoding everything but
+/// unreserved characters and separators (so it is also YAML-quote safe).
+fn file_url(path: &Path) -> String {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    let mut url = String::from(if raw.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
+                url.push(byte as char)
+            }
+            _ => url.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    url
+}
+
+/// Write `contents` to `path` unless it already holds them.
+fn write_if_stale(path: &Path, contents: &str) -> std::io::Result<()> {
+    if std::fs::read_to_string(path).ok().as_deref() == Some(contents) {
+        return Ok(());
+    }
+    let mut staging = path.as_os_str().to_owned();
+    staging.push(format!(".tmp-{}", std::process::id()));
+    std::fs::write(&staging, contents)?;
+    std::fs::rename(&staging, path)
+}
+
+/// The launch overlay's file in the managed adapters dir, with the plugin
+/// beside it; both rewritten when stale.
+fn dsh_launch_patch() -> Result<PathBuf, HarnessError> {
     let dir = crate::adapter_install::adapters_root()
         .ok_or_else(|| HarnessError::Protocol("no managed adapters directory".into()))?
         .join("dsh");
-    let path = dir.join("full-access.patch.yml");
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(DSH_FULL_ACCESS_PATCH) {
-        std::fs::create_dir_all(&dir)?;
-        let staging = dir.join(format!("full-access.patch.yml.tmp-{}", std::process::id()));
-        std::fs::write(&staging, DSH_FULL_ACCESS_PATCH)?;
-        std::fs::rename(&staging, &path)?;
-    }
+    std::fs::create_dir_all(&dir)?;
+    let plugin = dir.join("zeron-acp-commands.mjs");
+    write_if_stale(&plugin, DSH_COMMANDS_PLUGIN)?;
+    let path = dir.join("zeron.patch.yml");
+    write_if_stale(&path, &dsh_launch_overlay(&plugin))?;
     Ok(path)
 }
 
@@ -1814,7 +1883,7 @@ impl AcpHarness {
         let mut cmd = Command::new(&exe);
         cmd.args(args);
         if self.spec.id == HarnessId::Dsh {
-            cmd.arg("--patch").arg(dsh_full_access_patch()?);
+            cmd.arg("--patch").arg(dsh_launch_patch()?);
         }
         cmd.args(extra_args);
         child::configure(&mut cmd);
@@ -1882,6 +1951,9 @@ impl AcpHarness {
         &self,
         cwd: Option<&std::path::Path>,
     ) -> Result<Vec<SlashCommand>, HarnessError> {
+        if self.spec.id == HarnessId::Dsh {
+            return Ok(dsh_commands());
+        }
         let (_scratch, mut child, _stderr, sign_in_prompted) = self
             .spawn_agent(cwd.and_then(|p| p.to_str()), false, &[], None)
             .await?;
@@ -3101,10 +3173,26 @@ fn usage_from_response(res: &Result<Value, HarnessError>) -> Option<AgentEvent> 
     })
 }
 
-/// The turn DSH just settled, read from its session log.
-async fn dsh_turn_usage(log: &mut Option<dsh_usage::DshUsageLog>) -> Option<AgentEvent> {
-    let usage = log.as_mut()?.settle().await?;
-    Some(AgentEvent::TurnUsage { usage })
+/// What a DSH prompt did, read from its session log; empty for other agents.
+async fn dsh_activity(log: &mut Option<dsh_log::DshLog>) -> dsh_log::Activity {
+    match log {
+        Some(log) => log.settle().await,
+        None => dsh_log::Activity::default(),
+    }
+}
+
+/// DSH settles a prompt that only ran a slash command as `cancelled`: no
+/// model turn ended it. That is a finished command, not an interrupt.
+fn dsh_command_outcome(
+    (status, error): (DoneStatus, Option<String>),
+    activity: &dsh_log::Activity,
+    interrupted: bool,
+) -> (DoneStatus, Option<String>) {
+    if !interrupted && !activity.commands.is_empty() && status == DoneStatus::Interrupted {
+        (DoneStatus::Completed, None)
+    } else {
+        (status, error)
+    }
 }
 
 /// Map a finished `session/prompt` result to the run's terminal status.
@@ -3964,10 +4052,12 @@ async fn run_session(session: Session) {
             ));
         }
         let session_commands = scan_available_commands(&session_response);
-        let init_commands = if session_commands.is_empty() {
-            init_commands
-        } else {
+        let init_commands = if !session_commands.is_empty() {
             session_commands
+        } else if init_commands.is_empty() && harness == HarnessId::Dsh {
+            dsh_commands()
+        } else {
+            init_commands
         };
         let session_options = select_session_config(
             &client,
@@ -4118,9 +4208,9 @@ async fn run_session(session: Session) {
     // The text of the prompt in flight (re-sent by a preempt when the agent
     // drops an unstarted cancelled prompt).
     let mut current_prompt_text = prompt_transform(request.reasoning, &request.prompt);
-    // DSH reports turn usage only in its session log (see `dsh_usage`).
+    // DSH reports turn usage and command results only in its session log.
     let mut dsh_log = if harness == HarnessId::Dsh {
-        Some(dsh_usage::DshUsageLog::open(&session_id).await)
+        Some(dsh_log::DshLog::open(&session_id).await)
     } else {
         None
     };
@@ -4357,6 +4447,12 @@ async fn run_session(session: Session) {
                 if consumer_gone {
                     break 'main;
                 }
+                let dsh = dsh_activity(&mut dsh_log).await;
+                if let Some(text) = dsh.command_reply()
+                    && !send(&event_tx, AgentEvent::TextDelta { text }).await
+                {
+                    break 'main;
+                }
                 let (prev, _next) = rotate(&mut assistant_message_id);
                 if !send(
                     &event_tx,
@@ -4373,8 +4469,8 @@ async fn run_session(session: Session) {
                 {
                     break 'main;
                 }
-                if let Some(usage) = dsh_turn_usage(&mut dsh_log).await
-                    && !send(&event_tx, usage).await
+                if let Some(usage) = dsh.usage
+                    && !send(&event_tx, AgentEvent::TurnUsage { usage }).await
                 {
                     break 'main;
                 }
@@ -4388,7 +4484,11 @@ async fn run_session(session: Session) {
                     && !queued_steers.is_empty();
                 preempt_pending = false;
                 if !preempted {
-                    let (status, mut error) = stop_outcome(&res, interrupted || stopped);
+                    let (status, mut error) = dsh_command_outcome(
+                        stop_outcome(&res, interrupted || stopped),
+                        &dsh,
+                        interrupted || stopped,
+                    );
                     if !interrupted
                         && auth_method.is_some()
                         && res.as_ref().is_err_and(is_auth_required)
@@ -4591,6 +4691,10 @@ async fn run_session(session: Session) {
                         && let Ok(res @ Ok(_)) =
                             tokio::time::timeout(Duration::from_millis(50), &mut fut).await
                     {
+                        let dsh = dsh_activity(&mut dsh_log).await;
+                        if let Some(text) = dsh.command_reply() {
+                            let _ = send(&event_tx, AgentEvent::TextDelta { text }).await;
+                        }
                         let (prev, _next) = rotate(&mut assistant_message_id);
                         let _ = send(
                             &event_tx,
@@ -4600,10 +4704,11 @@ async fn run_session(session: Session) {
                         if let Some(usage) = usage_from_response(&res) {
                             let _ = send(&event_tx, usage).await;
                         }
-                        if let Some(usage) = dsh_turn_usage(&mut dsh_log).await {
-                            let _ = send(&event_tx, usage).await;
+                        if let Some(usage) = dsh.usage {
+                            let _ = send(&event_tx, AgentEvent::TurnUsage { usage }).await;
                         }
-                        let (status, error) = stop_outcome(&res, interrupted);
+                        let (status, error) =
+                            dsh_command_outcome(stop_outcome(&res, interrupted), &dsh, interrupted);
                         done_current = true;
                         if interrupted {
                             done_after_interrupt = true;
@@ -6079,7 +6184,17 @@ mod tests {
             dsh_effort_values(Some(ReasoningLevel::Minimal), None)[0],
             "off"
         );
-        let overlay: serde_yaml_ng::Value = serde_yaml_ng::from_str(DSH_FULL_ACCESS_PATCH).unwrap();
+        let plugin = Path::new("/home/a b/.zeron/adapters/dsh/zeron-acp-commands.mjs");
+        let overlay: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&dsh_launch_overlay(plugin)).unwrap();
+        assert_eq!(
+            overlay[1]["insert"][0]["name"].as_str(),
+            Some("file:///home/a%20b/.zeron/adapters/dsh/zeron-acp-commands.mjs")
+        );
+        assert_eq!(
+            file_url(Path::new(r"C:\Users\a\x.mjs")),
+            "file:///C:/Users/a/x.mjs"
+        );
         let config = &overlay[0]["config"];
         assert_eq!(overlay[0]["id"].as_str(), Some("permission"));
         assert_eq!(config["defaultPreset"].as_str(), Some("danger-full-access"));
