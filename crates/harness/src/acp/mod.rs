@@ -432,6 +432,43 @@ fn dsh_install_paths() -> Vec<PathBuf> {
     dirs
 }
 
+/// Launch overlay that starts every DSH session in its `danger-full-access`
+/// preset (no sandbox, never ask), the unattended mode Zeron runs every agent
+/// in. DSH's ACP surface has no mode switch, and its shipped default is
+/// `workspace-write` with approvals. A patch replaces the row's whole config,
+/// so the base bundle's presets are restated.
+const DSH_FULL_ACCESS_PATCH: &str = "\
+# Written by Zeron: its DeepSeek Harness chats run unattended.
+- id: permission
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+";
+
+/// The overlay's file in the managed adapters dir, rewritten when stale.
+fn dsh_full_access_patch() -> Result<PathBuf, HarnessError> {
+    let dir = crate::adapter_install::adapters_root()
+        .ok_or_else(|| HarnessError::Protocol("no managed adapters directory".into()))?
+        .join("dsh");
+    let path = dir.join("full-access.patch.yml");
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(DSH_FULL_ACCESS_PATCH) {
+        std::fs::create_dir_all(&dir)?;
+        let staging = dir.join(format!("full-access.patch.yml.tmp-{}", std::process::id()));
+        std::fs::write(&staging, DSH_FULL_ACCESS_PATCH)?;
+        std::fs::rename(&staging, &path)?;
+    }
+    Ok(path)
+}
+
 /// DSH's `reasoning_effort` select offers `off`, `low`, `high`, and `max`.
 fn dsh_effort_values(reasoning: Option<ReasoningLevel>, model: Option<&str>) -> Vec<&'static str> {
     match reasoning {
@@ -1775,6 +1812,9 @@ impl AcpHarness {
         let (exe, args) = self.resolve_program(block_on_install).await?;
         let mut cmd = Command::new(&exe);
         cmd.args(args);
+        if self.spec.id == HarnessId::Dsh {
+            cmd.arg("--patch").arg(dsh_full_access_patch()?);
+        }
         cmd.args(extra_args);
         child::configure(&mut cmd);
         crate::compose_child_path(&mut cmd, &exe);
@@ -1971,6 +2011,9 @@ impl AcpHarness {
     }
 }
 
+/// Joins a grouped model's group name to its own description.
+pub const GROUP_SEPARATOR: &str = " · ";
+
 /// A select config option's choices, each with the name of the group it sits
 /// in. ACP lets `options` hold either choices or `{group, name, options}`
 /// groups of them (DSH groups its models by provider); both read as one flat
@@ -2117,9 +2160,14 @@ fn models_from_session(session_response: &Value, catalog: &[Model]) -> Vec<Model
                     return None;
                 }
                 let name = o.get("name").and_then(Value::as_str);
-                // A grouped choice without its own description names its
-                // group (DSH's provider), so same-named models stay apart.
-                let description = o.get("description").and_then(Value::as_str).or(*group);
+                // A grouped choice's description leads with its group (DSH's
+                // provider): the picker shows that part beside the name.
+                let own = o.get("description").and_then(Value::as_str);
+                let grouped = group.map(|group| match own {
+                    Some(own) if !own.is_empty() => format!("{group}{GROUP_SEPARATOR}{own}"),
+                    _ => group.to_owned(),
+                });
+                let description = grouped.as_deref().or(own);
                 let mut options = wire_options.clone();
                 if let Some(base) = strip_context_hint(id) {
                     // A 1M variant with its bare base advertised too folds
@@ -5964,7 +6012,8 @@ mod tests {
                             { "value": flash, "name": "deepseek-v4-flash" },
                         ] },
                         { "group": "our-free-model", "name": "Our Free Model", "options": [
-                            { "value": free, "name": "deepseek-v4.1-flash-free" },
+                            { "value": free, "name": "deepseek-v4.1-flash-free",
+                              "description": "text input" },
                         ] },
                     ],
                 },
@@ -5990,7 +6039,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             rows,
-            vec![(flash, Some("DeepSeek")), (free, Some("Our Free Model"))]
+            vec![
+                (flash, Some("DeepSeek")),
+                (free, Some("Our Free Model · text input"))
+            ]
         );
         assert_eq!(
             models[1].reasoning_levels,
@@ -6005,6 +6057,14 @@ mod tests {
         assert_eq!(
             dsh_effort_values(Some(ReasoningLevel::Minimal), None)[0],
             "off"
+        );
+        let overlay: serde_yaml_ng::Value = serde_yaml_ng::from_str(DSH_FULL_ACCESS_PATCH).unwrap();
+        let config = &overlay[0]["config"];
+        assert_eq!(overlay[0]["id"].as_str(), Some("permission"));
+        assert_eq!(config["defaultPreset"].as_str(), Some("danger-full-access"));
+        assert_eq!(
+            config["presets"]["danger-full-access"]["approval"].as_str(),
+            Some("never")
         );
         let available = [flash, free];
         assert_eq!(

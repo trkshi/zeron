@@ -177,6 +177,7 @@ impl Pickers {
             .map(str::trim)
             .filter(|d| row.ambiguous && !d.is_empty())
             .map(|d| SharedString::from(d.to_owned()));
+        let attribution = super::dsh_provider(row).or(attribution);
         let hovered = self.active == ix;
         let details: SharedString = match row.model.description.as_deref() {
             Some(description) => format!(

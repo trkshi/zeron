@@ -641,6 +641,20 @@ struct ModelRowData {
     ambiguous: bool,
 }
 
+/// The provider a DeepSeek Harness row comes from (DSH's own `DeepSeek` or a
+/// plugin's), shown beside every DSH model: plugin models otherwise read as
+/// DSH's own. The harness leads the description with it.
+fn dsh_provider(row: &ModelRowData) -> Option<SharedString> {
+    if row.harness != HarnessId::Dsh || row.selected_only {
+        return None;
+    }
+    let description = row.model.description.as_deref()?.trim();
+    let provider = description
+        .split_once(zeron_harness::acp::GROUP_SEPARATOR)
+        .map_or(description, |(provider, _)| provider);
+    (!provider.is_empty()).then(|| SharedString::from(provider.to_owned()))
+}
+
 /// Flag rows whose label another listed row of the same harness shares.
 fn mark_ambiguous(rows: &mut [ModelRowData]) {
     let mut labels: HashMap<(HarnessId, String), usize> = HashMap::new();
@@ -4727,6 +4741,7 @@ impl Pickers {
                 row.ambiguous && !d.is_empty() && !d.eq_ignore_ascii_case(harness_name.as_ref())
             })
             .map(|d| SharedString::from(d.to_owned()));
+        let attribution = dsh_provider(row).or(attribution);
         let compact = self.model_rail == ModelRail::Harness;
         let mut el = div()
             .id(("model-row", ix))
