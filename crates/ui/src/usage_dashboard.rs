@@ -1239,10 +1239,7 @@ impl UsageDashboard {
                     String::new()
                 };
                 let fraction = if peak > 0.0 { amount / peak } else { 0.0 };
-                let name = group
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| "Unknown model".into());
+                let name = model_name(group.model.as_deref());
                 let color = provider_color(group.harness, theme);
                 let key = ModelKey(group.harness, group.model.clone());
                 rows = rows.child(
@@ -2253,10 +2250,7 @@ impl UsageDashboard {
                     });
                 (
                     (group.harness, group.model.clone()),
-                    group
-                        .model
-                        .clone()
-                        .unwrap_or_else(|| "Unknown model".into()),
+                    model_name(group.model.as_deref()),
                     if unpriced || share <= 0.0 {
                         provider_label(group.harness).to_owned()
                     } else {
@@ -2858,6 +2852,18 @@ fn provider_mark(
             )
         }
         None => mark,
+    }
+}
+
+/// A model group's display name. DSH model ids are JSON `["provider", "model"]`
+/// routes, so show their model half instead of the JSON.
+fn model_name(model: Option<&str>) -> String {
+    let Some(model) = model else {
+        return "Unknown model".into();
+    };
+    match serde_json::from_str::<Vec<String>>(model).as_deref() {
+        Ok([_, name]) if !name.is_empty() => name.clone(),
+        _ => model.to_owned(),
     }
 }
 
