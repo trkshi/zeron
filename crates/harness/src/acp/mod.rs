@@ -2788,6 +2788,20 @@ fn steering_supported(init: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// How to restore a previous session: `session/load` (replays history), or
+/// `session/resume` (restores silently) for agents that advertise only the
+/// latter, like DSH. Agents advertising neither still get `session/load` and
+/// its fresh-session fallback.
+fn restore_method(init: &Value) -> &'static str {
+    let caps = &init["agentCapabilities"];
+    let loads = caps["loadSession"].as_bool().unwrap_or(false);
+    if !loads && caps["sessionCapabilities"]["resume"].is_object() {
+        "session/resume"
+    } else {
+        "session/load"
+    }
+}
+
 /// Depth-limited scan for an `availableCommands` array anywhere in a response
 /// (agents differ on where the handshake advertises them: top level, inside
 /// `agentCapabilities`, or `_meta`).
@@ -3644,7 +3658,7 @@ async fn request_draining(
     method: &'static str,
     params: Value,
 ) -> Result<Value, HarnessError> {
-    let loading_session = matches!(method, "session/new" | "session/load");
+    let loading_session = matches!(method, "session/new" | "session/load" | "session/resume");
     let requested_session = params
         .get("sessionId")
         .and_then(Value::as_str)
@@ -3998,7 +4012,7 @@ async fn run_session(session: Session) {
         let (session_id, session_response) = if let Some(resume) = &request.resume {
             let mut load = session_params.clone();
             load["sessionId"] = Value::String(resume.clone());
-            match request_draining(&client, &mut incoming, "session/load", load).await {
+            match request_draining(&client, &mut incoming, restore_method(&init), load).await {
                 Ok(resp) => (resume.clone(), resp),
                 Err(e) if auth_method.is_some() && is_auth_required(&e) => {
                     return Err(HarnessError::Protocol(not_signed_in(agent_name)));
@@ -5898,6 +5912,20 @@ mod tests {
         assert!(!steering_supported(&json!({
             "_meta": { "steering": { "supported": false } },
         })));
+    }
+
+    #[test]
+    fn restore_uses_resume_only_when_load_is_not_offered() {
+        let dsh = json!({ "agentCapabilities": {
+            "sessionCapabilities": { "close": {}, "list": {}, "resume": {} },
+        }});
+        assert_eq!(restore_method(&dsh), "session/resume");
+        let both = json!({ "agentCapabilities": {
+            "loadSession": true,
+            "sessionCapabilities": { "resume": {} },
+        }});
+        assert_eq!(restore_method(&both), "session/load");
+        assert_eq!(restore_method(&json!({ "protocolVersion": 1 })), "session/load");
     }
 
     #[test]

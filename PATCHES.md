@@ -57,7 +57,9 @@ Zeron release.
   (`~/.zeron/adapters/dsh/zeron-acp-commands.mjs`) that runs a message that is
   exactly `/compact`, `/goal …` or `/feedback …` through DSH's own command
   registry; the `/` menu lists them, and the command's result (for example
-  "Compacted 3 history items") is read from the log as the reply. DSH must be
+  "Compacted 3 history items") is read from the log as the reply. DSH has no
+  `session/load`, so when its process restarts the host restores the chat
+  with `session/resume` instead of starting over without context. DSH must be
   installed on the device hosting the chat, and both the UI and host engine
   need this update: engines and apps without it cannot read the new harness id.
 - Add a **Usage** dashboard from the sidebar footer, with **Cost**, **Tokens**,
