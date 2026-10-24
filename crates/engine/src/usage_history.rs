@@ -480,8 +480,8 @@ impl Accumulator {
         }
         let rate = record
             .model
-            .as_ref()
-            .and_then(|model| pricing.rates.get(&model.to_lowercase()));
+            .as_deref()
+            .and_then(|model| pricing.rates.get(&pricing_model(model)));
         let categories = rate.and_then(|rate| {
             let cached = usage.cached_input_tokens?;
             let writes = writes?;
@@ -529,6 +529,15 @@ impl Accumulator {
         } else {
             totals.category_cost_usd[4] += reported.unwrap_or(0.0);
         }
+    }
+}
+
+/// The price-list key for a turn's model. DSH records JSON
+/// `["provider", "model"]` routes, priced by their model half.
+fn pricing_model(model: &str) -> String {
+    match serde_json::from_str::<Vec<String>>(model).as_deref() {
+        Ok([_, name]) if !name.is_empty() => name.to_lowercase(),
+        _ => model.to_lowercase(),
     }
 }
 
@@ -696,6 +705,38 @@ mod tests {
         );
         assert_eq!(acc.totals.unpriced_turns, 1);
         assert_eq!(acc.totals.cost_usd(), 0.0);
+    }
+
+    #[test]
+    fn dsh_routes_are_priced_by_their_model() {
+        let pricing = Pricing {
+            fetched_at: None,
+            rates: HashMap::from([(
+                "deepseek-flash".into(),
+                Rate {
+                    input: 1.0,
+                    output: 2.0,
+                    cache_read: 0.1,
+                    cache_write: 1.0,
+                },
+            )]),
+        };
+        let mut turn = record(
+            "one",
+            TokenUsage {
+                input_tokens: Some(100),
+                cached_input_tokens: Some(50),
+                cache_write_input_tokens: Some(0),
+                output_tokens: Some(20),
+                ..Default::default()
+            },
+        );
+        turn.harness = Some(HarnessId::Dsh);
+        turn.model = Some(r#"["deepseek-official","deepseek-flash"]"#.into());
+        let mut acc = Accumulator::default();
+        acc.add(&turn, &pricing);
+        assert_eq!(acc.totals.unpriced_turns, 0);
+        assert!((acc.totals.estimated_cost_usd - 95.0).abs() < 1e-9);
     }
 
     #[test]
