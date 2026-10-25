@@ -32,7 +32,7 @@
 mod antigravity_paths;
 mod devin_models;
 mod dsh_log;
-mod normalize;
+pub(crate) mod normalize;
 mod subagent;
 mod subagent_devin;
 mod system_message;

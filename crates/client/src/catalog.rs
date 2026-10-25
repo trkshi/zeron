@@ -167,6 +167,7 @@ pub fn harness_label(id: &str) -> String {
         "opencode" => "OpenCode",
         "antigravity" => "Antigravity",
         "dsh" => "DeepSeek Harness",
+        "command-code" => "Command Code",
         "mock" => "Mock",
         other => return other.to_owned(),
     }

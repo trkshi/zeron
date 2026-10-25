@@ -102,6 +102,7 @@ fn agent_name(harness: HarnessId) -> &'static str {
         HarnessId::Opencode => "OpenCode",
         HarnessId::Antigravity => "Antigravity",
         HarnessId::Dsh => "DeepSeek Harness",
+        HarnessId::CommandCode => "Command Code",
         HarnessId::Mock => "Mock",
     }
 }

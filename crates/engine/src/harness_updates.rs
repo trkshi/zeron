@@ -272,6 +272,13 @@ fn provider(id: HarnessId) -> ProviderSpec {
             update_args: None,
             manual_command: "bun add -g @deepseek-ai/dsh",
         },
+        HarnessId::CommandCode => ProviderSpec {
+            version_args: &["--version"],
+            latest: LatestSource::Npm("command-code"),
+            // Zeron runs it with --no-auto-update so a turn never restarts it.
+            update_args: Some(&["update"]),
+            manual_command: "commandcode update",
+        },
         HarnessId::Antigravity => ProviderSpec {
             version_args: &["--version"],
             latest: LatestSource::AntigravityAcp,

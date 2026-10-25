@@ -813,6 +813,22 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::AcpHarness::dsh().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::dsh()) as Arc<dyn Harness>)),
     );
+    // Command Code over its print mode, one process per message: steers wait
+    // for the message in flight; effort is narrowed per model at run time.
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::CommandCode,
+            name: "Command Code".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            can_install: false,
+            enabled: None,
+        },
+        Box::new(|| zeron_harness::CommandCodeHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::CommandCodeHarness::new()) as Arc<dyn Harness>)),
+    );
     registry
 }
 
@@ -896,7 +912,8 @@ mod tests {
                 HarnessId::Pi,
                 HarnessId::Opencode,
                 HarnessId::Antigravity,
-                HarnessId::Dsh
+                HarnessId::Dsh,
+                HarnessId::CommandCode
             ]
         );
         assert!(registry.resolve(HarnessId::Mock).is_ok());

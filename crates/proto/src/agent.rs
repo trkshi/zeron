@@ -25,6 +25,10 @@ pub enum HarnessId {
     Antigravity,
     /// DeepSeek Harness over its ACP profile (`dsh --profile acp`).
     Dsh,
+    /// Command Code (commandcode.ai), driven natively over its print mode's
+    /// JSON event stream (`commandcode -p --output-format json`), one process
+    /// per turn.
+    CommandCode,
     /// Test harness; never shown in production pickers.
     Mock,
 }

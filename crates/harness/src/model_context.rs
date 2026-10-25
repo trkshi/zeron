@@ -87,6 +87,10 @@ pub(crate) fn context(
                 profile.join("cordis.patch.yml"),
             ]
         }
+        HarnessId::CommandCode => {
+            let root = home.join(".commandcode");
+            vec![root.join("auth.json"), root.join("config.json")]
+        }
         _ => vec![],
     };
     let binary = binary
@@ -118,6 +122,7 @@ pub(crate) fn context(
         HarnessId::Antigravity => &["GEMINI_", "GOOGLE_"],
         HarnessId::Cursor => &["CURSOR_"],
         HarnessId::Dsh => &["DSH_", "DEEPSEEK_"],
+        HarnessId::CommandCode => &["CMD_"],
         _ => &[],
     };
     let mut env: Vec<_> = std::env::vars_os()

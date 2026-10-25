@@ -36,6 +36,20 @@ Zeron release.
   probes target active logins only; explicit refreshes and auto-switch checks
   retain access to saved accounts. Older engines keep the previous UI polling.
 
+- Add **Command Code** as an agent. It has no ACP mode, so Zeron drives its
+  print mode (`commandcode -p --output-format json`), one process per
+  message, and continues the chat with `--resume`. Text, thinking, tool calls
+  with results and diffs, token usage and tok/s stream as for other agents;
+  the model list comes from `commandcode --list-models`. Effort is model
+  specific in Command Code: an unsupported level falls back to the nearest
+  one the model takes. A message sent while it works runs after the current
+  one, stopping a turn ends its process (the session stays resumable), and
+  runs are unattended (`--yolo`, or plan mode for read-only chats), so it
+  cannot ask questions. Zeron's own tools (side chats, visuals) come in
+  through a per-run Command Code mod, since Command Code reads MCP servers
+  only from its config files. Requires `command-code` from
+  npm and one `commandcode login`; Zeron runs it with `--no-auto-update`.
+
 - Add **DeepSeek Harness** as an agent, driven over ACP through DSH's shipped
   automation profile (`dsh --profile acp`, created on first launch). Models
   come from the profile's providers, so plugins installed into it
