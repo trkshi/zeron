@@ -63,7 +63,7 @@ use crate::{
     CancellationToken, Harness, HarnessError, RunControls, Signal, send_signal, shutdown_child,
 };
 use child::Child;
-use normalize::{map_update, parse_commands, preferred_allow_option};
+use normalize::{DshUpdates, map_update, parse_commands, preferred_allow_option};
 use subagent::SubagentTracker;
 use subagent_devin::DevinTracker;
 
@@ -3113,16 +3113,18 @@ fn config_option_sets(
 /// (`cognition.ai/subagent_*` lifecycle on ordinary `session/update`s),
 /// Grok tails child transcripts from disk (inert for agents that never
 /// emit its `subagent_*` extension). Both produce the same
-/// [`AgentEvent::Subagent`] contract.
+/// [`AgentEvent::Subagent`] contract. DSH streams no subagents over ACP;
+/// its variant only types its tools (see [`DshUpdates`]).
 enum SubagentObserver {
     Devin(DevinTracker),
     Grok(SubagentTracker),
+    Dsh(DshUpdates),
 }
 
 impl SubagentObserver {
     fn observe(&mut self, update: &Value) {
         match self {
-            SubagentObserver::Devin(_) => {}
+            SubagentObserver::Devin(_) | SubagentObserver::Dsh(_) => {}
             SubagentObserver::Grok(tracker) => tracker.observe(update),
         }
     }
@@ -3130,7 +3132,7 @@ impl SubagentObserver {
     fn finish_open(&mut self, status: DoneStatus) -> Vec<AgentEvent> {
         match self {
             SubagentObserver::Devin(tracker) => tracker.finish_open(status),
-            SubagentObserver::Grok(_) => Vec::new(),
+            SubagentObserver::Grok(_) | SubagentObserver::Dsh(_) => Vec::new(),
         }
     }
 }
@@ -3154,6 +3156,7 @@ fn session_update_events(
     match method {
         "session/update" => match subagents {
             SubagentObserver::Devin(tracker) => tracker.map(update),
+            SubagentObserver::Dsh(updates) => updates.map(update),
             _ => {
                 subagents.observe(update);
                 map_update(update)
@@ -4192,6 +4195,8 @@ async fn run_session(session: Session) {
     // Grok's subagent lifecycle extension).
     let mut subagents = if harness == HarnessId::Devin {
         SubagentObserver::Devin(DevinTracker::default())
+    } else if harness == HarnessId::Dsh {
+        SubagentObserver::Dsh(DshUpdates::default())
     } else {
         SubagentObserver::Grok(SubagentTracker::new(
             session_id.clone(),

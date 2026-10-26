@@ -73,7 +73,10 @@ Zeron release.
   registry; the `/` menu lists them, and the command's result (for example
   "Compacted 3 history items") is read from the log as the reply. DSH has no
   `session/load`, so when its process restarts the host restores the chat
-  with `session/resume` instead of starting over without context. DSH must be
+  with `session/resume` instead of starting over without context. DSH's ACP
+  adapter reports every tool generically, so the host types its calls by tool
+  name: `bash` shows as Run, `read`/`write`/`edit` as Read/Write/Edit with the
+  edit's diff, plus search, web, todo, subagent and MCP calls. DSH must be
   installed on the device hosting the chat, and both the UI and host engine
   need this update: engines and apps without it cannot read the new harness id.
 - Add a **Usage** dashboard from the sidebar footer, with **Cost**, **Tokens**,

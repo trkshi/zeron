@@ -172,6 +172,13 @@ fn typed_call(update: &Value) -> ToolCall {
         .unwrap_or("other");
     let title = str_field(update, "title");
     let raw = update.get("rawInput").filter(|v| !v.is_null());
+    if kind == "other"
+        && let Some(call) = raw
+            .filter(|r| r.is_object())
+            .and_then(|r| named_call(&title, r))
+    {
+        return call;
+    }
     let raw_str = |key: &str| -> Option<String> {
         raw.and_then(|r| r.get(key))
             .and_then(Value::as_str)
@@ -340,6 +347,156 @@ fn typed_call(update: &Value) -> ToolCall {
             name: if title.is_empty() { kind.into() } else { title },
             input: raw.cloned(),
         },
+    }
+}
+
+/// The first non-empty string among `keys` in a tool's arguments.
+fn arg(input: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| input.get(*key).and_then(Value::as_str))
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+const PATH_KEYS: [&str; 3] = ["file_path", "filePath", "path"];
+
+/// A `kind: "other"` call typed by its tool name. DeepSeek Harness's ACP
+/// bridge sends every tool this way: `title` is DSH's own tool name and
+/// `rawInput` its arguments. `None` leaves the call to the generic arms.
+fn named_call(name: &str, input: &Value) -> Option<ToolCall> {
+    let path = || arg(input, &PATH_KEYS).unwrap_or_default();
+    Some(match name {
+        "bash" | "pwsh" => ToolCall::Exec {
+            command: arg(input, &["command"])?,
+        },
+        "read" | "read_image" => ToolCall::ReadFile { path: path() },
+        "write" => ToolCall::WriteFile {
+            path: path(),
+            content: None,
+        },
+        "edit" => ToolCall::EditFile {
+            path: path(),
+            old_string: None,
+            new_string: None,
+        },
+        "str_replace_editor" => match arg(input, &["command"]).as_deref() {
+            Some("view") => ToolCall::ReadFile { path: path() },
+            Some("create") => ToolCall::WriteFile {
+                path: path(),
+                content: None,
+            },
+            _ => ToolCall::EditFile {
+                path: path(),
+                old_string: None,
+                new_string: None,
+            },
+        },
+        "grep" => ToolCall::Search {
+            pattern: arg(input, &["pattern"]).unwrap_or_default(),
+            path: arg(input, &["path"]),
+        },
+        "glob" => ToolCall::Glob {
+            pattern: arg(input, &["pattern"]).unwrap_or_default(),
+        },
+        "web_fetch" => ToolCall::WebFetch {
+            url: arg(input, &["url"])?,
+            prompt: None,
+        },
+        "web_search" => ToolCall::WebSearch {
+            query: match input.get("queries").and_then(Value::as_array) {
+                Some(queries) => queries
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+                None => arg(input, &["query"]).unwrap_or_default(),
+            },
+        },
+        "todo_write" => ToolCall::Todo {
+            items: input
+                .get("todos")?
+                .as_array()?
+                .iter()
+                .map(|todo| {
+                    TodoItem::new(
+                        str_field(todo, "content"),
+                        TodoStatus::parse(todo.get("status").and_then(Value::as_str).unwrap_or("")),
+                    )
+                })
+                .collect(),
+        },
+        "subagent" => ToolCall::Unknown {
+            name: arg(input, &["description"])
+                .map(|d| format!("Agent: {d}"))
+                .unwrap_or_else(|| "Agent".into()),
+            input: Some(input.clone()),
+        },
+        _ => {
+            let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
+            ToolCall::Mcp {
+                server: server.into(),
+                tool: tool.into(),
+                input: Some(input.clone()),
+            }
+        }
+    })
+}
+
+/// The diff a named file tool's arguments describe (see [`named_call`]).
+fn named_diff(name: &str, input: &Value) -> Option<ToolDiff> {
+    let path = arg(input, &PATH_KEYS)?;
+    let text = |key: &str| {
+        cap_text(
+            input.get(key).and_then(Value::as_str).unwrap_or(""),
+            DIFF_TEXT_CAP,
+        )
+    };
+    let command = arg(input, &["command"]);
+    let (old_text, new_text) = match (name, command.as_deref()) {
+        ("write", _) => (None, text("content")),
+        ("edit", _) => (Some(text("old_string")), text("new_string")),
+        ("str_replace_editor", Some("create")) => (None, text("file_text")),
+        ("str_replace_editor", Some("str_replace")) => (Some(text("old_str")), text("new_str")),
+        _ => return None,
+    };
+    Some(ToolDiff {
+        path,
+        old_text,
+        new_text,
+    })
+}
+
+/// [`map_update`] for DeepSeek Harness, whose tool results carry only the
+/// model-facing confirmation ("The file … has been updated successfully").
+/// Each edit's diff is built from its call's arguments and kept until the
+/// result arrives, so the transcript shows what changed.
+#[derive(Default)]
+pub(crate) struct DshUpdates {
+    diffs: std::collections::HashMap<String, ToolDiff>,
+}
+
+impl DshUpdates {
+    pub(crate) fn map(&mut self, update: &Value) -> Vec<AgentEvent> {
+        if update.get("sessionUpdate").and_then(Value::as_str) == Some("tool_call")
+            && let Some(diff) = update
+                .get("rawInput")
+                .and_then(|input| named_diff(&str_field(update, "title"), input))
+        {
+            self.diffs.insert(str_field(update, "toolCallId"), diff);
+        }
+        let mut events = map_update(update);
+        for event in &mut events {
+            if let AgentEvent::ToolResult {
+                id, is_error, diff, ..
+            } = event
+            {
+                let kept = self.diffs.remove(id.as_str());
+                if !*is_error && diff.is_none() {
+                    *diff = kept;
+                }
+            }
+        }
+        events
     }
 }
 
@@ -625,6 +782,93 @@ mod tests {
                 },
             }]
         );
+    }
+
+    #[test]
+    fn dsh_tools_are_typed_by_name_and_edits_keep_their_diff() {
+        let call = |id: &str, name: &str, input: Value| {
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": id,
+                "title": name,
+                "kind": "other",
+                "status": "in_progress",
+                "rawInput": input,
+            })
+        };
+        let done = |id: &str| {
+            json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": id,
+                "status": "completed",
+                "content": [{ "type": "content", "content": { "type": "text", "text": "ok" } }],
+            })
+        };
+        let mut dsh = DshUpdates::default();
+        let typed = |events: Vec<AgentEvent>| match events.into_iter().next() {
+            Some(AgentEvent::ToolCall { call, .. }) => call,
+            other => panic!("expected a call, got {other:?}"),
+        };
+        assert_eq!(
+            typed(dsh.map(&call(
+                "b",
+                "bash",
+                json!({ "command": "ls", "description": "list" })
+            ))),
+            ToolCall::Exec {
+                command: "ls".into()
+            }
+        );
+        assert_eq!(
+            typed(dsh.map(&call(
+                "r",
+                "read",
+                json!({ "file_path": "/a.rs", "limit": 5 })
+            ))),
+            ToolCall::ReadFile {
+                path: "/a.rs".into()
+            }
+        );
+        assert_eq!(
+            typed(dsh.map(&call(
+                "m",
+                "mcp__zeron__send_message",
+                json!({ "chat": "x" })
+            ))),
+            ToolCall::Mcp {
+                server: "zeron".into(),
+                tool: "send_message".into(),
+                input: Some(json!({ "chat": "x" })),
+            }
+        );
+        assert_eq!(
+            typed(dsh.map(&call(
+                "e",
+                "edit",
+                json!({ "file_path": "/a.rs", "old_string": "a", "new_string": "b" })
+            ))),
+            ToolCall::EditFile {
+                path: "/a.rs".into(),
+                old_string: None,
+                new_string: None,
+            }
+        );
+        match dsh.map(&done("e")).as_slice() {
+            [
+                AgentEvent::ToolResult {
+                    diff: Some(diff), ..
+                },
+            ] => assert_eq!(
+                diff,
+                &ToolDiff {
+                    path: "/a.rs".into(),
+                    old_text: Some("a".into()),
+                    new_text: "b".into(),
+                }
+            ),
+            other => panic!("expected a result with a diff, got {other:?}"),
+        }
+        assert!(dsh.diffs.is_empty());
     }
 
     #[test]
