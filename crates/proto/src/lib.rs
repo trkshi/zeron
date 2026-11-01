@@ -4,18 +4,25 @@
 //! Context occupancy and `TurnUsage` replicate per chat; legacy `Usage` stays probe-only.
 
 pub mod agent;
+pub mod agent_messages;
 pub mod attachment_mentions;
 pub mod change_request_assessment;
 pub mod chat_mentions;
 pub mod checkpoints;
+pub mod cloud;
 pub mod device_paths;
 pub mod entities;
+pub mod annotation;
 pub mod file_mentions;
 pub mod home_stats;
 pub mod invocation;
 pub mod motion;
+pub mod plan_usage;
 pub mod preview;
+pub mod program_status;
 pub mod projectless;
+pub mod providers;
+pub mod run_errors;
 pub mod shells;
 pub mod sidebar_pins;
 pub mod usage_history;
@@ -25,10 +32,12 @@ pub mod workspace;
 
 pub use agent::*;
 pub use checkpoints::*;
+pub use cloud::*;
 pub use entities::*;
 pub use home_stats::*;
 pub use preview::*;
 pub use shells::*;
+pub use program_status::*;
 pub use sidebar_pins::*;
 pub use usage_history::*;
 pub use workspace::*;

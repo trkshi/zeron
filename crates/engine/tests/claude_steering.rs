@@ -87,6 +87,8 @@ async fn observe_quiet_steer(scenario: &str, queue_follow_up: bool) -> QuietStee
                 reasoning: None,
                 model_options: Default::default(),
                 sandbox: SandboxLevel::DangerFullAccess,
+                access: Default::default(),
+                plan: false,
             },
         )
         .unwrap();
@@ -105,9 +107,12 @@ async fn observe_quiet_steer(scenario: &str, queue_follow_up: bool) -> QuietStee
                     cwd,
                     sandbox: SandboxLevel::DangerFullAccess,
                     auto_approve: true,
+                    access: Default::default(),
+                    plan: false,
                     resume: None,
                     attachments: Vec::new(),
                     worktree: None,
+                    env: Default::default(),
                 },
             },
         )

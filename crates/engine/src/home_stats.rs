@@ -378,9 +378,12 @@ fn parse_runs(text: &str) -> Result<Vec<CiRun>, String> {
 /// each process runs in. Listing only reads process tables; nothing is probed.
 pub async fn listening_services(query: ListeningServicesQuery) -> Vec<ListeningService> {
     let roots = usable_paths(query.paths);
-    let listeners = tokio::task::spawn_blocking(zeron_preview::discovery::listeners)
-        .await
-        .unwrap_or_default();
+    let listeners = tokio::task::spawn_blocking(|| {
+        let mut origins = zeron_preview::discovery::Origins::default();
+        zeron_preview::discovery::listeners(&mut origins).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
     services(listeners, &roots, query.all_ports)
 }
 
@@ -462,6 +465,8 @@ mod tests {
             started_at: 0,
             address: std::net::SocketAddr::from(([127, 0, 0, 1], port)),
             zeron_owned: false,
+            origin: None,
+            chat_id: None,
         };
         let roots = vec!["/work/app".to_owned(), "/work/app/.wt/feature".to_owned()];
         let listeners = vec![

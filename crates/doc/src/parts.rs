@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion};
+use zeron_proto::{
+    AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputAnswer, UserInputQuestion,
+};
 
 use crate::constants::MSG_INLINE_MAX;
 
@@ -210,6 +212,12 @@ pub enum MessagePart {
         asynchronous: bool,
         #[serde(default)]
         resolved: bool,
+        /// What the person answered, stamped by the host as the run received
+        /// it. Presence is the record, like a tool part's `isError`: `[]` when
+        /// the questions closed unanswered, absent while pending and on parts
+        /// written before answers were recorded (old readers ignore it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        answers: Option<Vec<UserInputAnswer>>,
     },
     Error {
         id: String,
@@ -229,6 +237,24 @@ pub enum MessagePart {
         /// source does not rewrite history.
         source_title: String,
     },
+    /// The seam where a chat changed provider: the turns above ran on
+    /// `from`, the turns below run on `to`. Written by the host engine when
+    /// the first run after a harness change is dispatched. Labels are
+    /// display names ("Claude Code", "Codex"), frozen as of the switch.
+    /// `from_harness` / `to_harness` are the harness slugs (`claude-code`,
+    /// `codex`, ...) the UI draws provider logos from; absent on a seam written
+    /// without them. Old builds' unknown-kind fallback yields an invisible empty
+    /// text part.
+    #[serde(rename_all = "camelCase")]
+    Switch {
+        id: String,
+        from: String,
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_harness: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_harness: Option<String>,
+    },
 }
 
 impl MessagePart {
@@ -241,7 +267,8 @@ impl MessagePart {
             | MessagePart::Tool { id, .. }
             | MessagePart::Input { id, .. }
             | MessagePart::Error { id, .. }
-            | MessagePart::Fork { id, .. } => id,
+            | MessagePart::Fork { id, .. }
+            | MessagePart::Switch { id, .. } => id,
         }
     }
 
@@ -264,8 +291,13 @@ impl MessagePart {
                         .as_ref()
                         .map_or(0, |s| serde_json::to_vec(s).map_or(0, |v| v.len()))
             }
-            MessagePart::Input { questions, .. } => {
+            MessagePart::Input {
+                questions, answers, ..
+            } => {
                 serde_json::to_vec(questions).map_or(0, |v| v.len())
+                    + answers
+                        .as_ref()
+                        .map_or(0, |a| serde_json::to_vec(a).map_or(0, |v| v.len()))
             }
             MessagePart::Image {
                 id,
@@ -280,6 +312,7 @@ impl MessagePart {
                 source_title,
                 ..
             } => source_chat_id.len() + source_title.len(),
+            MessagePart::Switch { from, to, .. } => from.len() + to.len(),
         }
     }
 }
@@ -295,7 +328,8 @@ impl MessagePart {
 ///   (a tool call in between breaks the text block).
 /// - `ToolCall` appends, or refreshes in place when the id already exists (SDK retry idempotence).
 /// - `ToolResult` marks the matching tool part resolved / errored in place.
-/// - `InputRequested` appends an input part; `InputResolved` marks it resolved.
+/// - `InputRequested` appends an input part; `InputResolved` marks it resolved and records the
+///   answers it carries.
 /// - `Error` and `Done{error}` become visible error parts.
 pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
     match event {
@@ -437,11 +471,33 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                     questions: questions.clone(),
                     asynchronous: matches!(event, AgentEvent::AsyncInputRequested { .. }),
                     resolved: false,
+                    answers: None,
                 });
             }
         }
-        AgentEvent::InputResolved { request_id }
-        | AgentEvent::AsyncInputResolved { request_id } => {
+        AgentEvent::InputResolved {
+            request_id,
+            answers,
+        } => {
+            for p in out.iter_mut() {
+                if let MessagePart::Input {
+                    request_id: rid,
+                    resolved,
+                    answers: recorded,
+                    ..
+                } = p
+                    && rid == request_id
+                {
+                    *resolved = true;
+                    // An event from before answers were recorded knows
+                    // nothing about them: leave the part's record alone.
+                    if let Some(answers) = answers {
+                        *recorded = Some(answers.clone());
+                    }
+                }
+            }
+        }
+        AgentEvent::AsyncInputResolved { request_id } => {
             for p in out.iter_mut() {
                 if let MessagePart::Input {
                     request_id: rid,
@@ -529,6 +585,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         AgentEvent::AssistantMessageCompleted { .. }
         | AgentEvent::Usage { .. }
         | AgentEvent::TurnUsage { .. }
+        | AgentEvent::PlanUsage { .. }
         | AgentEvent::ContextUsage { .. }
         | AgentEvent::AvailableCommands { .. }
         | AgentEvent::UserMessage { .. } => {}
@@ -821,6 +878,72 @@ mod tests {
             &parts[2],
             MessagePart::Reasoning { id, text } if id == "r2" && text == "more"
         ));
+    }
+
+    #[test]
+    fn input_resolution_records_what_the_run_received() {
+        let asked = |id: &str| AgentEvent::InputRequested {
+            request_id: id.into(),
+            questions: vec![],
+        };
+        let picked = vec![UserInputAnswer {
+            question_id: "q".into(),
+            labels: vec!["B".into()],
+        }];
+        let mut parts = Vec::new();
+        for id in ["answered", "closed", "legacy"] {
+            fold_event_into_parts(&mut parts, &asked(id));
+        }
+        assert!(matches!(
+            &parts[0],
+            MessagePart::Input { answers: None, .. }
+        ));
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::InputResolved {
+                request_id: "answered".into(),
+                answers: Some(picked.clone()),
+            },
+        );
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::InputResolved {
+                request_id: "closed".into(),
+                answers: Some(vec![]),
+            },
+        );
+        // An event from before answers were recorded resolves the part but
+        // records nothing.
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::InputResolved {
+                request_id: "legacy".into(),
+                answers: None,
+            },
+        );
+        let recorded: Vec<_> = parts
+            .iter()
+            .map(|p| match p {
+                MessagePart::Input {
+                    resolved, answers, ..
+                } => (*resolved, answers.clone()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![(true, Some(picked)), (true, Some(vec![])), (true, None)]
+        );
+        // The splitter counts answers toward the entry's byte budget.
+        let bare = MessagePart::Input {
+            id: "i".into(),
+            request_id: "i".into(),
+            questions: vec![],
+            asynchronous: false,
+            resolved: true,
+            answers: None,
+        };
+        assert!(parts[0].byte_len() > bare.byte_len());
     }
 
     #[test]

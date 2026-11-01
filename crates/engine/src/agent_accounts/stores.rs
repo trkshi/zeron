@@ -138,9 +138,11 @@ pub(super) fn cli_name(harness: HarnessId) -> &'static str {
         HarnessId::Opencode => "opencode",
         HarnessId::Pi => "pi",
         HarnessId::Hermes => "hermes",
+        HarnessId::Fx => "fx",
         HarnessId::Antigravity => "Antigravity",
         HarnessId::Dsh => "dsh",
         HarnessId::CommandCode => "commandcode",
+        HarnessId::Muse => "muse",
         HarnessId::Mock => "mock",
     }
 }

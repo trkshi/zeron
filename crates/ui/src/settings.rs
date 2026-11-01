@@ -7,6 +7,8 @@
 //! defaults, and loaded values are clamped so a hand-edited file can't wedge the
 //! layout.
 
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -21,6 +23,8 @@ pub(crate) mod claude_endpoints;
 pub(crate) mod dsh_key;
 pub mod appearance;
 pub mod archived;
+pub mod billing;
+pub mod cloud;
 pub mod composer;
 pub mod devices;
 pub mod files;
@@ -28,6 +32,7 @@ pub mod harnesses;
 pub mod home;
 pub mod notifications;
 pub(crate) mod profile_image;
+pub mod search;
 pub mod shortcuts;
 pub mod thread_naming;
 pub mod wallpaper;
@@ -435,21 +440,75 @@ pub enum SavePolicy {
     Immediate,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PullRequestDestination {
     #[default]
     Native,
+    /// A Browser tab beside the conversation. Without one on screen, the
+    /// pull request opens in the default browser.
+    Browser,
     External,
 }
 
 impl PullRequestDestination {
-    pub const ALL: [Self; 2] = [Self::Native, Self::External];
+    pub const ALL: [Self; 3] = [Self::Native, Self::Browser, Self::External];
+
+    /// The name stored in the settings file.
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Browser => "browser",
+            Self::External => "external",
+        }
+    }
+
+    /// The value written to the legacy `pullRequestDestination` key. Builds
+    /// up to v0.2.122 read only that key and reset every UI setting on a
+    /// name they don't know, so it never holds `browser`: an in-app browser
+    /// pick reads there as the view, the closest destination they have.
+    const fn legacy_key(self) -> &'static str {
+        match self {
+            Self::External => "external",
+            Self::Native | Self::Browser => "native",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Native => "Pull request view",
+            Self::Browser => "In-app browser",
             Self::External => "Default browser",
         }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Native => {
+                "Inspect them in Zeron, beside the conversation or the Pull requests board."
+            }
+            Self::Browser => {
+                "Open them in a Browser tab beside the conversation, or in the default browser when none is shown."
+            }
+            Self::External => "Open them in the default browser.",
+        }
+    }
+}
+
+impl Serialize for PullRequestDestination {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.key())
+    }
+}
+
+/// A destination this build doesn't know (written by a newer one) reads as
+/// the default rather than failing the whole settings file.
+impl<'de> Deserialize<'de> for PullRequestDestination {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let stored = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self::ALL
+            .into_iter()
+            .find(|destination| stored == destination.key())
+            .unwrap_or_default())
     }
 }
 
@@ -554,6 +613,19 @@ pub fn usage_display(cx: &App) -> UsageDisplay {
     cx.try_global::<SettingsStore>()
         .map(|store| store.current.usage_display)
         .unwrap_or_default()
+}
+
+/// Read on every wheel notch, so without cloning the settings. Without a
+/// store (not the app) wheel input is left alone.
+pub fn smooth_scrolling(cx: &App) -> bool {
+    cx.try_global::<SettingsStore>()
+        .is_some_and(|store| store.current.smooth_scrolling)
+}
+
+pub fn set_smooth_scrolling(enabled: bool, cx: &mut App) {
+    update(SavePolicy::Immediate, cx, |settings| {
+        settings.smooth_scrolling = enabled;
+    });
 }
 
 /// Copy a selected image into Zeron's device-local data directory and make it
@@ -1016,7 +1088,7 @@ impl SkillCompletionSettings {
     }
 }
 
-pub const SKILL_COMPLETION_HARNESSES: [(zeron_proto::HarnessId, &str); 11] = [
+pub const SKILL_COMPLETION_HARNESSES: [(zeron_proto::HarnessId, &str); 12] = [
     (zeron_proto::HarnessId::Antigravity, "Antigravity"),
     (zeron_proto::HarnessId::ClaudeCode, "Claude Code"),
     (zeron_proto::HarnessId::Codex, "Codex"),
@@ -1026,6 +1098,7 @@ pub const SKILL_COMPLETION_HARNESSES: [(zeron_proto::HarnessId, &str); 11] = [
     (zeron_proto::HarnessId::Dsh, "DeepSeek Harness"),
     (zeron_proto::HarnessId::Grok, "Grok"),
     (zeron_proto::HarnessId::Hermes, "Hermes"),
+    (zeron_proto::HarnessId::Fx, "fx"),
     (zeron_proto::HarnessId::Pi, "Pi"),
     (zeron_proto::HarnessId::Opencode, "OpenCode"),
 ];
@@ -1156,6 +1229,10 @@ pub struct UiSettings {
     pub settings_section: crate::shell::SettingsSection,
     /// Light/dark preference. Defaults to following the OS.
     pub appearance: crate::appearance::AppearanceMode,
+    /// First-run setup was finished or skipped. A file written before this
+    /// field existed reads as done (existing users never see it); only a
+    /// fresh install, with no settings file yet, starts it.
+    pub onboarding_completed: bool,
     /// Optional columns shown in every Git History pane.
     pub git_history_columns: GitHistoryColumns,
     /// User-adjusted widths for the resizable Git History columns.
@@ -1197,6 +1274,8 @@ pub struct UiSettings {
     pub transcript_width: f32,
     /// Open a normal web-link activation in the session Browser. Explicit
     /// context-menu actions remain available regardless of this preference.
+    /// Off, pull request links leave Zeron too; on, they open where
+    /// [`Self::pull_request_destination`] says.
     pub open_web_links_in_zeron: bool,
     /// Compact transcript: a turn's working steps (thinking, tool calls, and
     /// the narration between them) fold into one collapsed accordion, so only
@@ -1208,7 +1287,11 @@ pub struct UiSettings {
     pub home_hidden_panels: Vec<String>,
     /// Home's Running services: every listening port, not only project ones.
     pub home_services_all_ports: bool,
-    /// Destination shared by PR badges and the pull-request board.
+    /// Destination shared by PR badges, the pull-request board, and pull
+    /// request links in messages while [`Self::open_web_links_in_zeron`] is on.
+    /// Stored as `pullRequestOpenIn`; [`Self::save`] also writes the legacy
+    /// `pullRequestDestination` for older builds sharing this file.
+    #[serde(rename = "pullRequestOpenIn")]
     pub pull_request_destination: PullRequestDestination,
     /// Last explicitly selected PR scope, restored when no project is selected.
     pub last_pull_request_repository: Option<String>,
@@ -1246,6 +1329,9 @@ pub struct UiSettings {
     pub reduce_motion: crate::motion::ReduceMotion,
     /// Also snap animations while the main window is not focused.
     pub pause_animations_in_background: bool,
+    /// Mouse-wheel notches glide instead of jumping (`smooth_scroll`).
+    /// Trackpads already scroll smoothly; reduced motion overrides.
+    pub smooth_scrolling: bool,
     /// Stable native Codex voice id only; devices and microphone state are never persisted.
     #[serde(default)]
     pub codex_voice: Option<String>,
@@ -1312,6 +1398,7 @@ impl Default for UiSettings {
             appshot_sound_enabled: true,
             appshot_destination: crate::appshots::AppshotDestination::Automatic,
             appearance: crate::appearance::AppearanceMode::default(),
+            onboarding_completed: true,
             git_history_columns: GitHistoryColumns::default(),
             git_history_column_widths: GitHistoryColumnWidths::default(),
             git_history_column_order: GitHistoryColumnOrder::default(),
@@ -1355,6 +1442,7 @@ impl Default for UiSettings {
             new_thread_background_effect: NewThreadBackgroundEffect::None,
             reduce_motion: crate::motion::ReduceMotion::System,
             pause_animations_in_background: false,
+            smooth_scrolling: true,
             codex_voice: None,
             codex_voice_device: None,
             legacy_accent_color: None,
@@ -1547,6 +1635,11 @@ pub struct KeymapConfig {
     /// fixed-length array would let one malformed entry reset every unrelated
     /// setting. [`Self::healed`] restores the length instead.
     pub jump_session: Vec<String>,
+    /// Whether custom combos are stored in US keys, as every map this version
+    /// writes is. Older maps kept them as the recording layout typed them;
+    /// [`Self::adopt_layout_neutral`] converts those once. Absent means older.
+    #[serde(default)]
+    pub layout_neutral: bool,
 }
 
 /// Stable key for device-local preferences that belong to one workspace
@@ -1610,6 +1703,7 @@ impl Default for KeymapConfig {
             archive_session: ShortcutId::ArchiveSession.default_combo().into(),
             delete_session: ShortcutId::DeleteSession.default_combo().into(),
             jump_session: JUMP_DEFAULTS.iter().map(|c| (*c).to_string()).collect(),
+            layout_neutral: true,
         }
     }
 }
@@ -1682,6 +1776,39 @@ impl KeymapConfig {
         while self.jump_session.len() < JUMP_SLOTS {
             self.jump_session
                 .push(JUMP_DEFAULTS[self.jump_session.len()].to_string());
+        }
+    }
+
+    /// Convert an older map's custom combos, kept as the recording layout
+    /// typed them (AZERTY "mod-&" for its ⌘1 key), to the US keys stored now
+    /// ("mod-1"), taking the active layout as the one that recorded them.
+    /// Defaults are US keys already. A custom chord keeps its key: a default
+    /// that now lands on it yields and arrives unbound, as a default added
+    /// after the file was written does in [`UiSettings::load`]. Runs once.
+    pub fn adopt_layout_neutral(&mut self, equivalents: &KeyEquivalents) {
+        if std::mem::replace(&mut self.layout_neutral, true) {
+            return;
+        }
+        let mut converted = Vec::new();
+        for id in ShortcutId::ALL {
+            let combo = self.get(id);
+            if combo.is_empty() || combo == id.default_combo() {
+                continue;
+            }
+            if let Some(us) = canonical_combo(combo, equivalents).filter(|us| us != combo) {
+                self.set(id, us.clone());
+                converted.push((id, us));
+            }
+        }
+        for id in ShortcutId::ALL {
+            let combo = self.get(id);
+            if combo == id.default_combo()
+                && converted
+                    .iter()
+                    .any(|(owner, us)| *owner != id && us == combo)
+            {
+                self.set(id, String::new());
+            }
         }
     }
 
@@ -1817,9 +1944,156 @@ pub fn platform_combo_on(mac: bool, combo: &str) -> String {
         .join("-")
 }
 
-/// Human-readable combo for the shortcuts table ("mod-s" → "Cmd+S"/"Ctrl+S").
+/// Where the active keyboard layout puts shortcut keys: the US key a combo
+/// is written with → the key that layout types in its place. This is
+/// Apple's own relocation — an AZERTY Mac reaches ⌘1 as ⌘&, ⌘/ as ⌘: and
+/// ⌘[ as ⌘^ — which gpui ships as `get_key_equivalents` but applies only to
+/// bindings loaded with it. Empty on US layouts and off macOS.
+pub type KeyEquivalents = HashMap<char, char>;
+
+/// The active layout's [`KeyEquivalents`].
+pub fn key_equivalents(cx: &App) -> KeyEquivalents {
+    gpui::PlatformKeyboardMapper::get_key_equivalents(cx.keyboard_mapper().as_ref())
+        .map(|table| table.iter().map(|(&us, &here)| (us, here)).collect())
+        .unwrap_or_default()
+}
+
+thread_local! {
+    /// The table the keymap was last bound against, so displayed combos
+    /// name the key to press ([`display_combo`], [`badge_combo`]).
+    static BOUND_KEY_EQUIVALENTS: RefCell<KeyEquivalents> = RefCell::default();
+}
+
+/// Called by `shell::apply_keymap` with the table it just bound against.
+pub(crate) fn set_bound_key_equivalents(equivalents: KeyEquivalents) {
+    BOUND_KEY_EQUIVALENTS.set(equivalents);
+}
+
+/// The key `equivalents` puts in place of the US `key` — gpui's
+/// `MacKeyboardMapper::map_key_equivalent`, for Zeron's own strings. Named
+/// keys ("tab", "f5") and characters the layout keeps pass through.
+pub fn localize_key<'a>(key: &'a str, equivalents: &KeyEquivalents) -> Cow<'a, str> {
+    let mut chars = key.chars();
+    match (chars.next(), chars.next()) {
+        (Some(us), None) => equivalents
+            .get(&us)
+            .map_or(Cow::Borrowed(key), |here| Cow::Owned(here.to_string())),
+        _ => Cow::Borrowed(key),
+    }
+}
+
+/// The US key a combo stores for a key this layout reported: the inverse of
+/// [`localize_key`], so a recorded chord keeps the spelling its default uses
+/// (AZERTY ⌘& records as "mod-1") and conflict checks on stored combos still
+/// see one chord per key. `None` when the layout relocates `key` itself and
+/// nothing lands on it — AZERTY's @ key — since no stored combo reaches it.
+/// Two US keys sharing one target (Icelandic ] and }) resolve to the lower.
+pub fn canonical_key(key: &str, equivalents: &KeyEquivalents) -> Option<String> {
+    let mut chars = key.chars();
+    let (Some(here), None) = (chars.next(), chars.next()) else {
+        return Some(key.to_string());
+    };
+    if let Some(us) = equivalents
+        .iter()
+        .filter(|&(_, &target)| target == here)
+        .map(|(&us, _)| us)
+        .min()
+    {
+        return Some(us.to_string());
+    }
+    (!equivalents.contains_key(&here)).then(|| key.to_string())
+}
+
+/// Split a combo into its modifier prefix and key: ("mod-shift-", "/").
+fn split_combo(combo: &str) -> (&str, &str) {
+    // "-" is a key too: "mod--" is Mod+Minus.
+    let key_start = if combo.ends_with('-') {
+        combo.len() - 1
+    } else {
+        combo.rfind('-').map_or(0, |ix| ix + 1)
+    };
+    combo.split_at(key_start)
+}
+
+/// `combo` with its key localized ("mod-/" → "mod-:" on AZERTY), in either
+/// the stored ("mod-…") or the bindable ("cmd-…") spelling.
+pub fn localize_combo(combo: &str, equivalents: &KeyEquivalents) -> String {
+    let (modifiers, key) = split_combo(combo);
+    format!("{modifiers}{}", localize_key(key, equivalents))
+}
+
+/// The inverse of [`localize_combo`] (see [`canonical_key`]).
+pub fn canonical_combo(combo: &str, equivalents: &KeyEquivalents) -> Option<String> {
+    let (modifiers, key) = split_combo(combo);
+    canonical_key(key, equivalents).map(|key| format!("{modifiers}{key}"))
+}
+
+/// macOS French (AZERTY), as gpui_macos `keyboard.rs` lists it for
+/// `com.apple.keylayout.French` — the test platform has no layout table.
+#[cfg(test)]
+pub(crate) fn azerty_key_equivalents() -> KeyEquivalents {
+    [
+        ('!', '1'),
+        ('"', '%'),
+        ('#', '3'),
+        ('$', '4'),
+        ('%', '5'),
+        ('&', '7'),
+        ('(', '9'),
+        (')', '0'),
+        ('*', '8'),
+        ('.', ';'),
+        ('/', ':'),
+        ('0', 'à'),
+        ('1', '&'),
+        ('2', 'é'),
+        ('3', '"'),
+        ('4', '\''),
+        ('5', '('),
+        ('6', '§'),
+        ('7', 'è'),
+        ('8', '!'),
+        ('9', 'ç'),
+        (':', '°'),
+        (';', ')'),
+        ('<', '.'),
+        ('>', '/'),
+        ('@', '2'),
+        ('[', '^'),
+        ('\'', 'ù'),
+        ('\\', '`'),
+        (']', '$'),
+        ('^', '6'),
+        ('`', '<'),
+        ('{', '¨'),
+        ('|', '£'),
+        ('}', '*'),
+        ('~', '>'),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// `combo` as the bound layout types it: what the user has to press.
+fn bound_combo(combo: &str) -> String {
+    BOUND_KEY_EQUIVALENTS.with_borrow(|equivalents| localize_combo(combo, equivalents))
+}
+
+/// [`bound_combo`] for a bare key, for hints that spell their own modifiers.
+pub fn bound_key(key: &str) -> String {
+    BOUND_KEY_EQUIVALENTS.with_borrow(|equivalents| localize_key(key, equivalents).into_owned())
+}
+
+/// The stored (US-key) spelling of a chord read outside gpui's keymap, by
+/// the table the keymap is bound to (see [`canonical_combo`]).
+pub fn bound_canonical_combo(combo: &str) -> Option<String> {
+    BOUND_KEY_EQUIVALENTS.with_borrow(|equivalents| canonical_combo(combo, equivalents))
+}
+
+/// Human-readable combo for the shortcuts table ("mod-s" → "Cmd+S"/"Ctrl+S"),
+/// naming the key the active layout types for it.
 pub fn display_combo(combo: &str) -> String {
-    display_combo_on(cfg!(target_os = "macos"), combo)
+    display_combo_on(cfg!(target_os = "macos"), &bound_combo(combo))
 }
 
 /// [`display_combo`] for an explicit platform (see [`combo_from_keystroke_on`]).
@@ -1830,24 +2104,30 @@ pub fn display_combo_on(mac: bool, combo: &str) -> String {
             "mod" => if mac { "Cmd" } else { "Ctrl" }.to_string(),
             "alt" => if mac { "Opt" } else { "Alt" }.to_string(),
             "shift" => "Shift".to_string(),
-            other => {
-                let mut chars = other.chars();
-                match chars.next() {
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    None => String::new(),
-                }
-            }
+            other => key_label(other),
         })
         .collect::<Vec<_>>()
         .join("+")
+}
+
+/// A key as its keycap prints it: ASCII capitalized ("a" → "A", "tab" →
+/// "Tab"), a layout's own letters as typed — AZERTY's ⌘2 key is é, and "É"
+/// would read as Shift+é.
+fn key_label(key: &str) -> String {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Compact combo for badge surfaces (the sidebar jump hints): macOS spells
 /// the modifiers as their key glyphs in canonical ⌃⌥⇧⌘ order and drops the
 /// separators ("⌘1", "⇧⌘A") — the form the model picker's ⌘N chips already
 /// use — while other platforms keep the textual [`display_combo`] ("Ctrl+1").
+/// Like [`display_combo`], the key is the one the active layout types.
 pub fn badge_combo(combo: &str) -> String {
-    badge_combo_on(cfg!(target_os = "macos"), combo)
+    badge_combo_on(cfg!(target_os = "macos"), &bound_combo(combo))
 }
 
 /// [`badge_combo`] for an explicit platform (see [`combo_from_keystroke_on`]).
@@ -1865,11 +2145,7 @@ pub fn badge_combo_on(mac: bool, combo: &str) -> String {
     {
         out.push(glyph);
     }
-    let mut chars = key.chars();
-    if let Some(first) = chars.next() {
-        out.extend(first.to_uppercase());
-        out.push_str(chars.as_str());
-    }
+    out.push_str(&key_label(key));
     out
 }
 
@@ -1977,6 +2253,7 @@ impl UiSettings {
             escape_stops_active_agent,
             settings_section,
             appearance,
+            onboarding_completed,
             git_history_columns,
             git_history_column_widths,
             git_history_column_order,
@@ -2016,6 +2293,7 @@ impl UiSettings {
             new_thread_background_effect,
             reduce_motion,
             pause_animations_in_background,
+            smooth_scrolling,
             codex_voice,
             codex_voice_device,
             legacy_accent_color,
@@ -2101,6 +2379,11 @@ impl UiSettings {
                         // size; it now drives every code surface.
                         if let Some(legacy) = settings.remove("filesEditorFontSize") {
                             settings.entry("codeFontSize").or_insert(legacy);
+                        }
+                        // A file an older build wrote last holds only the
+                        // legacy destination key (see `save`).
+                        if let Some(legacy) = settings.remove("pullRequestDestination") {
+                            settings.entry("pullRequestOpenIn").or_insert(legacy);
                         }
                     }
                     if let Some(keymap) = value
@@ -2191,6 +2474,13 @@ impl UiSettings {
                     }
                 }
             }
+            // No settings file yet: a fresh install, so first-run setup runs,
+            // on frosted glass whatever the theme recommends.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Self {
+                onboarding_completed: false,
+                surface: zeron_theme::SurfacePreference::Frosted,
+                ..Self::default()
+            },
             Err(_) => Self::default(),
         }
     }
@@ -2200,8 +2490,20 @@ impl UiSettings {
         std::fs::create_dir_all(data_dir)?;
         let path = Self::path(data_dir);
         let tmp = path.with_extension("json.tmp");
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // Flattened, not through `serde_json::Value`, which would widen
+        // every `f32` (`1.8` → `1.7999999523162842`).
+        #[derive(Serialize)]
+        struct Saved<'a> {
+            #[serde(flatten)]
+            settings: &'a UiSettings,
+            #[serde(rename = "pullRequestDestination")]
+            legacy_pull_request_destination: &'static str,
+        }
+        let json = serde_json::to_string_pretty(&Saved {
+            settings: self,
+            legacy_pull_request_destination: self.pull_request_destination.legacy_key(),
+        })
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         std::fs::write(&tmp, json)?;
         std::fs::rename(&tmp, &path)
     }
@@ -2306,6 +2608,61 @@ mod tests {
         let saved = serde_json::to_string(&settings).unwrap();
         let loaded: UiSettings = serde_json::from_str(&saved).unwrap();
         assert!(!loaded.compact_model_picker);
+    }
+
+    /// Every build shares `ui-settings.json`, and up to v0.2.122 an unknown
+    /// `pullRequestDestination` reset every UI setting. A saved file keeps
+    /// that key to the names those builds know, and the full pick survives.
+    #[test]
+    fn saved_pull_request_destination_stays_readable_by_older_builds() {
+        // `PullRequestDestination` and the fields read here, as v0.2.122
+        // derives them.
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum OldDestination {
+            Native,
+            External,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct OldBuild {
+            pull_request_destination: OldDestination,
+            sidebar_width: f32,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for (destination, old) in [
+            (PullRequestDestination::Native, OldDestination::Native),
+            (PullRequestDestination::Browser, OldDestination::Native),
+            (PullRequestDestination::External, OldDestination::External),
+        ] {
+            let settings = UiSettings {
+                pull_request_destination: destination,
+                sidebar_width: 300.0,
+                ..UiSettings::default()
+            };
+            settings.save(dir.path()).unwrap();
+            let text = std::fs::read_to_string(UiSettings::path(dir.path())).unwrap();
+            let read: OldBuild = serde_json::from_str(&text).unwrap();
+            assert_eq!(read.pull_request_destination, old, "{destination:?}");
+            assert_eq!(read.sidebar_width, 300.0);
+            assert_eq!(
+                UiSettings::load(dir.path()).pull_request_destination,
+                destination
+            );
+        }
+        // A file an older build wrote last: its legacy key is the pick.
+        let write = |text: &str| std::fs::write(UiSettings::path(dir.path()), text).unwrap();
+        write(r#"{"pullRequestDestination":"external"}"#);
+        assert_eq!(
+            UiSettings::load(dir.path()).pull_request_destination,
+            PullRequestDestination::External
+        );
+        // Both keys: the full pick wins over its legacy stand-in.
+        write(r#"{"pullRequestDestination":"native","pullRequestOpenIn":"browser"}"#);
+        assert_eq!(
+            UiSettings::load(dir.path()).pull_request_destination,
+            PullRequestDestination::Browser
+        );
     }
 
     #[test]
@@ -2414,15 +2771,44 @@ mod tests {
             existing.pull_request_destination,
             PullRequestDestination::Native
         );
-        for destination in PullRequestDestination::ALL {
+        for (destination, stored) in PullRequestDestination::ALL
+            .into_iter()
+            .zip(["native", "browser", "external"])
+        {
             let settings = UiSettings {
                 pull_request_destination: destination,
                 ..existing.clone()
             };
-            let loaded: UiSettings =
-                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            let text = serde_json::to_string(&settings).unwrap();
+            assert!(
+                text.contains(&format!(r#""pullRequestOpenIn":"{stored}""#)),
+                "{text}"
+            );
+            let loaded: UiSettings = serde_json::from_str(&text).unwrap();
             assert_eq!(loaded.pull_request_destination, destination);
             assert_eq!(loaded.sidebar_width, 300.0);
+        }
+        // Unknown names and malformed values read as the native view without
+        // defaulting the rest of the file.
+        let dir = tempfile::tempdir().unwrap();
+        for raw in [
+            r#""sidePanel""#,
+            "42",
+            "null",
+            r#"{"destination":"external"}"#,
+        ] {
+            std::fs::write(
+                UiSettings::path(dir.path()),
+                format!(r#"{{"sidebarWidth": 300, "pullRequestDestination": {raw}}}"#),
+            )
+            .unwrap();
+            let loaded = UiSettings::load(dir.path());
+            assert_eq!(
+                loaded.pull_request_destination,
+                PullRequestDestination::Native,
+                "{raw}"
+            );
+            assert_eq!(loaded.sidebar_width, 300.0, "{raw}");
         }
     }
 
@@ -2445,6 +2831,7 @@ mod tests {
         );
         assert_eq!(loaded.reduce_motion, crate::motion::ReduceMotion::System);
         assert!(!loaded.pause_animations_in_background);
+        assert!(loaded.smooth_scrolling);
         assert_eq!(loaded.sidebar_width, 300.0);
         assert!(!loaded.sound_enabled);
         for sound in [
@@ -2539,7 +2926,7 @@ mod tests {
         assert_eq!(legacy.sidebar_width, 300.0);
         // Unknown names and malformed values read as General without
         // defaulting the rest of the file.
-        for raw in [r#""billing""#, "42", "null", r#"{"section":"devices"}"#] {
+        for raw in [r#""payments""#, "42", "null", r#"{"section":"devices"}"#] {
             std::fs::write(
                 UiSettings::path(dir.path()),
                 format!(r#"{{"sidebarWidth": 300, "settingsSection": {raw}}}"#),
@@ -3074,6 +3461,22 @@ mod tests {
     }
 
     #[test]
+    fn only_a_fresh_install_starts_first_run_setup() {
+        let fresh = tempfile::tempdir().unwrap();
+        let fresh = UiSettings::load(fresh.path());
+        assert!(!fresh.onboarding_completed);
+        assert_eq!(fresh.surface, zeron_theme::SurfacePreference::Frosted);
+        // A settings file from before setup existed: that user is past it.
+        let existing = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(existing.path()),
+            r#"{"sidebarWidth": 280}"#,
+        )
+        .unwrap();
+        assert!(UiSettings::load(existing.path()).onboarding_completed);
+    }
+
+    #[test]
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let settings = UiSettings {
@@ -3222,7 +3625,9 @@ mod tests {
             new_thread_background_effect: NewThreadBackgroundEffect::Ascii,
             reduce_motion: crate::motion::ReduceMotion::On,
             pause_animations_in_background: true,
+            smooth_scrolling: false,
             legacy_accent_color: None,
+            onboarding_completed: false,
         };
         settings.save(dir.path()).unwrap();
         let json = std::fs::read_to_string(UiSettings::path(dir.path())).unwrap();
@@ -3239,6 +3644,7 @@ mod tests {
         assert!(json.contains(r#""zoom": 1.8"#));
         assert!(json.contains(r#""reduceMotion": "on""#));
         assert!(json.contains(r#""pauseAnimationsInBackground": true"#));
+        assert!(json.contains(r#""smoothScrolling": false"#));
         assert!(json.contains(r#""terminalFontFamily": "installed:Menlo""#));
         assert!(json.contains(r#""terminalFontSize": 15.0"#));
         assert!(json.contains(r#""codeFontFamily": "geist""#));
@@ -3685,7 +4091,16 @@ mod tests {
     #[test]
     fn missing_and_corrupt_files_yield_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(UiSettings::load(dir.path()), UiSettings::default());
+        // Defaults, except that a fresh install still has setup ahead of it,
+        // on frosted glass.
+        assert_eq!(
+            UiSettings::load(dir.path()),
+            UiSettings {
+                onboarding_completed: false,
+                surface: zeron_theme::SurfacePreference::Frosted,
+                ..UiSettings::default()
+            }
+        );
         std::fs::write(UiSettings::path(dir.path()), "{not json").unwrap();
         assert_eq!(UiSettings::load(dir.path()), UiSettings::default());
     }
@@ -4394,6 +4809,114 @@ mod tests {
         // Elsewhere the textual form stands.
         assert_eq!(badge_combo_on(false, "mod-2"), "Ctrl+2");
         assert_eq!(badge_combo_on(false, "mod-shift-a"), "Ctrl+Shift+A");
+    }
+
+    #[test]
+    fn azerty_localizes_shortcuts_where_appkit_puts_them() {
+        let azerty = azerty_key_equivalents();
+        // The relocations an AZERTY Mac's own menus apply to these shortcuts.
+        for (us, here) in [
+            ("mod-1", "mod-&"),
+            ("mod-2", "mod-é"),
+            ("mod-/", "mod-:"),
+            ("mod-[", "mod-^"),
+            ("mod-]", "mod-$"),
+        ] {
+            assert_eq!(localize_combo(us, &azerty), here);
+        }
+        // Letters, named keys and keys AZERTY keeps in place stay put.
+        for combo in [
+            "mod-b",
+            "mod-shift-a",
+            "ctrl-tab",
+            "mod-enter",
+            "f5",
+            "mod-,",
+            "mod--",
+        ] {
+            assert_eq!(localize_combo(combo, &azerty), combo);
+        }
+        // So does every key on a US layout, and the bindable spelling
+        // localizes like the stored one.
+        assert_eq!(localize_combo("mod-1", &KeyEquivalents::default()), "mod-1");
+        assert_eq!(localize_combo("cmd-shift-/", &azerty), "cmd-shift-:");
+    }
+
+    #[test]
+    fn canonical_keys_invert_localization_on_every_reachable_key() {
+        let azerty = azerty_key_equivalents();
+        for here in azerty.values().copied().chain("abz,-=+?".chars()) {
+            let here = here.to_string();
+            let us = canonical_key(&here, &azerty).unwrap_or_else(|| panic!("{here} unreachable"));
+            assert_eq!(localize_key(&us, &azerty), here.as_str(), "{here} via {us}");
+        }
+        assert_eq!(canonical_key("tab", &azerty).as_deref(), Some("tab"));
+        assert_eq!(
+            canonical_combo("mod-alt-&", &azerty).as_deref(),
+            Some("mod-alt-1")
+        );
+        // AZERTY relocates @ and nothing lands on that key.
+        assert_eq!(canonical_key("@", &azerty), None);
+        // Two US keys sharing one target (Icelandic ] and }) take the lower.
+        let icelandic: KeyEquivalents = [(']', '´'), ('}', '´')].into_iter().collect();
+        assert_eq!(canonical_key("´", &icelandic).as_deref(), Some("]"));
+    }
+
+    #[test]
+    fn displayed_combos_name_the_key_the_bound_layout_types() {
+        let mac = cfg!(target_os = "macos");
+        set_bound_key_equivalents(azerty_key_equivalents());
+        assert_eq!(display_combo("mod-/"), display_combo_on(mac, "mod-:"));
+        assert_eq!(badge_combo("mod-1"), badge_combo_on(mac, "mod-&"));
+        assert_eq!(badge_combo("mod-b"), badge_combo_on(mac, "mod-b"));
+        set_bound_key_equivalents(KeyEquivalents::default());
+        assert_eq!(badge_combo("mod-1"), badge_combo_on(mac, "mod-1"));
+        // The layout's own letters read as their keycaps print them: ⌘é is
+        // no Shift chord.
+        assert_eq!(badge_combo_on(true, "mod-é"), "⌘é");
+        assert_eq!(display_combo_on(true, "mod-é"), "Cmd+é");
+        assert_eq!(badge_combo_on(true, "mod-shift-a"), "⇧⌘A");
+    }
+
+    #[test]
+    fn older_keymaps_adopt_us_keys_once() {
+        let azerty = azerty_key_equivalents();
+        // Recorded on AZERTY before combos were stored in US keys: ⌘& for
+        // Jump to session 1, and ⌘é — where Jump to session 2 now binds —
+        // for New session.
+        let mut keymap = KeymapConfig {
+            new_session: "mod-é".into(),
+            layout_neutral: false,
+            ..KeymapConfig::default()
+        };
+        keymap.set(ShortcutId::JumpSession(0), "mod-&".into());
+        keymap.adopt_layout_neutral(&azerty);
+        assert!(keymap.layout_neutral);
+        assert_eq!(keymap.get(ShortcutId::JumpSession(0)), "mod-1");
+        assert_eq!(keymap.get(ShortcutId::NewSession), "mod-2");
+        // The custom chord keeps its key; the default landing on it yields.
+        assert_eq!(keymap.get(ShortcutId::JumpSession(1)), "");
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-b");
+        // Converted maps already store US keys: later passes change nothing.
+        keymap.set(ShortcutId::NewSession, "mod-&".into());
+        keymap.adopt_layout_neutral(&azerty);
+        assert_eq!(keymap.get(ShortcutId::NewSession), "mod-&");
+    }
+
+    #[test]
+    fn keymaps_written_before_us_keys_load_as_older() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            UiSettings::path(dir.path()),
+            r#"{"keymap": {"newSession": "mod-é"}}"#,
+        )
+        .unwrap();
+        assert!(!UiSettings::load(dir.path()).keymap.layout_neutral);
+        // Fresh maps are US keys, and say so once saved.
+        let fresh = UiSettings::default();
+        assert!(fresh.keymap.layout_neutral);
+        fresh.save(dir.path()).unwrap();
+        assert!(UiSettings::load(dir.path()).keymap.layout_neutral);
     }
 
     #[test]

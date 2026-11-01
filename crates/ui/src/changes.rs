@@ -1803,6 +1803,14 @@ impl Changes {
         changes
     }
 
+    /// A Diff tab that opens on *Branch changes* (the scope menu still
+    /// switches it).
+    pub fn for_branch(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let mut changes = Self::new(state, cx);
+        changes.scope = DiffScope::Branch;
+        changes
+    }
+
     /// A dedicated History surface. It shares the commit-opening event path
     /// with diffs, but is never offered as an item in a Diff tab's scope menu.
     pub fn for_history(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
@@ -5121,12 +5129,10 @@ impl Render for Changes {
                     .items_center()
                     .justify_center()
                     .gap(px(Theme::SPACE_SM))
-                    .child(crate::loaders::gradient_spinner(
+                    .child(crate::loaders::ring_spinner(
                         "changes-preparing",
-                        &theme,
-                        3.0,
-                        cx.entity_id(),
-                        cx,
+                        20.0,
+                        theme.text_muted,
                     ))
                     .child(
                         div()
@@ -5174,12 +5180,10 @@ impl Render for Changes {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(crate::loaders::gradient_spinner(
+                            .child(crate::loaders::ring_spinner(
                                 "changes-parsing",
-                                &theme,
-                                3.0,
-                                cx.entity_id(),
-                                cx,
+                                20.0,
+                                theme.text_muted,
                             ))
                             .into_any_element()
                     }
@@ -6120,6 +6124,7 @@ rename to new_name.rs
             created_at: Utc::now(),
             harness_session_id: None,
             harness_session_cwd: None,
+            harness_session_harness: None,
             parent_chat_id: None,
             space_id: None,
             last_seen_at: None,

@@ -62,6 +62,10 @@ pub enum ColorRole {
     DiffAddBar,
     DiffDelBar,
     DiffHunk,
+    /// An error card's fill: a soft red wash.
+    DangerWash,
+    /// An error card's text and icon: a lighter red that reads on the wash.
+    DangerSoft,
 }
 
 /// Text decorations, painted relative to the run's baseline.
@@ -263,6 +267,12 @@ pub enum WidgetKind {
     Shimmer,
     /// An agent visual; `TranscriptView::visual(id)` is its live session.
     Visual { id: String },
+    /// A button the app acts on: `action` names what (`sign-in`), `label`
+    /// is its title (an error card's "Log in").
+    Action { action: String, label: String },
+    /// A subagent spawn's card: opens the child's transcript (`doc_id`;
+    /// `None` while the host hasn't bound one yet).
+    Subagent { doc_id: Option<String>, title: String, running: bool, failed: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]

@@ -121,8 +121,123 @@ fn streaming_converges_to_full_parse() {
     }
 }
 
+#[test]
+fn agent_messages_show_their_sender_over_the_bubble() {
+    let mut w = worker(390.0);
+    let id = "cd27c5c2-0000-4000-8000-000000000000";
+    let text = zeron_proto::agent_messages::agent_message("Windows lane (cd27c5c2)", id, "Windows lane: done.");
+    w.input = debug_input(vec![DebugEntry { id: "u".into(), user: true, text, streaming: false }], false);
+    let frame = w.pass();
+    let d = frame.display(0).unwrap();
+    assert!(d.text.starts_with("Message from \u{2060} Windows lane"), "{}", d.text);
+    assert!(d.text.contains("Windows lane: done."), "{}", d.text);
+    assert!(!d.text.contains("send_message") && !d.text.contains("cd27c5c2"), "{}", d.text);
+    assert_eq!(frame.message_text(0).as_deref(), Some("Windows lane: done."));
+    // The sender's mark (a chat glyph: the workspace doesn't list it), and
+    // no link to a chat that doesn't open.
+    assert!(d.widgets.iter().any(|w| matches!(&w.kind, display::WidgetKind::Icon { name, .. } if name == "bubble.left")));
+    assert!(d.links.is_empty());
+    // The caption sits over the bubble: its runs end above the bubble's fill.
+    let bubble = d.boxes.iter().find(|b| b.color == display::ColorRole::UserBubble).unwrap();
+    let caption = d.runs.first().unwrap();
+    assert!(caption.baseline < bubble.y, "{caption:?} {bubble:?}");
+    // No wider than the bubble: nothing of it starts left of the bubble.
+    assert!(d.runs.iter().filter(|r| r.baseline < bubble.y).all(|r| r.x >= bubble.x - 0.5), "{:?} {bubble:?}", d.runs);
+}
+
+#[test]
+fn messages_the_agent_sent_show_as_one_line_naming_the_recipient() {
+    let tool = |id: &str, name: &str, input: serde_json::Value| MessagePart::Tool {
+        id: id.into(),
+        call: zeron_proto::ToolCall::Mcp { server: "zeron".into(), tool: name.into(), input: Some(input) },
+        is_error: false,
+        resolved: true,
+        output: None,
+        diff: None,
+        output_ref: None,
+        output_bytes: None,
+        diff_ref: None,
+        diff_stats: None,
+        subagent_ref: None,
+        subagent_status: None,
+        subagent_tail: None,
+    };
+    let mut w = worker(390.0);
+    w.input = TranscriptInput {
+        entries: vec![Arc::new(SessionMessageEntry {
+            id: "a".into(),
+            role: MessageRole::Assistant,
+            parts: vec![
+                tool("k1", "list_chats", serde_json::json!({})),
+                tool("k2", "send_message", serde_json::json!({ "chat": "Windows lane", "text": "Run the matrix." })),
+                tool("k3", "send_messages", serde_json::json!({ "requests": [{ "chat": "a", "text": "one" }, { "chat": "b", "text": "two" }] })),
+            ],
+            created_at: 0,
+            device_id: String::new(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+        })],
+        ..Default::default()
+    };
+    let frame = w.pass();
+    // The ordinary tool keeps its group; each message is its own row.
+    assert_eq!(frame.row_count(), 4);
+    assert_eq!(frame.placement(1).unwrap().kind, RowKind::Markdown);
+    let d = frame.display(1).unwrap();
+    // Just the recipient: no bubble, no message text.
+    assert_eq!(d.text, "Message to \u{2060} Windows lane");
+    assert!(d.boxes.iter().all(|b| b.color != display::ColorRole::UserBubble));
+    // Left-aligned at the column's edge.
+    assert!(d.runs.first().unwrap().x < 40.0);
+    assert!(frame.display(3).unwrap().text.ends_with(" b"));
+}
+
 fn transcript_one(text: &str) -> TranscriptInput {
     debug_input(vec![DebugEntry { id: "a".into(), user: false, text: text.into(), streaming: false }], false)
+}
+
+/// The question chip says what was answered, one `label → answer` line per
+/// question; a chip from before answers were recorded keeps its old text.
+#[test]
+fn question_chip_reads_what_was_answered() {
+    let question = |id: &str, header: &str| zeron_proto::UserInputQuestion {
+        id: id.into(),
+        header: header.into(),
+        question: format!("{header}?"),
+        options: vec!["Deep dive".into(), "Table".into()],
+        multi_select: false,
+        prefill: None,
+        multiline: false,
+    };
+    let chip = |questions: Vec<zeron_proto::UserInputQuestion>, resolved: bool, answers: Option<Vec<zeron_proto::UserInputAnswer>>| {
+        let mut w = worker(390.0);
+        w.input = TranscriptInput {
+            entries: vec![Arc::new(SessionMessageEntry {
+                id: "a".into(),
+                role: MessageRole::Assistant,
+                parts: vec![MessagePart::Input { id: "r1".into(), request_id: "r1".into(), questions, resolved, answers }],
+                created_at: 0,
+                device_id: String::new(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+                duration_ms: None,
+            })],
+            ..Default::default()
+        };
+        let frame = w.pass();
+        let row = frame.display(0).unwrap();
+        (row.copy_text, row.height)
+    };
+    let picked = |id: &str, label: &str| zeron_proto::UserInputAnswer { question_id: id.into(), labels: vec![label.into()] };
+    assert_eq!(chip(vec![question("q", "Recherche")], true, None).0, "Answered a question");
+    let (closed, one_line) = chip(vec![question("q", "Recherche")], true, Some(vec![]));
+    assert_eq!(closed, "Recherche → Not answered");
+    let (answered, two_lines) = chip(vec![question("a", "Recherche"), question("b", "Format")], true, Some(vec![picked("a", "Deep dive"), picked("b", "Charts")]));
+    assert_eq!(answered, "Recherche → Deep dive\nFormat → “Charts”");
+    // Short enough to share a line at this width: only a kept break makes
+    // the second answer its own line.
+    assert!(two_lines > one_line, "{two_lines} vs {one_line}");
 }
 
 #[test]
@@ -451,7 +566,7 @@ fn bench_layout_passes() {
             duration_ms: None,
             token_usage: None,
         }));
-        w.input = TranscriptInput { entries: e, pending: vec![], working: true, working_since_ms: None, streaming: true };
+        w.input = TranscriptInput { entries: e, pending: vec![], working: true, working_since_ms: None, streaming: true, workspace: None };
         let t = Instant::now();
         w.pass();
         total += t.elapsed();
@@ -594,6 +709,20 @@ fn running_subagent_shows_a_spinner_after_its_spawn_resolves() {
     assert_eq!(spinners(&frame_for(SubagentStatus::Done)), 0, "finished subagent is quiet");
     let failed = frame_for(SubagentStatus::Failed);
     assert!(failed.display(0).unwrap().runs.iter().any(|r| r.color == display::ColorRole::Danger), "failed subagent is tinted danger");
+    // The whole card opens the child's transcript, by its doc.
+    let done = frame_for(SubagentStatus::Done);
+    let display = done.display(0).unwrap();
+    let card = display.widgets.iter().find_map(|w| match &w.kind {
+        display::WidgetKind::Subagent { doc_id, title, running, .. } => Some((doc_id.clone(), title.clone(), *running, w.w)),
+        _ => None,
+    });
+    let (doc, title, running, width) = card.expect("the card is a tap target");
+    assert_eq!(doc.as_deref(), Some("sub-1"));
+    assert_eq!(title, "scan the repo");
+    assert!(!running);
+    assert!(width > 300.0, "it spans the card");
+    // Finished and openable: a chevron where the spinner was.
+    assert!(display.widgets.iter().any(|w| matches!(&w.kind, display::WidgetKind::Icon { name, .. } if name == "chevron.right")));
 }
 
 #[test]
@@ -1261,4 +1390,52 @@ fn math_tables_keep_a_bounded_canvas() {
     assert!(canvas < 8e6, "table canvas {canvas} pt²");
     let small = rows_of("| a | b |\n|---|---|\n| $x^2$ | $\\frac{1}{2}$ |", 390.0).remove(0);
     assert!(!small.glyphs.is_empty(), "a small math table renders its formulas");
+}
+
+#[test]
+fn errors_render_as_cards_with_a_log_in_button_when_signing_in_fixes_them() {
+    use zeron_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
+    let error = |id: &str, message: &str| {
+        Arc::new(SessionMessageEntry {
+            id: id.into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Error { id: "e".into(), message: message.into() }],
+            created_at: 0,
+            device_id: String::new(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+            duration_ms: None,
+        })
+    };
+    let mut w = worker(390.0);
+    let mut input = debug_input(Vec::new(), false);
+    input.entries = vec![
+        error("signed-out", "Claude Code isn't signed in on Cloud. Sign in with Claude, then send again."),
+        error("limited", "Claude usage limit reached — try again after the limit resets."),
+        error("other", "Claude is overloaded right now — try again shortly."),
+    ];
+    w.input = input;
+    let frame = w.pass();
+    for (i, wants_button) in [(0, true), (1, true), (2, false)] {
+        let d = frame.display(i).unwrap();
+        // The card: a red wash under lighter red text.
+        assert!(d.boxes.iter().any(|b| b.color == display::ColorRole::DangerWash), "row {i}");
+        assert!(d.runs.iter().all(|r| r.color == display::ColorRole::DangerSoft), "row {i}");
+        let actions: Vec<_> = d
+            .widgets
+            .iter()
+            .filter_map(|w| match &w.kind {
+                display::WidgetKind::Action { action, label } => Some((action.as_str(), label.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actions.is_empty(), !wants_button, "row {i}: {actions:?}");
+        if wants_button {
+            assert_eq!(actions, [("sign-in", "Log in")]);
+            // The button trails the text, never under it.
+            let button = d.widgets.iter().find(|w| matches!(w.kind, display::WidgetKind::Action { .. })).unwrap();
+            let text_right = d.runs.iter().map(|r| r.x + r.width).fold(0.0, f32::max);
+            assert!(button.x > text_right, "row {i}: button at {} beside text ending {text_right}", button.x);
+        }
+    }
 }

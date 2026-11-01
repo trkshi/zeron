@@ -8,6 +8,15 @@ Zeron release.
 
 ## Changes
 
+- Integrate upstream v0.2.131: Zeron Cloud, provider switching that keeps each
+  provider's session and prompt cache, turn revival after an engine restart,
+  access modes and plan mode, background process controls, `show_image`,
+  answered-question history, settings search, and the Loro 1.17 memory fix.
+  Upstream's `session/resume` selection replaces ours for DSH. A revived turn
+  takes its file checkpoint first and then starts without holding checkpoint
+  admission, so a message sent meanwhile is never held up by it; it also skips
+  the automatic account check. DSH and Command Code offer only full access.
+  Local headless builds need the refreshed `headless-adapt.patch`.
 - Integrate upstream's LaTeX math rendering, session card side-chat and
   subagent lanes, sidebar hover cards, draggable sidebar section order, and
   iPhone Duo layout. Keep the Usage display setting beside the new math rows,

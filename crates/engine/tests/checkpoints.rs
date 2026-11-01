@@ -141,9 +141,12 @@ fn request(root: &Path, prompt: &str) -> RunRequest {
         cwd: root.to_string_lossy().into_owned(),
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
+        access: Default::default(),
+        plan: false,
         resume: None,
         attachments: vec![],
         worktree: None,
+        env: Default::default(),
     }
 }
 
@@ -188,7 +191,7 @@ fn core(
         ))
         .unwrap();
     core.workspace
-        .set_chat_harness_session("main", "source-session", &root.to_string_lossy());
+        .set_chat_harness_session("main", "source-session", &root.to_string_lossy(), Some(HarnessId::Mock));
     core
 }
 

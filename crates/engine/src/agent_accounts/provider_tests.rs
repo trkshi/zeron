@@ -334,7 +334,19 @@ async fn usage_watchers_share_one_active_account_probe_with_running_threads() {
         tokio::task::yield_now().await;
     }
     assert_eq!(server.hits("GET /backend-api/wham/usage"), 1);
-    assert_eq!(rows(&second.borrow(), HarnessId::Codex), codex);
+    // Re-snapshotting the active account bumps `saved_at`; nothing else moves.
+    let unsaved = |rows: Vec<AgentAccount>| -> Vec<AgentAccount> {
+        rows.into_iter()
+            .map(|account| AgentAccount {
+                saved_at: None,
+                ..account
+            })
+            .collect()
+    };
+    assert_eq!(
+        unsaved(rows(&second.borrow(), HarnessId::Codex)),
+        unsaved(codex)
+    );
     accounts.shutdown();
 }
 

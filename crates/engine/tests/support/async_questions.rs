@@ -347,6 +347,7 @@ async fn rejected_async_delivery_stays_open_and_rpc_reports_the_outcome() {
                 questions: questions(),
                 asynchronous: true,
                 resolved: false,
+                answers: None,
             }],
             created_at: 1,
             device_id: core.device_id.clone(),

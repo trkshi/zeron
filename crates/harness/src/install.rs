@@ -53,11 +53,15 @@ fn methods(id: HarnessId, platform: Platform) -> Vec<Method> {
     let windows = platform == Platform::Windows;
     match id {
         Mock => vec![],
+        Fx if windows => vec![],
+        Fx => vec![Shell("curl -fsSL https://fx.sh/setup.sh | bash", "bash")],
         Antigravity => vec![Archive],
         // DSH ships through npm-compatible registries only; no vendor script.
         Dsh => vec![Npm("@deepseek-ai/dsh", false)],
         // Command Code ships through npm only.
         CommandCode => vec![Npm("command-code", false)],
+        Muse if windows => vec![PowerShell("irm https://dev.meta.ai/install.ps1 | iex")],
+        Muse => vec![Shell("curl -fsSL https://dev.meta.ai/install.sh | sh", "sh")],
         ClaudeCode if windows => vec![PowerShell("irm https://claude.ai/install.ps1 | iex")],
         ClaudeCode => vec![Shell(
             "curl -fsSL https://claude.ai/install.sh | bash",
@@ -164,6 +168,8 @@ pub fn manual_command(id: HarnessId) -> Option<&'static str> {
         Devin => "curl -fsSL https://cli.devin.ai/install.sh | bash",
         Dsh => "npm install -g @deepseek-ai/dsh",
         CommandCode => "npm install -g command-code",
+        Muse => "curl -fsSL https://dev.meta.ai/install.sh | sh",
+        Fx => "curl -fsSL https://fx.sh/setup.sh | bash",
         Antigravity | Mock => return None,
     })
 }
@@ -182,7 +188,9 @@ fn cli_and_dir(id: HarnessId) -> (&'static str, &'static str) {
         Antigravity => ("agy_acp_server", "~/.zeron/adapters"),
         Dsh => ("dsh", "~/.bun/bin or the npm global bin"),
         CommandCode => ("commandcode", "the npm global bin"),
+        Muse => ("muse", "~/.local/bin"),
         Mock => ("mock", "PATH"),
+        Fx => ("fx", "~/.local/bin"),
     }
 }
 
@@ -200,7 +208,9 @@ pub fn installed(id: HarnessId) -> bool {
         Antigravity => crate::AcpHarness::antigravity().installed(),
         Dsh => crate::AcpHarness::dsh().installed(),
         CommandCode => crate::CommandCodeHarness::new().installed(),
+        Muse => crate::MuseHarness::new().installed(),
         Mock => false,
+        Fx => crate::AcpHarness::fx().installed(),
     }
 }
 
@@ -234,8 +244,8 @@ fn configure(command: &mut Command) {
     let mut paths: Vec<_> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
-    if let Some(path) = crate::shell_env::login_shell_path() {
-        paths.extend(std::env::split_paths(path));
+    if let Some(path) = crate::shell_env::user_path() {
+        paths.extend(std::env::split_paths(&path));
     }
     // npm can be found in a managed toolchain even when shell startup was disabled.
     if let Some(npm) =
@@ -401,7 +411,7 @@ async fn run(
 mod tests {
     use super::*;
 
-    const IDS: [HarnessId; 10] = [
+    const IDS: [HarnessId; 11] = [
         HarnessId::ClaudeCode,
         HarnessId::Codex,
         HarnessId::Cursor,
@@ -409,6 +419,7 @@ mod tests {
         HarnessId::Pi,
         HarnessId::Grok,
         HarnessId::Hermes,
+        HarnessId::Fx,
         HarnessId::Devin,
         HarnessId::Antigravity,
         HarnessId::Mock,
@@ -419,7 +430,10 @@ mod tests {
         for platform in [Platform::Unix, Platform::Mac, Platform::Windows] {
             for id in IDS {
                 let list = methods(id, platform);
-                assert_eq!(list.is_empty(), id == HarnessId::Mock);
+                assert_eq!(
+                    list.is_empty(),
+                    id == HarnessId::Mock || (id == HarnessId::Fx && platform == Platform::Windows)
+                );
                 for method in list {
                     assert!(available(method, platform, &|_| true, true));
                     assert!(!available(method, platform, &|_| false, false));
