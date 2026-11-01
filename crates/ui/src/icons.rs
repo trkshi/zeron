@@ -241,6 +241,8 @@ icon_assets![
     // Settings → Billing (drawn to the Solar linear set's 1.5 stroke).
     (WALLET, "wallet"),
     (ANTIGRAVITY_MARK, "antigravity-mark"),
+    // Command Code's logomark, from commandcode.ai/brand.
+    (COMMAND_CODE_MARK, "command-code-mark"),
     // DeepSeek's whale (LobeHub Icons, MIT) for Claude Code endpoint models.
     (DEEPSEEK_MARK, "deepseek-mark"),
     // Muse Code's mark (Meta's infinity), tinted its brand blue at call sites.

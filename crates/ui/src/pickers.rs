@@ -6811,8 +6811,8 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
             crate::icons::DEEPSEEK_MARK,
             Some(crate::icons::deepseek_brand()),
         ),
-        // No published mark; its name's ⌘ glyph, monochrome.
-        HarnessId::CommandCode => (crate::icons::COMMAND, None),
+        // Their logomark with its glyph knocked out, monochrome.
+        HarnessId::CommandCode => (crate::icons::COMMAND_CODE_MARK, None),
         HarnessId::Muse => (crate::icons::MUSE_MARK, Some(crate::icons::muse_brand())),
     }
 }
