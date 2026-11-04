@@ -156,6 +156,7 @@ impl Normalizer {
                     is_error,
                     output: output.map(|text| cap_text(&text, OUTPUT_CAP)),
                     diff,
+                    exit_code: None,
                 });
             }
             "run_error" => {

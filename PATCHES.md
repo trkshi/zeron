@@ -8,6 +8,14 @@ Zeron release.
 
 ## Changes
 
+- Integrate upstream v0.2.136: the zgx interface (beta), agents added from
+  the ACP registry, plugins with native MCP servers, theme tools for agents,
+  command output tails, Cursor's own usage buckets with the Grok quota, and
+  Codex banked resets. Upstream's reset-credit API replaces ours; the Usage
+  dashboard now spends the soonest-expiring listed credit through
+  `ConsumeCodexResetCredit` and refreshes the account afterwards. Plugins
+  start before stale-session recovery. DSH updates run through the package
+  manager that owns the install (bun or npm), so it gets an Update button.
 - Integrate upstream v0.2.131: Zeron Cloud, provider switching that keeps each
   provider's session and prompt cache, turn revival after an engine restart,
   access modes and plan mode, background process controls, `show_image`,

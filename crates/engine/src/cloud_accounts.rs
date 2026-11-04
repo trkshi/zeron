@@ -279,6 +279,7 @@ fn to_agent_account(
         }),
         active,
         usage_windows: windows,
+        codex_reset_credits: None,
         usage_fetched_at: fetched_at,
         usage_error: if reconnect {
             Some("Sign in again — Cloud can no longer use this login".into())
@@ -295,7 +296,6 @@ fn to_agent_account(
         switchable: !reconnect,
         saved_at: Some(account.updated_at),
         provider: None,
-        reset_credits: None,
     }
 }
 

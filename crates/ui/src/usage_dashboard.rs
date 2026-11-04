@@ -14,7 +14,7 @@ use gpui::{
     px, relative,
 };
 use zeron_proto::{
-    AgentAccount, AgentAccountsSnapshot, AgentAuthKind, AgentResetCreditReply, AgentResetOutcome,
+    AgentAccount, AgentAccountsSnapshot, AgentAuthKind, CodexResetOutcome,
     AgentUsageWindow, HarnessId, UsageHistorySummary, UsageHistoryTotals,
 };
 use zeron_rpc::methods;
@@ -384,10 +384,13 @@ impl UsageDashboard {
         self.load(false, cx);
     }
 
-    /// Redeems one reset credit on the open account. The engine re-probes
-    /// the account, so the cached snapshot (and the dialog) show the result.
+    /// Redeems the open account's soonest-expiring reset credit, then forces
+    /// a usage refresh so the cached snapshot (and the dialog) show the result.
     fn redeem_reset(&mut self, cx: &mut Context<Self>) {
         let Some(account) = self.selected_account.clone() else {
+            return;
+        };
+        let Some(credit) = soonest_credit(&account) else {
             return;
         };
         let Some(engine) = self.state.read(cx).engine().cloned() else {
@@ -400,33 +403,33 @@ impl UsageDashboard {
         };
         self.reset = Some((account.id.clone(), ResetState::Busy));
         let target = self.target.clone();
+        // One key per attempt: Codex dedupes a repeated request, never a new one.
         let params = serde_json::json!({
             "targetDeviceId": target,
-            "harness": account.harness,
             "accountId": account.id,
+            "creditId": credit,
+            "idempotencyKey": uuid::Uuid::new_v4().to_string(),
         });
         self.reset_task = Some(cx.spawn(async move |this, cx| {
             let result = crate::attachments::call_with_timeout(
                 &engine,
                 cx.background_executor(),
-                methods::CONSUME_AGENT_RESET_CREDIT,
+                methods::CONSUME_CODEX_RESET_CREDIT,
                 params,
                 Duration::from_secs(65),
             )
             .await
             .and_then(|value| {
-                serde_json::from_value::<AgentResetCreditReply>(value)
+                serde_json::from_value::<CodexResetOutcome>(value)
                     .map_err(|error| error.to_string())
             });
             this.update(cx, |page, cx| {
                 let state = match result {
                     Ok(reply) => {
                         if page.target == target {
-                            cx.default_global::<AccountsSnapshotCache>()
-                                .0
-                                .insert(target.clone(), reply.snapshot);
+                            page.load(true, cx);
                         }
-                        ResetState::Done(reset_outcome_text(reply.outcome).into())
+                        ResetState::Done(reset_outcome_text(&reply.outcome).into())
                     }
                     Err(error) if error.ends_with("timed out") => ResetState::Failed(
                         "Codex didn't answer in time. Refresh to check whether the reset applied."
@@ -456,9 +459,9 @@ impl UsageDashboard {
             return None;
         }
         let available = account
-            .reset_credits
+            .codex_reset_credits
             .as_ref()
-            .map_or(0, |credits| credits.available);
+            .map_or(0, |credits| credits.available_count);
         let state = self
             .reset
             .as_ref()
@@ -474,9 +477,9 @@ impl UsageDashboard {
                 "{available} reset {} banked{}",
                 if available == 1 { "credit" } else { "credits" },
                 account
-                    .reset_credits
+                    .codex_reset_credits
                     .as_ref()
-                    .and_then(|credits| credits.next_expires_at)
+                    .and_then(|credits| credits.credits.iter().filter_map(|c| c.expires_at).min())
                     .map(|at| format!(" · next expires in {}", resets_in(at, now)))
                     .unwrap_or_default()
             )
@@ -498,7 +501,8 @@ impl UsageDashboard {
                     .child(icon(icons::TAG).size(px(13.0)).text_color(theme.text_muted))
                     .child(summary),
             )
-            .when(available > 0 && !confirming, |row| {
+            // The count can arrive without the list; only a listed credit can be spent.
+            .when(soonest_credit(account).is_some() && !confirming, |row| {
                 row.child(
                     button(
                         "usage-reset-use",
@@ -1913,9 +1917,9 @@ impl UsageDashboard {
                             let resets = format_reset(window.resets_at, now)
                                 .unwrap_or_else(|| "reset unavailable".into());
                             let credits = account
-                                .reset_credits
+                                .codex_reset_credits
                                 .as_ref()
-                                .map_or(0, |credits| credits.available);
+                                .map_or(0, |credits| credits.available_count);
                             let banked = if credits > 0 {
                                 format!(
                                     " · {credits} reset {} banked",
@@ -2822,13 +2826,24 @@ fn button(
         .child(label)
 }
 
-fn reset_outcome_text(outcome: AgentResetOutcome) -> &'static str {
+/// Codex's word for a redemption (`CodexResetOutcome.outcome`), as shown.
+fn reset_outcome_text(outcome: &str) -> &'static str {
     match outcome {
-        AgentResetOutcome::Reset => "Reset applied. The windows have cleared.",
-        AgentResetOutcome::NothingToReset => "Nothing to reset right now, so no credit was used.",
-        AgentResetOutcome::NoCredit => "No reset credit left on this account.",
-        AgentResetOutcome::AlreadyRedeemed => "That credit was already redeemed.",
+        "reset" => "Reset applied. The windows have cleared.",
+        "already_redeemed" => "That credit was already redeemed.",
+        "nothing_to_reset" => "Nothing to reset right now, so no credit was used.",
+        "no_credit" => "No reset credit left on this account.",
+        _ => "Codex answered in a way Zeron doesn't recognise. Refresh to check.",
     }
+}
+
+/// The banked credit to spend first: the one that expires soonest.
+fn soonest_credit(account: &AgentAccount) -> Option<String> {
+    let credits = &account.codex_reset_credits.as_ref()?.credits;
+    credits
+        .iter()
+        .min_by_key(|credit| credit.expires_at.unwrap_or(DateTime::<Utc>::MAX_UTC))
+        .map(|credit| credit.id.clone())
 }
 
 /// Brand mark for the harness (and, on model rows, the model) a row belongs
@@ -2886,6 +2901,7 @@ pub(crate) fn provider_label(harness: Option<HarnessId>) -> &'static str {
         Some(HarnessId::Fx) => "fx",
         Some(HarnessId::Muse) => "Muse Code",
         Some(HarnessId::Mock) => "Mock",
+        Some(HarnessId::Registry(agent)) => agent.registry_id(),
         None => "Unknown provider",
     }
 }

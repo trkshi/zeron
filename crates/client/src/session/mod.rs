@@ -910,6 +910,9 @@ fn refresh_setup_placeholder(st: &mut CoreState, cloud_booting: bool) -> bool {
                     subagent_ref: None,
                     subagent_status: None,
                     subagent_tail: None,
+                    exit_code: None,
+                    output_truncated: false,
+                    output_lines: None,
                 }],
                 token_usage: None,
                 created_at: created_at + 1,
@@ -1166,6 +1169,7 @@ impl SessionHandle {
                     worktree: request.worktree.clone(),
                     mcp: None,
                     env: Default::default(),
+                    extra_mcp: Vec::new(),
                 };
                 self.core.queue_command(
                     &device_id,
