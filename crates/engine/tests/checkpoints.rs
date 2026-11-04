@@ -133,6 +133,7 @@ fn message(id: &str, role: MessageRole, text: &str, device: &str) -> SessionMess
 fn request(root: &Path, prompt: &str) -> RunRequest {
     RunRequest {
         mcp: None,
+        extra_mcp: Vec::new(),
         prompt: prompt.into(),
         harness: Some(HarnessId::Mock),
         model: None,

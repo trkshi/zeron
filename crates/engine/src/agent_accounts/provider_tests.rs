@@ -202,6 +202,7 @@ async fn scoped_usage_refresh_preserves_other_accounts_and_full_refresh_behavior
                     resets_at: None,
                 }],
                 plan_label: None,
+                codex_reset_credits: None,
             }),
             credentials_fingerprint(&slot.credentials),
             stale_at,
@@ -325,6 +326,7 @@ async fn usage_watchers_share_one_active_account_probe_with_running_threads() {
             is_error: false,
             output: None,
             diff: None,
+            exit_code: None,
         };
         one.observe(&event);
         two.observe(&event);

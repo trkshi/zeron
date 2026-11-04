@@ -4494,7 +4494,45 @@ pub(crate) fn usage_windows_from_reply(
 
 /// Codex `/wham/usage`: primary/secondary windows + the live plan.
 fn codex_usage_snapshot(body: &serde_json::Value) -> Option<UsageSnapshot> {
-    zeron_proto::plan_usage::codex(body).map(|(windows, plan_label)| UsageSnapshot {
+    let mut windows = zeron_proto::plan_usage::codex(body)
+        .map(|(windows, _)| windows)
+        .unwrap_or_default();
+    let rl = body.get("rate_limit");
+    // Workspace credits can block a Team login independently of its time
+    // windows. An empty purchased-credit balance alone is NOT a limit.
+    let workspace_blocked = matches!(
+        body.pointer("/rate_limit_reached_type/type")
+            .and_then(serde_json::Value::as_str),
+        Some("workspace_member_credits_depleted" | "workspace_credits_depleted")
+    ) || body
+        .pointer("/spend_control/reached")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let blocked = workspace_blocked
+        || rl.is_some_and(|rl| {
+            rl.get("allowed").and_then(serde_json::Value::as_bool) == Some(false)
+                || rl.get("limit_reached").and_then(serde_json::Value::as_bool) == Some(true)
+        });
+    if blocked {
+        windows.push(AgentUsageWindow {
+            label: if workspace_blocked {
+                "Workspace limit"
+            } else {
+                "Usage limit"
+            }
+            .into(),
+            used_fraction: 1.0,
+            resets_at: None,
+        });
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    // Live plan ("free"/"plus"/"pro"…) — beats the login-time JWT claim,
+    // so a plan change shows up on the next forced refresh without a
+    // re-login.
+    let plan_label = codex_plan(str_field(body, "plan_type").as_deref());
+    Some(UsageSnapshot {
         windows,
         plan_label,
         codex_reset_credits: None,

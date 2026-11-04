@@ -181,6 +181,7 @@ mod tests {
             switchable: true,
             saved_at: None,
             provider: None,
+            codex_reset_credits: None,
         }
     }
 
@@ -308,6 +309,7 @@ mod tests {
             Ok(UsageSnapshot {
                 windows: account(&id, HarnessId::Codex, true, session, week).usage_windows,
                 plan_label: None,
+                codex_reset_credits: None,
             }),
             credentials_fingerprint(&credentials),
             now_ms(),

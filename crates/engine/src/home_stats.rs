@@ -467,6 +467,7 @@ mod tests {
             zeron_owned: false,
             origin: None,
             chat_id: None,
+            signing_in: false,
         };
         let roots = vec!["/work/app".to_owned(), "/work/app/.wt/feature".to_owned()];
         let listeners = vec![

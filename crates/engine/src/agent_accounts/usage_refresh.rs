@@ -525,6 +525,7 @@ mod tests {
             is_error: false,
             output: None,
             diff: None,
+            exit_code: None,
         });
         assert_eq!(revision(&accounts), paused);
         assert!(lock(&accounts.inner.refresh.schedule).runs.is_empty());
