@@ -8,6 +8,13 @@ Zeron release.
 
 ## Changes
 
+- Integrate upstream v0.2.137: updates that try a new version and roll back
+  if it fails to start, the new app icon, zgx side chats and an update review
+  panel, WinGet-managed OpenCode updates, the external browser preference,
+  and queued messages that survive switching chats. Stale-session recovery
+  stays after checkpoint admission is installed and is skipped while a new
+  version is on trial; the trial commit recovers instead. Local headless
+  builds need the refreshed `headless-adapt.patch`.
 - Integrate upstream v0.2.136: the zgx interface (beta), agents added from
   the ACP registry, plugins with native MCP servers, theme tools for agents,
   command output tails, Cursor's own usage buckets with the Grok quota, and

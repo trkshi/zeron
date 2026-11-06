@@ -113,6 +113,7 @@ async fn observe_quiet_steer(scenario: &str, queue_follow_up: bool) -> QuietStee
                     attachments: Vec::new(),
                     worktree: None,
                     env: Default::default(),
+                    extra_mcp: Vec::new(),
                 },
             },
         )
