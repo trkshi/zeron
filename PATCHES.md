@@ -8,6 +8,14 @@ Zeron release.
 
 ## Changes
 
+- Integrate upstream v0.2.138: chats that reach long chats on other devices,
+  the edge relay layer, plugin creation and plugin links, checkpoint uploads
+  in parts, fewer and never-orphaned git processes, process spawning off the
+  runtime, per-user-key Codex usage, Windows microphone names, and the zgx
+  composer deck. Steers with attachments run through `steer_with`, which now
+  takes checkpoint admission and prepares the automatic account switch first.
+  Checkpoint preview and restore keep their 120-second RPC deadline beside
+  upstream's harness-update deadline.
 - Integrate upstream v0.2.137: updates that try a new version and roll back
   if it fails to start, the new app icon, zgx side chats and an update review
   panel, WinGet-managed OpenCode updates, the external browser preference,

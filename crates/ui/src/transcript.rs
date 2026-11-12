@@ -13860,6 +13860,7 @@ mod tests {
             space_id: None,
             last_seen_at: None,
             room_gen: None,
+            sleep: None,
         };
         let state = cx.new(|_| {
             let mut state = AppState::new();
@@ -15978,6 +15979,7 @@ mod tests {
                             terminal_activity: None,
                             running_subagents: 0,
                             background_tasks: Vec::new(),
+                            waiting: None,
                             chat_id: "chat".into(),
                             device_id: "test".into(),
                             status: zeron_proto::SessionStatus::Working,

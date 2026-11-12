@@ -7734,6 +7734,7 @@ mod tests {
             background_tasks: Vec::new(),
             last_turn_outcome: None,
             terminal_activity: None,
+            waiting: None,
         }
     }
 

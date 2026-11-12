@@ -13564,6 +13564,7 @@ mod tests {
                 terminal_activity: None,
                 running_subagents: 0,
                 background_tasks: Vec::new(),
+                waiting: None,
             }];
             state.selected_chat = Some("c".into());
             state.watch_clock_transitions(cx);
