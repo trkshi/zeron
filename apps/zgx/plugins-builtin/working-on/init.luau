@@ -1,124 +1,122 @@
 --!strict
--- Working on: under a new chat's composer (Zeron's `slot:zeron.home.below`),
--- one card of your chats on every machine, in three parts with a rule
--- between: what needs you (a question, an approval, a plan to look at, a
--- failure, a limit), what's running (at work, waiting on background work,
--- connecting), and what you worked on last (newest first; one that finished
--- and you haven't opened yet wears a dot). A part with nothing in it isn't
--- drawn, and with nothing at all, neither is the card. A row opens its chat.
+-- Working on: Zeron v2's "Working now" under a new chat's composer (Zeron's
+-- `slot:zeron.home.below`), as v2 drew it (crates/ui shell/working_now.rs on
+-- the old interface): a summary pill ("2 running · 1 needs input · 3 to
+-- review"), and under it one panel, "Working now" and how many are at work,
+-- "N done" on its right, then a row for each chat that needs you, is
+-- running, or finished and hasn't been opened since, in that order, on
+-- every machine. A row has two lines: its marker (a question's bubble, the
+-- activity dots, a check), its title, its model and on the far side its
+-- state; under them its project and branch. A row opens its chat.
 --
 -- Only chats you started: a subagent's or a side chat (`child_kind`) is its
--- parent's business. Each row: the agent's mark, the title, its project and
--- (when it isn't this one) its machine, and on the far side what it's doing
--- or how long ago it moved. Built from what any plugin can use: the
--- sessions' records ("sessions.read"), your devices' names ("devices"), and
--- opening a chat ("navigate").
+-- parent's business. Built from what any plugin can use: the sessions'
+-- records ("sessions.read"), your devices ("devices"), a chat's model
+-- ("models.read") and opening a chat ("navigate").
 
 local zeron = require("./zeron")("working-on")
 local status = require("@ds/status")
 local DotLoader = require("@ds/dot_loader")
 local AgentMark = require("@ds/agent_mark")
 local FadeText = require("@ds/fade_text")
-local ListRow = require("@ds/list_row")
+local Icon = require("@ds/icon")
 local locale = require("@ds/locale")
 
-local recent_setting = zeron.setting("recent")
 local loader_setting = zeron.setting("loader")
 
--- How many a part lists before "N more", and the card's tallest before it
--- scrolls.
-local MOST_NEEDS, MOST_RUNNING = 4, 4
-local MOST_H = 360
-local ROW_H = 32
--- The other lines' heights, for the card's own (a scroll sized by its
--- content alone stopped short): a part's header, "N more", a rule with its
--- room, and the card's room top and bottom.
-local HEADER_H, MORE_H, RULE_H, PAD_H = 26, 24, 9, 8
+-- v2's measures (working_now.rs).
+local HEADER_H, ROW_H = 40, 52
+local MOST_W = 460
+local MOST_ROWS = 4
+local RADIUS = 12
+local SUMMARY_H, SUMMARY_GAP = 30, 12
 
-local RUNNING = { working = true, waiting = true, connecting = true }
-local NEEDS = { input = true, approval = true, plan = true, failed = true, limited = true }
--- (Which of those comes first.)
-local URGENCY = { approval = 1, input = 2, plan = 3, failed = 4, limited = 5 }
--- Finished, and not opened since: a dot on its Recent row.
-local UNSEEN = { done = true, woke = true }
+local WORKING = { working = true, waiting = true, connecting = true }
+local ASKS = { input = true, approval = true, plan = true }
+local BROKE = { failed = true, limited = true }
+-- Finished, and not opened since.
+local DONE = { done = true, woke = true }
 
-type Row = { id: string, status: string? }
-type Groups = { needs: { Row }, running: { Row }, recent: { Row }, more_needs: number, more_running: number }
+-- v2's glyphs it has no copy of here (Solar Linear), as code: a plugin loads
+-- no file outside its own folder.
+local SPEEDOMETER = [==[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path d="M22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12Z" stroke="currentColor" stroke-width="1.5"/><path d="M19 19L17.5 17.5M19 5L17.5 6.5M5 19L6.5 17.5M5 5L6.5 6.5M2 12H4M19.9998 12H21.9998M12 4.00021V2.00021" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M15 11.9999C15 13.6567 13.6569 14.9999 12 14.9999C10.3431 14.9999 9 13.6567 9 11.9999C9 11.3696 9.43408 10.4954 9.972 9.65399C10.7764 8.39573 11.1786 7.7666 12 7.7666C12.8214 7.7666 13.2236 8.39573 14.028 9.65399C14.5659 10.4954 15 11.3696 15 11.9999Z" stroke="currentColor" stroke-width="1.5"/></svg>]==]
+local HOME = [==[<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" d="M3 10.75L10.51 4.4c.86-.727 2.12-.727 2.98 0L21 10.75"/><path d="M5 9.5V16c0 2.357 0 3.536.732 4.268C6.464 21 7.643 21 10 21h4c2.357 0 3.536 0 4.268-.732C19 19.536 19 18.357 19 16V9.5"/><path stroke-linecap="round" d="M12 21v-4"/></g></svg>]==]
 
--- Now, in seconds, a minute at a time: what "5m ago" counts from.
+local function glyph(svg: string, size: number, ink: string): Node
+	return ui.svg { src = `code:{svg}`, tint = ink, w = size, h = size, shrink = 0 }
+end
+
+-- v2's panel: near-black on dark, a faint wash on light.
+local function panel_bg(): string
+	local kind = ui.theme.kind()
+	return if kind == "light" or kind == "high-contrast-light" then "#f3f3f4" else "#141414"
+end
+
+-- Now, in seconds, a minute at a time: what "active 5m ago" counts from.
 local clock = ui.state("working_on_clock", os.time())
 zeron.every(30, function()
 	clock:set(os.time())
 end)
 
--- Your chats, sorted into the three parts.
-local groups = ui.computed(function(): Groups
-	local needs, running, recent = {}, {}, {}
+type Row = { id: string, kind: string }
+
+-- Each chat that needs you, runs or is done unread, v2's order: questions
+-- and failures, then running (newest first), then done (newest first).
+local rows = ui.computed(function(): { Row }
+	local ask, run, done = {}, {}, {}
 	for id, s in zeron.sessions() do
-		if s.child_kind == nil then
-			local st = s.status
-			local row = { id = id, status = st, updated = s.updated or 0 }
-			if st and NEEDS[st] then
-				table.insert(needs, row)
-			elseif st and RUNNING[st] then
-				table.insert(running, row)
-			else
-				table.insert(recent, row)
+		local st = s.status
+		if s.child_kind == nil and st then
+			local item = { id = id, kind = st, updated = s.updated or 0 }
+			if ASKS[st] or BROKE[st] then
+				table.insert(ask, item)
+			elseif WORKING[st] then
+				table.insert(run, item)
+			elseif DONE[st] then
+				table.insert(done, item)
 			end
 		end
 	end
-	table.sort(needs, function(a: any, b: any): boolean
-		local ua, ub = URGENCY[a.status] or 9, URGENCY[b.status] or 9
-		if ua ~= ub then
-			return ua < ub
-		end
-		return a.updated > b.updated
-	end)
 	local newest = function(a: any, b: any): boolean
 		return a.updated > b.updated
 	end
-	table.sort(running, newest)
-	table.sort(recent, newest)
-	local function cap(list: { any }, most: number): ({ Row }, number)
-		local out = {}
-		for i = 1, math.min(#list, most) do
-			table.insert(out, { id = list[i].id, status = list[i].status })
+	table.sort(ask, newest)
+	table.sort(run, newest)
+	table.sort(done, newest)
+	local out: { Row } = {}
+	for _, list in { ask, run, done } do
+		for _, item in list do
+			table.insert(out, { id = item.id, kind = item.kind })
 		end
-		return out, math.max(0, #list - most)
 	end
-	local n, more_n = cap(needs, MOST_NEEDS)
-	local r, more_r = cap(running, MOST_RUNNING)
-	local c = cap(recent, tonumber(recent_setting:get()) or 4)
-	return { needs = n, running = r, recent = c, more_needs = more_n, more_running = more_r }
+	return out
 end)
 
--- What the card is made of, as one string: built again only when a row
--- comes, goes, moves or changes state (not as a chat's time moves).
-local function signature(): string
-	local g = groups:get()
-	local parts = { loader_setting:get(), tostring(g.more_needs), tostring(g.more_running) }
-	for _, name in { "needs", "running", "recent" } do
-		table.insert(parts, "|" .. name)
-		for _, row in (g :: any)[name] do
-			table.insert(parts, `{row.id}:{row.status or ""}`)
+local function count(match: { [string]: boolean }): number
+	local n = 0
+	for _, r in rows:get() do
+		if match[r.kind] then
+			n += 1
 		end
 	end
-	return table.concat(parts, ",")
+	return n
 end
 
--- A chat's record now (its title and times move without the card being
--- built again).
 local function live(id: string): any
 	return zeron.sessions()[id] or {}
 end
 
--- Where it is: its project, and its machine when it isn't this one.
+-- Its project and branch, and its machine when it isn't this one.
 local function where(id: string): string
 	local s = live(id)
 	local bits = {}
 	local project = s.project and zeron.projects()[s.project]
 	if project and project.name then
 		table.insert(bits, project.name)
+	end
+	local branch = s.source_branch or s.branch
+	if type(branch) == "string" and branch ~= "" then
+		table.insert(bits, branch)
 	end
 	for _, d in zeron.devices():get() or {} do
 		if d.id == s.device then
@@ -131,190 +129,298 @@ local function where(id: string): string
 	return table.concat(bits, " · ")
 end
 
-local function ago(id: string): string
-	return locale.ago(clock:get() - (live(id).updated or clock:get()))
-end
-
--- A running chat's loader, as the setting asks.
-local function loader(): Node
-	if loader_setting:peek() == "ring" then
-		return status.StatusIcon { kind = "working", size = 14 }
+-- Each chat's model as its picker names it, effort after ("deepseek-v4-flash
+-- High"): asked once a chat, its harness's catalog once a device.
+local EFFORT = { minimal = "Minimal", low = "Low", medium = "Medium", high = "High", xhigh = "Extra High", max = "Max", ultra = "Ultra" }
+local model_names = ui.state("working_on_models", {} :: { [string]: string })
+local asked: { [string]: boolean } = {}
+local catalogs: { [string]: any } = {}
+local function catalog(harness: string, device: string?): any
+	local key = `{harness}@{device or ""}`
+	if not catalogs[key] then
+		catalogs[key] = zeron.models(harness, { device = device })
 	end
-	return DotLoader { kind = "mini", size = 14 }
+	return catalogs[key]
+end
+local function model_name(id: string): string
+	local known = model_names:get()[id]
+	if known or asked[id] then
+		return known or ""
+	end
+	asked[id] = true
+	local function named(text: string)
+		model_names:set_key({ id }, text)
+	end
+	local s = live(id)
+	zeron.chat_model(id):after(function(m: any)
+		if type(m) ~= "table" or type(m.model) ~= "string" then
+			return
+		end
+		local effort = if type(m.effort) == "string" then EFFORT[m.effort] or m.effort else nil
+		local function done(label: string)
+			named(if effort then `{label} {effort}` else label)
+		end
+		local harness = m.provider or s.harness
+		if type(harness) ~= "string" then
+			done(m.model)
+			return
+		end
+		catalog(harness, s.device):after(function(list: any)
+			for _, entry in (if type(list) == "table" then list else {}) do
+				if entry.id == m.model and type(entry.label) == "string" then
+					done(entry.label)
+					return
+				end
+			end
+			done(m.model)
+		end, function()
+			done(m.model)
+		end)
+	end, function() end)
+	return ""
 end
 
--- One chat: its mark, title and place, and on the far side `trail`.
-local function row(id: string, trail: Node): Node
-	local s = live(id)
-	return ListRow.ListRow {
+-- Its state on the far side, and its colour.
+local function state_of(r: Row): (string | () -> string, string)
+	if r.kind == "input" or r.kind == "plan" then
+		return zeron.s("state.input"), "$zeron.status.approval"
+	elseif r.kind == "approval" then
+		return zeron.s("state.approval"), "$zeron.status.approval"
+	elseif r.kind == "failed" then
+		return zeron.s("state.failed"), "$zeron.status.failed"
+	elseif r.kind == "limited" then
+		return zeron.s("state.limited"), "$zeron.status.failed"
+	elseif DONE[r.kind] then
+		return zeron.s("state.done"), "$zeron.status.done"
+	end
+	return function(): string
+		return zeron.s("active", { ago = locale.ago(clock:get() - (live(r.id).updated or clock:get())) })
+	end, "$text.tertiary"
+end
+
+-- Its marker: a question's bubble, the activity dots, a check, a failure's
+-- mark.
+local function marker(r: Row): Node
+	if DONE[r.kind] then
+		return Icon { name = "check", size = 12, color = "$zeron.status.done" }
+	elseif ASKS[r.kind] then
+		return Icon { name = "chat-round-line", size = 12, color = "$zeron.status.approval" }
+	elseif BROKE[r.kind] then
+		return status.StatusIcon { kind = r.kind :: any, size = 12 }
+	elseif loader_setting:peek() == "ring" then
+		return status.StatusIcon { kind = "working", size = 12 }
+	end
+	return DotLoader { kind = "mini", size = 12 }
+end
+
+local function Row(props: { row: Row }): Node
+	local r = props.row
+	local s = live(r.id)
+	local hovered = ui.use_state(false)
+	local word, ink = state_of(r)
+	return ui.column {
 		h = ROW_H,
+		w_full = true,
+		px = ui.raw(10, "v2's row inset"),
+		py = ui.raw(4, "v2's row inset"),
+		gap = ui.raw(4, "v2's line gap"),
+		justify = "center",
+		rounded = ui.raw(8, "v2's row corner"),
+		cursor = "pointer",
+		role = "button",
+		focusable = true,
 		label = function(): string
-			return live(id).title or zeron.s("untitled")
+			return live(r.id).title or zeron.s("untitled")
+		end,
+		bg = function(): string
+			return if hovered:get() then "$hover" else "#00000000"
+		end,
+		on_hover = function(inside: boolean)
+			hovered:set(inside)
 		end,
 		on_click = function()
-			zeron.open { session = id }
+			zeron.open { session = r.id }
 		end,
 		ui.row {
 			w_full = true,
-			h_full = true,
-			px = "$space.3",
-			gap = "$space.2",
+			gap = ui.raw(8, "v2's gap"),
 			items = "center",
-			ui.div {
-				w = 16,
-				h = 16,
-				shrink = 0,
-				items = "center",
-				justify = "center",
-				AgentMark.Mark { label = s.harness or "", mark = s.agent, seed = s.harness, size = 14, bare = true },
-			},
+			ui.div { w = 12, h = 12, shrink = 0, items = "center", justify = "center", marker(r) },
 			FadeText {
 				function(): string
-					local t = live(id).title
+					local t = live(r.id).title
 					return if t and t ~= "" then t else zeron.s("untitled")
 				end,
+				grow = 1,
 				min_w = 0,
-				shrink = 1,
-				text_size = "$font.size.sm",
+				text_size = ui.raw(14, "v2's row title"),
 				color = "$text.primary",
 			},
+			ui.row {
+				shrink = 1,
+				min_w = 0,
+				max_w = ui.raw(MOST_W * 0.44, "v2's model's most"),
+				gap = ui.raw(5, "v2's gap"),
+				items = "center",
+				AgentMark.Mark { label = s.harness or "", mark = s.agent, seed = s.harness, size = 13, bare = true },
+				FadeText {
+					function(): string
+						return model_name(r.id)
+					end,
+					min_w = 0,
+					text_size = ui.raw(12, "v2's small text"),
+					color = "$text.tertiary",
+				},
+			},
+			ui.text { word, shrink = 0, tabular = true, text_size = ui.raw(12, "v2's small text"), color = ink },
+		},
+		ui.row {
+			w_full = true,
+			pl = ui.raw(20, "under the title"),
 			FadeText {
 				function(): string
-					return where(id)
+					return where(r.id)
 				end,
-				min_w = 0,
 				grow = 1,
-				shrink = 2,
-				text_size = "$font.size.xs",
+				min_w = 0,
+				text_size = ui.raw(12, "v2's small text"),
 				color = "$text.tertiary",
 			},
-			ui.row { shrink = 0, gap = "$space.1", items = "center", trail },
 		},
 	}
 end
 
-local function quiet(text: string | () -> string): Node
-	return ui.text { text, text_size = "$font.size.xs", color = "$text.tertiary", tabular = true, shrink = 0 }
-end
-
-local function header(word: string, count: number?): Node
+-- The summary pill: "2 running · 1 needs input · 3 to review".
+local function Summary(): Node
 	return ui.row {
-		h = 26,
-		px = "$space.3",
-		pt = "$space.1",
-		items = "center",
-		gap = "$space.1",
-		ui.text { word, text_size = "$font.size.xs", weight = "$font.weight.medium", color = "$text.secondary" },
-		if count and count > 0 then quiet(tostring(count)) else nil,
+		h = SUMMARY_H,
+		w_full = true,
+		justify = "center",
+		ui.row {
+			h_full = true,
+			min_w = 0,
+			px = ui.raw(14, "v2's pill inset"),
+			gap = ui.raw(8, "v2's gap"),
+			items = "center",
+			rounded = "$radius.full",
+			border = 1,
+			border_color = "$border.subtle",
+			bg = panel_bg,
+			glyph(HOME, 13, "$text.tertiary"),
+			ui.text {
+				function(): string
+					local parts = {}
+					local running = count(WORKING)
+					local asking = count(ASKS) + count(BROKE)
+					local done = count(DONE)
+					if running > 0 then
+						table.insert(parts, zeron.s("summary.running", { n = running }))
+					end
+					if asking > 0 then
+						table.insert(parts, zeron.s("summary.input", { n = asking }))
+					end
+					if done > 0 then
+						table.insert(parts, zeron.s("summary.review", { n = done }))
+					end
+					return if #parts == 0 then zeron.s("summary.nothing") else table.concat(parts, " · ")
+				end,
+				text_size = ui.raw(12.5, "v2's pill text"),
+				color = "$text.primary",
+			},
+		},
 	}
 end
 
-local function more(n: number): Node?
-	if n <= 0 then
-		return nil
+-- The panel for the rows as they are now.
+local function Panel(): Node
+	local list = rows:peek()
+	local items: { Node } = {}
+	for _, r in list do
+		table.insert(items, Row { row = r })
 	end
-	return ui.row { h = 24, px = "$space.3", items = "center", quiet(zeron.s("more", { n = n })) }
-end
-
-local function rule(): Node
-	return ui.div { h = 1, mx = "$space.3", my = "$space.1", bg = "$border.subtle", shrink = 0 }
-end
-
--- The card for what `groups` says now.
-local function Card(): Node
-	local g = groups:peek()
-	local parts: { { Node } } = {}
-	if #g.needs > 0 then
-		local nodes: { Node } = { header(zeron.s("needs_you"), #g.needs + g.more_needs) }
-		for _, r in g.needs do
-			local kind = r.status or "input"
-			table.insert(nodes, row(r.id, ui.row {
-				gap = "$space.1",
-				items = "center",
-				quiet(zeron.s(`state.{kind}`)),
-				status.StatusIcon { kind = kind :: any, size = 14 },
-			}))
-		end
-		local rest = more(g.more_needs)
-		if rest then
-			table.insert(nodes, rest)
-		end
-		table.insert(parts, nodes)
+	if #list == 0 then
+		table.insert(items, ui.row {
+			h = ROW_H,
+			px = ui.raw(10, "v2's row inset"),
+			items = "center",
+			ui.text { zeron.s("empty"), text_size = ui.raw(13, "v2's empty line"), color = "$text.tertiary" },
+		})
 	end
-	if #g.running > 0 then
-		local nodes: { Node } = { header(zeron.s("running"), #g.running + g.more_running) }
-		for _, r in g.running do
-			table.insert(nodes, row(r.id, ui.row {
-				gap = "$space.1",
-				items = "center",
-				quiet(function(): string
-					return zeron.s("active", { ago = ago(r.id) })
-				end),
-				loader(),
-			}))
-		end
-		local rest = more(g.more_running)
-		if rest then
-			table.insert(nodes, rest)
-		end
-		table.insert(parts, nodes)
-	end
-	if #g.recent > 0 then
-		local nodes: { Node } = { header(zeron.s("recent")) }
-		for _, r in g.recent do
-			local unseen = r.status ~= nil and UNSEEN[r.status] == true
-			table.insert(nodes, row(r.id, ui.row {
-				gap = "$space.1",
-				items = "center",
-				if unseen then ui.div { label = zeron.s("unseen"), status.StatusDot { kind = "done", size = 6 } } else nil,
-				quiet(function(): string
-					return ago(r.id)
-				end),
-			}))
-		end
-		table.insert(parts, nodes)
-	end
-	if #parts == 0 then
-		return ui.div {}
-	end
-	local children: { Node } = {}
-	for i, nodes in parts do
-		if i > 1 then
-			table.insert(children, rule())
-		end
-		for _, node in nodes do
-			table.insert(children, node)
-		end
-	end
-	-- Its height: every line's, the tallest it stands before it scrolls.
-	local rows = #g.needs + #g.running + #g.recent
-	local tall = PAD_H + #parts * HEADER_H + rows * ROW_H + (#parts - 1) * RULE_H
-		+ (if g.more_needs > 0 then MORE_H else 0) + (if g.more_running > 0 then MORE_H else 0)
+	local shown = math.min(math.max(#list, 1), MOST_ROWS)
 	return ui.column {
 		id = "working-on",
 		w_full = true,
+		max_w = MOST_W,
 		role = "list",
-		label = zeron.s("label"),
-		rounded = "$radius.lg",
-		bg = "$surface.raised",
+		label = zeron.s("title"),
+		rounded = ui.raw(RADIUS, "v2's panel corner"),
 		border = 1,
 		border_color = "$border.subtle",
+		bg = panel_bg,
 		overflow = "hidden",
 		pointer_events = "auto",
+		ui.row {
+			h = HEADER_H,
+			px = ui.raw(14, "v2's header inset"),
+			gap = ui.raw(8, "v2's gap"),
+			items = "center",
+			glyph(SPEEDOMETER, 14, "$text.tertiary"),
+			ui.text { zeron.s("title"), text_size = ui.raw(13, "v2's header title"), color = "$text.primary" },
+			ui.text {
+				function(): string
+					return tostring(count(WORKING) + count(ASKS) + count(BROKE))
+				end,
+				text_size = ui.raw(12, "v2's small text"),
+				color = "$text.tertiary",
+			},
+			ui.div { grow = 1 },
+			ui.show(function(): boolean
+				return count(DONE) > 0
+			end, ui.text {
+				function(): string
+					return zeron.s("done", { n = count(DONE) })
+				end,
+				text_size = ui.raw(12, "v2's small text"),
+				color = "$zeron.status.done",
+			}),
+		},
 		ui.scroll {
 			w_full = true,
-			h = math.min(tall, MOST_H),
-			py = ui.raw(PAD_H / 2, "the card's room top and bottom"),
-			table.unpack(children),
+			h = shown * ROW_H + 8,
+			px = ui.raw(4, "v2's list inset"),
+			pb = ui.raw(8, "v2's list foot"),
+			table.unpack(items),
 		},
 	}
+end
+
+-- Built again only when a row comes, goes, moves or changes state (not as a
+-- chat's time moves), or the loader asked for changes.
+local function signature(): string
+	local parts = { loader_setting:get() }
+	for _, r in rows:get() do
+		table.insert(parts, `{r.id}:{r.kind}`)
+	end
+	return table.concat(parts, ",")
 end
 
 zeron.place {
 	at = "slot:zeron.home.below",
 	after = function(): Node
-		return ui.presence(signature, function(_key: string): Node
-			return Card()
-		end, { w_full = true })
+		return ui.column {
+			w_full = true,
+			items = "center",
+			gap = SUMMARY_GAP,
+			Summary(),
+			-- (Centred: v2 stood another panel beside it; alone it sits in the
+			-- middle, under the pill.)
+			ui.row {
+				w_full = true,
+				justify = "center",
+				ui.presence(signature, function(_key: string): Node
+					return Panel()
+				end, { w_full = true, max_w = MOST_W }),
+			},
+		}
 	end,
 }

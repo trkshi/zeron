@@ -2,43 +2,35 @@
   "id": "working-on",
   "name": "Working on",
   "version": "1.0.0",
-  "description": "Under a new chat's composer: the chats that need you, the ones running, and your recent ones, on every machine.",
+  "description": "Zeron v2's Working now under a new chat's composer: a summary pill, and the chats that need you, are running or finished unread, on every machine.",
   "icon": "icon.svg",
   "entry": "init.luau",
   "permissions": [
     "ui.add",
     "sessions.read",
     "navigate",
-    "devices"
+    "devices",
+    "models.read"
   ],
-  "settings_description": "A card under a new chat's composer listing your chats across every machine: what needs you, what's running, and what you worked on last. Click a row to open it.",
+  "settings_description": "Zeron v2's Working now panel under a new chat's composer: what needs you, what's running and what finished since you last looked, across every machine. Click a row to open it.",
   "settings": [
-    {
-      "id": "recent",
-      "kind": "choice",
-      "style": "segmented",
-      "section": "Card",
-      "label": "Recent chats",
-      "description": "How many of your latest chats it lists.",
-      "default": "4",
-      "options": [
-        { "value": "0", "label": "None" },
-        { "value": "3", "label": "3" },
-        { "value": "4", "label": "4" },
-        { "value": "6", "label": "6" }
-      ]
-    },
     {
       "id": "loader",
       "kind": "choice",
       "style": "segmented",
-      "section": "Card",
+      "section": "Panel",
       "label": "Running chats' loader",
       "description": "Zeron v2's dots, or the working ring.",
       "default": "dots",
       "options": [
-        { "value": "dots", "label": "Dots" },
-        { "value": "ring", "label": "Ring" }
+        {
+          "value": "dots",
+          "label": "Dots"
+        },
+        {
+          "value": "ring",
+          "label": "Ring"
+        }
       ]
     }
   ]
