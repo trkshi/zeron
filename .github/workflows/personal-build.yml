@@ -10,13 +10,9 @@ name: personal build
 # Linux follows zeron.sh's channel: run it with ZERON_AUTO_UPDATE=0 to keep
 # this build.
 #
-# Run it by pushing a tag (a manual run needs this file on the default
-# branch):
-#   git tag personal-build-1 && git push trkshi personal-build-1
+# Run it from Actions → personal build → Run workflow.
 
 on:
-  push:
-    tags: ["personal-build-*"]
   workflow_dispatch:
     inputs:
       platforms:
@@ -47,7 +43,7 @@ jobs:
     uses: ./.github/workflows/zgx-build.yml
     with:
       version: ${{ needs.version.outputs.version }}
-      platforms: ${{ inputs.platforms || 'linux windows' }}
+      platforms: ${{ inputs.platforms }}
       windows-feed: https://github.com/${{ github.repository }}/releases/latest/download
 
   summary:
