@@ -36,9 +36,9 @@ local Completions = require("@app/screens/chat/completions")
 local Find = require("@app/screens/chat/find")
 local Invocations = require("@app/screens/chat/invocations")
 local ZeronCommands = require("@app/screens/chat/zeron_commands")
-local look = require("@app/screens/shell/project_look")
 local Appshots = require("@app/screens/chat/appshots")
 local DropOverlay = require("@ds/drop_overlay")
+local SessionRow = require("@ds/session_row")
 
 -- Two places in a transcript (ds/transcript's `keep`), the same.
 local function same(a: any, b: any): boolean
@@ -95,75 +95,66 @@ function M.icon(_tab: any): string
 	return "side-chat"
 end
 
--- A side chat's project: where its composer has it before its first message,
--- then its chat's; its parent's while neither is known.
-local function project_of(tab: any, picked: State<string?>): any
-	local chat = tab.chat
-	local parent = lanes.unsent:get()[chat]
-	local id: string? = nil
-	if parent then
-		id = picked:get()
-	else
-		local s = lanes.view(tab.id).session:get()
-		if s and s.id == chat and s.harness then
-			id = s.project
-			parent = nil
-		else
-			local row = row_of(chat)
-			parent = if row then row.parent else nil
-		end
+-- A chat in the session list (an open one, or one archived), by its id.
+local function chat_row(id: string?): any
+	if not id then
+		return nil
 	end
 	local now = sessions.now:get()
-	if not id and parent then
-		for _, c in now.chats do
-			if c.id == parent then
-				id = c.project
+	for _, list in { now.chats, now.archived or {} } do
+		for _, c in list do
+			if c.id == id then
+				return c
 			end
-		end
-	end
-	for _, p in now.projects do
-		if p.id == id then
-			return p
 		end
 	end
 	return nil
 end
 
--- A side chat's tile in its tab: its project's, as a chat's on the top bar (one
--- with no project, the side chat's glyph, there too).
-function M.tile(tab: any): Node
-	local picked = ui.state(`chat_lane_project_{tab.chat}`, nil :: string?)
-	return ui.presence(function(): string
-		local p = project_of(tab, picked)
-		return if p then p.id else ""
-	end, function(which: string): Node
-		if which == "" then
-			return ds.Tile { size = 20, inside = ds.Icon { name = "side-chat", size = 14 } }
+-- Whose agent a lane shows: a side chat's own, as its chat has it (its view's
+-- session once heard, else its row); a subagent's, and a side chat's before
+-- its first message, its parent chat's (a subagent runs inside its parent's
+-- agent; a side chat starts on it).
+local function agent_of(tab: any): any
+	local chat = tab.chat
+	if tab.kind == "side_chat" then
+		local s = lanes.view(tab.id).session:get()
+		if s and s.id == chat and (s.agent or s.harness) then
+			return s
 		end
-		return ds.Tile {
-			size = 20,
-			label = function(): string?
-				local p = project_of(tab, picked)
-				return if p then p.name else nil
-			end,
-			hue = function(): string?
-				local p = project_of(tab, picked)
-				return if p then look.of(p).hue else nil
-			end,
-			src = function(): string?
-				local p = project_of(tab, picked)
-				return if p then look.of(p).src else nil
-			end,
-			emoji = function(): string?
-				local p = project_of(tab, picked)
-				return if p then look.of(p).emoji else nil
-			end,
-			project = function(): string?
-				local p = project_of(tab, picked)
-				return if p then p.id else nil
-			end,
-		}
-	end, { w = 20, h = 20, shrink = 0 })
+		local row = row_of(chat)
+		if row and (row.agent or row.harness) then
+			return row
+		end
+	end
+	local data = if type(tab.data) == "table" then tab.data else {}
+	local parent: string? = data.parent
+	if not parent and tab.kind == "side_chat" then
+		parent = lanes.unsent:get()[chat]
+		if not parent then
+			local row = row_of(chat)
+			parent = if row then row.parent else nil
+		end
+	end
+	return chat_row(parent)
+end
+
+-- A lane's tile in its tab: its agent's mark (Claude, Codex, an agent from
+-- the registry in its own colours), as the sidebar's rows and the top bar's
+-- tabs show a chat's; none known yet, a faint dot (ds/session_row `mark`).
+function M.tile(tab: any): Node
+	return ui.row {
+		w = 20,
+		h = 20,
+		shrink = 0,
+		items = "center",
+		justify = "center",
+		SessionRow.mark(function(): any
+			return agent_of(tab) or {}
+		end, function(): boolean
+			return true
+		end),
+	}
 end
 
 -- What a side chat's tab says at its end: whether it awaits a person or is at

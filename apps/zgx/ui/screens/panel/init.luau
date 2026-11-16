@@ -867,9 +867,10 @@ M.Panel = ui.component(function(props: Props): Node
 				return FileIcon { name = name, size = 14 }
 			end)
 		end
-		-- Its tile: a side chat's its project's, as a chat's on the top bar.
+		-- Its tile: a side chat's or a subagent's its agent's mark, as a
+		-- chat's on the top bar.
 		local function make_tile(): Node
-			if tab.kind == "side_chat" and Lanes then
+			if (tab.kind == "side_chat" or tab.kind == "subagent") and Lanes then
 				return Lanes.tile(tab)
 			end
 			return ds.Tile { size = SLOT, inside = make_icon() }
