@@ -407,6 +407,32 @@ function M.close_draft(): boolean
 	return true
 end
 
+-- The next or previous tab in the strip (⌃Tab, ⌃⇧Tab), as a browser's,
+-- round from the end; the new chat's counts while it shows (it stands
+-- last). True if it moved: with no other tab, nothing.
+function M.step(by: number): boolean
+	local list = table.clone(shown:peek())
+	if draft_shows:peek() then
+		table.insert(list, DRAFT)
+	end
+	if #list < 2 then
+		return false
+	end
+	local current: string? = if route.session:peek() then splits.current_key() elseif draft_shows:peek() then DRAFT else nil
+	local at = if current then table.find(list, current) else nil
+	local i = if at then (at - 1 + by) % #list + 1 elseif by > 0 then 1 else #list
+	local key = list[i]
+	if key == current then
+		return false
+	end
+	if key == DRAFT then
+		route.new_chat()
+	else
+		route.open_session(face(key))
+	end
+	return true
+end
+
 -- Those tabs closed at once, `keep` gone to if the one showing was among them.
 -- (Each of `close` in turn would open every chat on the way.)
 local function close_many(list: { string }, keep: string)

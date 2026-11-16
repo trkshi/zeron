@@ -192,22 +192,20 @@ return function(): Node
 		end
 		ui.invoke("close")
 	end
-	-- The next and previous session, in the sidebar's order, round from the
-	-- end (from a new chat, its first or last). (Zeron's, shell/tabs.rs.)
+	-- The next and previous tab in the header, round from the end, as a
+	-- browser's (screens/shell/session_tabs `step`).
 	local function step(by: number)
 		-- (While the panel has the keyboard, its tabs, as Zeron's right pane.)
 		local panel: any = boundary.load("@app/screens/panel")
 		if panel and panel.step_tab and (panel.step_tab :: any)(by) then
 			return
 		end
-		local sidebar: any = boundary.load("@app/screens/shell/sidebar")
-		local ids: { string } = if sidebar then sidebar.order:peek() else {}
-		if #ids == 0 then
-			return
+		-- The header's tabs, as a browser's: the next or previous, round from
+		-- the end (with no other tab, nothing).
+		local tabs: any = boundary.load("@app/screens/shell/session_tabs")
+		if tabs and tabs.step then
+			tabs.step(by)
 		end
-		local at = table.find(ids, route.current:peek().session or "")
-		local i = if at then (at - 1 + by) % #ids + 1 elseif by > 0 then 1 else #ids
-		route.open_session(ids[i])
 	end
 	runs["shell.next_session"] = function()
 		step(1)
