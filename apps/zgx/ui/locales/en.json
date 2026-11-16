@@ -1279,7 +1279,7 @@
       },
       "classic_sidebar": {
         "label": "Classic sidebar",
-        "description": "Draw the chat list as Zeron v2 did. Turns the Activity view off.",
+        "description": "Draw the chat list and the working loaders as Zeron v2 did. Turns the Activity view off.",
         "terms": "v2 old legacy classic sidebar chat list projects rows tree indent"
       },
       "font_default": "Default ({name})",

@@ -10,6 +10,8 @@ local motion = require("@self/motion")
 local Icon = require("@self/icon")
 local prefers = require("@self/prefers")
 local locale = require("@self/locale")
+local look = require("@self/look")
+local DotLoader = require("@self/dot_loader")
 
 local M = {}
 
@@ -219,12 +221,23 @@ function M.Spinner(props: { size: number?, ink: string? }): Node
 	return ring(props.ink or "$zeron.status.working", props.size or 14)
 end
 
+-- What a state at work shows: the working ring, or with the classic look
+-- (ds/look `classic_sidebar`) Zeron v2's dots; the switch swaps it in place.
+local function at_work(ink: string, size: number): Node
+	return ui.switch(function(): string
+		return if look.classic_sidebar:get() then "dots" else "ring"
+	end, {
+		ring = ring(ink, size),
+		dots = DotLoader { kind = "mini", size = size, ink = ink },
+	})
+end
+
 -- A state's glyph, `size` points: working, waiting and connecting their
 -- ring.
 local function glyph(kind: Kind, size: number): Node?
 	local k = KINDS[kind]
 	if kind == "working" or kind == "connecting" or kind == "waiting" then
-		return ring(`$zeron.status.{hue(kind)}`, size)
+		return at_work(`$zeron.status.{hue(kind)}`, size)
 	end
 	return if k.glyph then Icon { name = k.glyph, size = size } else nil
 end
@@ -251,8 +264,8 @@ function M.StatusIcon(props: { kind: Kind | () -> Kind, size: number? }): Node
 			return `$zeron.status.{hue(kind())}`
 		end,
 		ui.switch(drawn, {
-			working = ring("$zeron.status.working", size),
-			connecting = ring("$zeron.status.connecting", size),
+			working = at_work("$zeron.status.working", size),
+			connecting = at_work("$zeron.status.connecting", size),
 			glyph = ui.show(function(): boolean
 				return KINDS[kind()].glyph ~= nil
 			end, Icon {

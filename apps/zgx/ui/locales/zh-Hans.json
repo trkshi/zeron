@@ -1279,7 +1279,7 @@
       },
       "classic_sidebar": {
         "label": "经典侧边栏",
-        "description": "按 Zeron v2 的样式绘制对话列表，并关闭动态视图。",
+        "description": "按 Zeron v2 的样式绘制对话列表和工作中的加载动画，并关闭动态视图。",
         "terms": "v2 old legacy classic sidebar 经典 旧版 侧边栏 对话 列表 项目"
       },
       "font_default": "默认（{name}）",
