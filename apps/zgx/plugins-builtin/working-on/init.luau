@@ -30,6 +30,10 @@ local loader_setting = zeron.setting("loader")
 local MOST_NEEDS, MOST_RUNNING = 4, 4
 local MOST_H = 360
 local ROW_H = 32
+-- The other lines' heights, for the card's own (a scroll sized by its
+-- content alone stopped short): a part's header, "N more", a rule with its
+-- room, and the card's room top and bottom.
+local HEADER_H, MORE_H, RULE_H, PAD_H = 26, 24, 9, 8
 
 local RUNNING = { working = true, waiting = true, connecting = true }
 local NEEDS = { input = true, approval = true, plan = true, failed = true, limited = true }
@@ -282,6 +286,10 @@ local function Card(): Node
 			table.insert(children, node)
 		end
 	end
+	-- Its height: every line's, the tallest it stands before it scrolls.
+	local rows = #g.needs + #g.running + #g.recent
+	local tall = PAD_H + #parts * HEADER_H + rows * ROW_H + (#parts - 1) * RULE_H
+		+ (if g.more_needs > 0 then MORE_H else 0) + (if g.more_running > 0 then MORE_H else 0)
 	return ui.column {
 		id = "working-on",
 		w_full = true,
@@ -295,8 +303,8 @@ local function Card(): Node
 		pointer_events = "auto",
 		ui.scroll {
 			w_full = true,
-			max_h = MOST_H,
-			py = "$space.1",
+			h = math.min(tall, MOST_H),
+			py = ui.raw(PAD_H / 2, "the card's room top and bottom"),
 			table.unpack(children),
 		},
 	}
