@@ -1262,6 +1262,11 @@
         "terms": "玻璃 半透明 不透明 透明 模糊 材质 glass translucent opaque transparency blur vibrancy material",
         "description": "透过窗口显示桌面。关闭时窗口不透明。"
       },
+      "inset": {
+        "label": "内嵌卡片",
+        "description": "让页面位于窗口背景之上的圆角卡片中。",
+        "terms": "card rounded shell gap window 卡片 圆角 内嵌"
+      },
       "font_default": "默认（{name}）",
       "font_search": "搜索字体",
       "font_none": "没有匹配的字体。",
@@ -1356,6 +1361,36 @@
         "scanlines": {
           "label": "扫描线",
           "description": "添加明显的水平显示扫描线纹理。"
+        }
+      },
+      "chat": {
+        "label": "聊天背景",
+        "description": "在打开的对话后面显示图片。",
+        "terms": "chat conversation thread background artwork wallpaper behind 聊天 背景 图片",
+        "placement": {
+          "label": "位置",
+          "terms": "hero full chat background 位置",
+          "hero": {
+            "label": "顶部",
+            "description": "与新对话相同的顶部裁剪，向下渐隐。"
+          },
+          "full": {
+            "label": "全部",
+            "description": "覆盖整个对话栏。"
+          }
+        },
+        "opacity": {
+          "label": "不透明度",
+          "terms": "chat background opacity tab 不透明度"
+        },
+        "blur": {
+          "label": "模糊",
+          "terms": "chat background blur 模糊"
+        },
+        "scrim": {
+          "label": "遮罩",
+          "description": "让图片向底部变暗，保持文字清晰可读。",
+          "terms": "chat background scrim readable 遮罩"
         }
       }
     },
@@ -2433,6 +2468,9 @@
       "label": "应用",
       "with_key": "{label}（{key}）",
       "close_settings": "关闭设置",
+      "help": "帮助",
+      "help_shortcuts": "键盘快捷键",
+      "help_star": "在 GitHub 上为 Zeron 加星",
       "usage": {
         "loading": "正在加载用量…",
         "none": "没有报告套餐用量",

@@ -1262,6 +1262,11 @@
         "terms": "glass translucent opaque transparency blur vibrancy material",
         "description": "The desktop shows through the window. Off, it's solid."
       },
+      "inset": {
+        "label": "Inset card",
+        "description": "Hold the page in a rounded card above the window background.",
+        "terms": "card rounded shell gap window"
+      },
       "font_default": "Default ({name})",
       "font_search": "Search fonts",
       "font_none": "No fonts match.",
@@ -1356,6 +1361,36 @@
         "scanlines": {
           "label": "Scanlines",
           "description": "Adds a pronounced horizontal display-line texture."
+        }
+      },
+      "chat": {
+        "label": "Chat background",
+        "description": "Show the artwork behind open conversations.",
+        "terms": "chat conversation thread background artwork wallpaper behind",
+        "placement": {
+          "label": "Placement",
+          "terms": "hero full chat background",
+          "hero": {
+            "label": "Hero",
+            "description": "Same top crop as new threads, fading out below."
+          },
+          "full": {
+            "label": "Full",
+            "description": "Covers the whole conversation column."
+          }
+        },
+        "opacity": {
+          "label": "Opacity",
+          "terms": "chat background opacity tab"
+        },
+        "blur": {
+          "label": "Blur",
+          "terms": "chat background blur"
+        },
+        "scrim": {
+          "label": "Scrim",
+          "description": "Darkens the artwork toward the bottom so text stays readable.",
+          "terms": "chat background scrim readable"
         }
       }
     },
@@ -2433,6 +2468,9 @@
       "label": "App",
       "with_key": "{label} ({key})",
       "close_settings": "Close settings",
+      "help": "Help",
+      "help_shortcuts": "Keyboard shortcuts",
+      "help_star": "Star Zeron on GitHub",
       "usage": {
         "loading": "Loading usage…",
         "none": "No plan usage reported",

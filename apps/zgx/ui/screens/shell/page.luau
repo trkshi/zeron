@@ -34,6 +34,7 @@ local DropOverlay = require("@ds/drop_overlay")
 local Dock = require("@app/screens/chat/dock")
 local control = require("@ds/control")
 local Glass = require("@ds/glass")
+local backdrop = require("@app/screens/shell/backdrop")
 
 export type Props = {
 	files: State<boolean>,
@@ -70,6 +71,16 @@ local FILES_MIN, FILES_W = fit.RIGHT_PANE_MIN, 660
 -- title bar, the window showing this much round and between them
 -- (`zeron.inset.gap`, ds/tokens).
 local INSET = (ui.theme.get("zeron.inset.gap") :: number?) or 4
+-- The cards flush (Settings → Appearance → Inset card off): the page runs
+-- to the window's edges and meets the sidebar (or the rail) with no gap.
+-- The window's edge round the page, and the gap between it and the
+-- sidebar's card, as the cards stand now.
+local function edge(): number
+	return if appearance.inset_card:get() then WINDOW_EDGE else 0
+end
+local function side_gap(): number
+	return if appearance.inset_card:get() then INSET else 0
+end
 -- A split pane's ×: its size.
 local CLOSE = 22
 -- Whether the panel's tabs show in groups (screens/panel sets it).
@@ -233,7 +244,7 @@ return function(props: Props): Node
 	-- Lifted off the window, the sidebar beside it lying on the window
 	-- itself. (None in a split: there the panes are the cards.)
 	pane.shadow = function(): any
-		return if grouped() then false else "$zeron.inset.lift"
+		return if grouped() or not appearance.inset_card:get() then false else "$zeron.inset.lift"
 	end
 	-- The card's fill and edge, under all it holds (the fill lighter than the
 	-- window, lifting it), faded by a tween zgx runs as a split starts and ends,
@@ -281,9 +292,10 @@ return function(props: Props): Node
 			shown = function(): boolean
 				return home() and not on_plugin()
 			end,
-			-- (Laid at the window's width, as a state zgx follows: a resize
-			-- runs no script here.)
-			width = fit.viewport,
+			-- (Laid at the window's width, rail and all, as the rail's slice of
+			-- it is (screens/shell/backdrop): one picture as it runs on under
+			-- the rail.)
+			width = backdrop.window_w,
 			-- (The card's room to the window's top and foot: the fade is
 			-- Zeron's, over 72% of the window's height.)
 			window = { top = TOP_BAR, bottom = WINDOW_EDGE },
@@ -323,6 +335,27 @@ return function(props: Props): Node
 			},
 		}
 	)
+	-- Your picture behind an open chat too (Settings → Appearance → Chat
+	-- background): fainter, blurred, under a gradient in the window's tone.
+	-- (Not in a split: there this is only the composer's frame.)
+	local function whole(): boolean
+		return not grouped()
+	end
+	table.insert(pane, backdrop.Art {
+		kind = "chat",
+		shown = whole,
+		beside = function(): number
+			return panel_beside()
+		end,
+		window = { top = TOP_BAR, bottom = WINDOW_EDGE },
+		animate = function(): boolean
+			return prefs.animate_new_chat:get()
+		end,
+	})
+	table.insert(pane, backdrop.ChatScrim { shown = whole })
+	-- The picture running on under the rail (the cards flush, the sidebar
+	-- folded): the rest of the fade from the window's edge, past the rail.
+	table.insert(pane, backdrop.RailFade { part = "page" })
 	table.insert(pane, ui.column {
 		absolute = true,
 		left = 0,
@@ -730,8 +763,8 @@ return function(props: Props): Node
 	-- panel at "half" each. (The leasts count them already: the chat's 300
 	-- and a split's floor are its column's, gaps and all, as Wing set them.)
 	local function less_gaps(v: number, sd: number): number
-		local before = if sd > 0 then SIDEBAR_GAP + INSET else WINDOW_EDGE
-		return v - before - INSET - WINDOW_EDGE
+		local before = if sd > 0 then SIDEBAR_GAP + side_gap() else edge()
+		return v - before - INSET - edge()
 	end
 	-- (Expanded over the session (the panel's Expand): all of the page's
 	-- room, the chat's column narrowing to nothing.)
@@ -954,8 +987,8 @@ return function(props: Props): Node
 			-- the gap before the page's card and the window's edge at its
 			-- right, where the panel's card ends unexpanded too. The page's
 			-- card gone, there's no gap before the panel's.)
-			local before = if fit.current:get().sidebar then INSET else WINDOW_EDGE
-			local room: number = (row_ref.width or 0) - before - WINDOW_EDGE
+			local before = if fit.current:get().sidebar then side_gap() else edge()
+			local room: number = (row_ref.width or 0) - before - edge()
 			-- (Settings' list stands where the sidebar does, in this row: as beside the
 			-- sidebar, the panel has what's past it.)
 			if away() and not shell_view.collapsed:get() then
@@ -1312,10 +1345,12 @@ return function(props: Props): Node
 	local panel_edge = ui.div {
 			absolute = true,
 			right = function(): number
-				return ui.raw(WINDOW_EDGE + open_w:get() + gap_before:get() / 2 - seam.REACH, "the seam's reach past the gap's middle")
+				return ui.raw(edge() + open_w:get() + gap_before:get() / 2 - seam.REACH, "the seam's reach past the gap's middle")
 			end,
 			top = ui.raw(TOP_BAR, "as the panel's top"),
-			bottom = ui.raw(WINDOW_EDGE, "the window's edge"),
+			bottom = function(): number
+				return ui.raw(edge(), "the window's edge")
+			end,
 			w = function(): number
 				return if expanded() then 0 else ui.raw(2 * seam.REACH, "the seam's reach either side")
 			end,
@@ -2023,17 +2058,25 @@ return function(props: Props): Node
 		relative = true,
 		pt = ui.raw(TOP_BAR, "room for the top bar"),
 		-- (The window's edges a little more than the gap between cards: the
-		-- same to the eye.)
-		pb = ui.raw(WINDOW_EDGE, "the window's edge"),
+		-- same to the eye. The cards flush, the page runs to them.)
+		pb = function(): number
+			return ui.raw(edge(), "the window's edge")
+		end,
 		-- (The gap between cards beside the sidebar's, the window's edge
 		-- without it: the one going to the other only over the sidebar's
-		-- last points, so the gap beside its edge holds as it folds.)
+		-- last points, so the gap beside its edge holds as it folds. The
+		-- cards flush, none either way.)
 		pl = function(): number
+			if not appearance.inset_card:get() then
+				return 0
+			end
 			-- (Its column, the window's gap before its card included.)
 			local shown = math.min(shell_view.sidebar_shown:get(), WINDOW_EDGE)
 			return ui.raw(WINDOW_EDGE - (WINDOW_EDGE - INSET) * shown / WINDOW_EDGE, "the window's edge, or the gap beside the sidebar")
 		end,
-		pr = ui.raw(WINDOW_EDGE, "the window's edge"),
+		pr = function(): number
+			return ui.raw(edge(), "the window's edge")
+		end,
 		pointer_events = "none",
 		ui.div { id = "shell-drag", absolute = true, left = 0, right = 0, top = 0, h = TITLE_H, window_drag = true },
 		split_area,

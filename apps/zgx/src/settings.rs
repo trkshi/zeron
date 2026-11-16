@@ -68,8 +68,11 @@
 //!                                       engine's data folder (the shipping
 //!                                       app's managed copy), checked to
 //!                                       decode first: { path, name, w, h }
-//!   wallpaper.forget({ path })          a copy `keep` made, removed (nothing
-//!                                       outside that folder is touched)
+//!   wallpaper.blurred({ path, radius })  a blurred copy of a picture `keep`
+//!                                       made, cached beside it: its path
+//!   wallpaper.forget({ path })          a copy `keep` made, removed with its
+//!                                       blurred copies (nothing outside that
+//!                                       folder is touched)
 //!
 //! An id here is a membership's or an invitation's: no account's id reaches
 //! the scripts.
@@ -310,6 +313,18 @@ pub fn install(_cx: &mut WindowContext, host: &ScriptHost) {
             ]))
         }
     });
+    host.async_action("wallpaper.blurred", |args| {
+        let path = args.field("path").map(text).unwrap_or_default();
+        let radius = match args.field("radius") {
+            Some(Value::Num(n)) => *n,
+            _ => 0.,
+        };
+        async move {
+            let dir = engine::data_dir().ok_or("failed")?.join(WALLPAPER_DIR);
+            let blurred = off_thread(move || blurred_wallpaper(&path, radius, &dir)).await.ok_or("failed")??;
+            Ok(Value::from(blurred.as_str()))
+        }
+    });
     host.action("wallpaper.forget", |args| {
         let path = args.field("path").map(text).unwrap_or_default();
         if let Some(dir) = engine::data_dir() {
@@ -427,11 +442,61 @@ pub(crate) fn keep_wallpaper_for_tests(path: &str, dir: &std::path::Path, screen
     (kept.path, kept.w, kept.h)
 }
 
-/// A copy `keep_wallpaper` made, removed: only a file directly in `dir`.
+/// The longest side a blurred copy is kept at: a blur shows no detail a
+/// larger one would hold.
+const BLURRED_SIDE: u32 = 640;
+
+/// A blurred copy of a picture `keep_wallpaper` made (only a file directly
+/// in `dir`), at `radius` points: `<stem>.blur<radius>.png` beside it, made
+/// once and reused after.
+fn blurred_wallpaper(path: &str, radius: f64, dir: &std::path::Path) -> Result<String, String> {
+    let source = std::path::Path::new(path);
+    if source.parent() != Some(dir) {
+        return Err("invalid".into());
+    }
+    let stem = source.file_stem().and_then(|s| s.to_str()).ok_or("invalid")?;
+    let target = dir.join(format!("{stem}.blur{}.png", radius.round() as u32));
+    if target.is_file() {
+        return Ok(target.to_string_lossy().into_owned());
+    }
+    let bytes = std::fs::read(source).map_err(|_| "not_found".to_string())?;
+    let image = zgx_gpu::assets::decode_image(&bytes).map_err(|_| "invalid".to_string())?;
+    let full = image::RgbaImage::from_raw(image.width(), image.height(), image.pixels().to_vec()).ok_or("invalid")?;
+    let scale = (f64::from(BLURRED_SIDE) / f64::from(full.width().max(full.height()))).min(1.);
+    let (w, h) = (((f64::from(full.width()) * scale).round() as u32).max(1), ((f64::from(full.height()) * scale).round() as u32).max(1));
+    let small = image::imageops::resize(&full, w, h, image::imageops::FilterType::Triangle);
+    let sigma = (radius * f64::from(w) / 1400.).max(0.5) as f32;
+    let blurred = image::imageops::fast_blur(&small, sigma);
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().and_then(|mut writer| writer.write_image_data(blurred.as_raw())).map_err(|_| "failed".to_string())?;
+    }
+    let temp = target.with_extension("png.tmp");
+    if std::fs::write(&temp, &png).and_then(|()| std::fs::rename(&temp, &target)).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return Err("failed".into());
+    }
+    Ok(target.to_string_lossy().into_owned())
+}
+
+/// A copy `keep_wallpaper` made, removed: only a file directly in `dir`,
+/// and the blurred copies made of it with it.
 fn forget_wallpaper(path: &str, dir: &std::path::Path) {
     let path = std::path::Path::new(path);
-    if path.parent() == Some(dir) && path.is_file() {
-        let _ = std::fs::remove_file(path);
+    if path.parent() != Some(dir) || !path.is_file() {
+        return;
+    }
+    let _ = std::fs::remove_file(path);
+    let Some(prefix) = path.file_stem().and_then(|s| s.to_str()).map(|stem| format!("{stem}.blur")) else {
+        return;
+    };
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 

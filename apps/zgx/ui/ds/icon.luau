@@ -113,6 +113,7 @@ export type Name =
 	| "grip-horizontal"
 	| "file-code"
 	| "info-circle"
+	| "lucide-circle-help"
 	| "info-square"
 	| "git-merge"
 	| "git-commit"

@@ -33,6 +33,7 @@
 local state = require("@app/screens/onboarding/state")
 local actions = require("@app/screens/onboarding/actions")
 local plugins = require("@app/screens/plugins/state")
+local look = require("@ds/look")
 
 local M = {}
 
@@ -56,6 +57,21 @@ M.image = ui.persist("shell_wallpaper_image", nil :: Image?)
 M.effect = ui.persist("shell_wallpaper_effect", "dither")
 M.plugin = ui.persist("shell_wallpaper_plugin", "")
 M.plugin_effect = ui.persist("shell_wallpaper_plugin_effect", "dither")
+
+-- The page and sidebar as inset cards, or flush with the window (ds/look's).
+M.inset_card = look.inset_card
+
+-- Your picture behind open chats too (Settings → Appearance → Chat
+-- background), not only a new chat: whether it shows; where ("hero", faded
+-- from the top over the upper part as a new chat's is, or "full", the whole
+-- page); how strongly (0 to 1); how blurred (points, 0 to 40; a blurred copy
+-- is made by the host, `wallpaper.blurred`); and whether a gradient in the
+-- window's tone lies over it so the conversation reads.
+M.chat_enabled = ui.persist("shell_chat_background", false)
+M.chat_placement = ui.persist("shell_chat_background_placement", "hero")
+M.chat_opacity = ui.persist("shell_chat_background_opacity", 0.2)
+M.chat_blur = ui.persist("shell_chat_background_blur", 24)
+M.chat_scrim = ui.persist("shell_chat_background_scrim", true)
 do
 	local w = M.wallpaper:peek()
 	local id = string.match(w, "^plugin:(.+)$")
@@ -116,6 +132,12 @@ M.showing = ui.computed(function(): string
 	end
 	return "none"
 end)
+
+-- Whether your picture shows behind an open chat (it's chosen, the chat
+-- background is on, and it isn't faded to nothing).
+function M.chat_shown(): boolean
+	return M.chat_enabled:get() and M.chat_opacity:get() > 0 and M.showing:get() == "image"
+end
 
 function M.effect_now(): string
 	return if M.provider:get() then M.plugin_effect:get() else M.effect:get()

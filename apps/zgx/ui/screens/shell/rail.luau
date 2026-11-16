@@ -2,7 +2,8 @@
 -- sidebar, always there whether the sidebar is open or folded (after
 -- gpui's app rail). New chat and Search, then each plugin's pages, at its
 -- top; at its foot, the usage ring (your agents' plan limits, its card each
--- account's windows), then you (your profile) and Settings, which the
+-- account's windows), Help (a menu: the shortcuts, the repository), then
+-- you (your profile) and Settings, which the
 -- sidebar's foot row gave up for it (`view.app_rail`). (The composer keeps
 -- its context ring, a chat's own, not a plan's: screens/chat/composer.)
 --
@@ -15,6 +16,7 @@ local Avatar = require("@ds/avatar")
 local context_usage = require("@ds/context_usage")
 local HoverCard = require("@ds/hover_card")
 local locale = require("@ds/locale")
+local Menu = require("@ds/menu")
 local PrivateText = require("@ds/private_text")
 local Tooltip = require("@ds/tooltip")
 local agents = require("@account/agents")
@@ -22,6 +24,8 @@ local boundary = require("@app/screens/shell/boundary")
 local keys = require("@app/screens/shell/keys")
 local route = require("@app/screens/shell/route")
 local view = require("@app/screens/shell/view")
+local backdrop = require("@app/screens/shell/backdrop")
+local prefs = require("@app/screens/settings/prefs")
 
 local M = {}
 
@@ -30,6 +34,9 @@ local M = {}
 M.W = view.app_rail_w
 local BUTTON, GLYPH, GAP, TOP, PAD = 34, 18, 6, 44, 8
 local AVATAR = 24
+-- The top bar over the page's card (screens/shell/page's): the picture
+-- under the rail starts under it, as the card does.
+local TOP_BAR = 42
 -- The window's gap between the rail and the card beside it (the sidebar's,
 -- or the page's with the sidebar folded): screens/shell/page's WINDOW_EDGE.
 local EDGE = 5
@@ -55,23 +62,37 @@ type ButtonProps = {
 	key: string,
 	label: () -> string,
 	tooltip: (() -> string)?,
+	-- Its tooltip held back (a menu of its own open beside it).
+	quiet: (() -> boolean)?,
 	lit: (() -> boolean)?,
 	on_click: (() -> ())?,
+	-- A menu's anchor: whether its menu is open.
+	expanded: (() -> boolean)?,
 	[number]: Node,
 }
 
 -- A rail button: its glyph in the secondary ink, brightening with a wash
--- under the pointer and while it's lit (its page is open).
+-- under the pointer and while it's lit (its page is open), both easing in
+-- and out together.
 local RailButton = ui.component(function(props: ButtonProps): Node
 	local over = ui.use_state(false)
 	local bright = ui.computed(function(): number
 		return if over:get() or (props.lit ~= nil and props.lit()) then 1 else 0
 	end)
+	local tip: Node? = nil
+	if props.tooltip then
+		tip = if props.quiet
+			then ui.show(function(): boolean
+				return not (props.quiet :: () -> boolean)()
+			end, Tooltip { props.tooltip })
+			else Tooltip { props.tooltip }
+	end
 	return ui.button {
 		id = props.key,
 		label = props.label,
-		tooltip = if props.tooltip then Tooltip { props.tooltip } else nil,
+		tooltip = tip,
 		tooltip_placement = { side = "right", align = "center", offset = 6 },
+		expanded = props.expanded,
 		relative = true,
 		w = BUTTON,
 		h = BUTTON,
@@ -84,9 +105,7 @@ local RailButton = ui.component(function(props: ButtonProps): Node
 		hover = { bg = "#00000000" },
 		active = { bg = "$pressed" },
 		cursor = if props.on_click then "pointer" else nil,
-		color = function(): string
-			return if bright:get() > 0 then "$text.primary" else "$text.secondary"
-		end,
+		color = ui.tween(bright, { from = "$text.secondary", to = "$text.primary", duration = HOVER.duration, ease = HOVER.ease }),
 		on_hover = function(inside: boolean)
 			over:set(inside)
 		end,
@@ -248,6 +267,64 @@ local function settings(): Node
 		end,
 		ds.Icon { name = "settings", size = GLYPH },
 	}
+end
+
+-- Help: a menu beside it (lit while it's open, its tooltip held back):
+-- the keyboard shortcuts (Settings → Shortcuts), and the repository on
+-- GitHub.
+local REPO = "https://github.com/zeronsh/zeron"
+local function help(): Node
+	local open = ui.use_state(false)
+	local function go(action: () -> ()): () -> ()
+		return function()
+			open:set(false)
+			action()
+		end
+	end
+	local function is_open(): boolean
+		return open:get()
+	end
+	local function word(): string
+		return locale.s("shell.rail.help")
+	end
+	return ui.popover(Menu.panel {
+		open = open,
+		anchor = RailButton {
+			key = "rail-help",
+			label = word,
+			tooltip = word,
+			quiet = is_open,
+			lit = is_open,
+			expanded = is_open,
+			on_click = function()
+				open:set(not open:peek())
+			end,
+			ds.Icon { name = "lucide-circle-help", size = GLYPH },
+		},
+		label = word,
+		placement = { side = "right", align = "end", offset = 6 },
+		w = "$zeron.menu.width",
+		build = function()
+			return Menu.Group {
+				Menu.Row {
+					id = "help-keybindings",
+					icon = "keyboard",
+					label = ui.t("shell.rail.help_shortcuts"),
+					on_click = go(function()
+						route.settings("shortcuts")
+					end),
+				},
+				Menu.Row {
+					id = "help-star",
+					icon = "star-bold",
+					label = ui.t("shell.rail.help_star"),
+					on_click = go(function()
+						ui.invoke("open_url", REPO)
+					end),
+				},
+			}
+		end,
+	})
 end
 
 -- Usage: each agent's account in use on this device, with how much of its
@@ -578,6 +655,36 @@ local function usage_ring(): Node
 	}
 end
 
+-- Your picture under the rail, while it runs on from the page (the cards
+-- flush, the sidebar folded: screens/shell/backdrop): the rail's slice of
+-- it, laid where the page's is in the window, under the top bar as the
+-- page's card is; over it, the fade from the window's edge, so the icons
+-- read.
+local function under_art(): Node
+	local function beside(): number
+		-- (From the rail's right edge to the window's: the page's room.)
+		return backdrop.window_w() - M.W
+	end
+	local function animate(): boolean
+		return prefs.animate_new_chat:get()
+	end
+	local window = { top = TOP_BAR, bottom = 0 }
+	return ui.div {
+		id = "rail-art",
+		absolute = true,
+		left = 0,
+		top = ui.raw(TOP_BAR, "the top bar, as the page's card"),
+		bottom = 0,
+		w = M.W,
+		overflow = "hidden",
+		pointer_events = "none",
+		backdrop.Art { kind = "hero", shown = backdrop.under_rail, beside = beside, window = window, animate = animate },
+		backdrop.Art { kind = "chat", shown = backdrop.under_rail, beside = beside, window = window, animate = animate },
+		backdrop.ChatScrim { shown = backdrop.under_rail },
+		backdrop.RailFade { part = "rail" },
+	}
+end
+
 M.Rail = ui.component(function(): Node
 	return ui.column {
 		id = "app-rail",
@@ -588,6 +695,13 @@ M.Rail = ui.component(function(): Node
 		w = M.W,
 		h_full = true,
 		shrink = 0,
+		relative = true,
+		-- (Over your picture, its icons need every bit of contrast they can
+		-- get: the quieter ink brightened.)
+		theme = function(): any
+			return if backdrop.under_rail() then { ["text.secondary"] = "$text.primary" } else nil
+		end,
+		under_art(),
 		pt = ui.raw(TOP + PAD, "under the title bar, as gpui's rail starts"),
 		pb = ui.raw(PAD, "gpui's rail padding"),
 		-- (The window's gap that follows it, before the sidebar's card or the
@@ -603,6 +717,7 @@ M.Rail = ui.component(function(): Node
 		pages(),
 		ui.div { grow = 1 },
 		usage_ring(),
+		help(),
 		account(),
 		settings(),
 	}

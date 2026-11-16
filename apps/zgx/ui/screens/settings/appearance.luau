@@ -33,6 +33,7 @@ search.index(M.ID, ui.t("settings.appearance.title"), ui.t("settings.appearance.
 	{ key = "animate_new_chat", title = ui.t("settings.appearance.animate_new_chat.label"), section = ui.t("settings.appearance.motion"), terms = ui.t("settings.appearance.animate_new_chat.terms") },
 	{ key = "context_usage", title = ui.t("settings.appearance.context_usage.label"), terms = ui.t("settings.appearance.context_usage.terms") },
 	{ key = "glass", title = ui.t("settings.appearance.glass.label"), terms = ui.t("settings.appearance.glass.terms") },
+	{ key = "inset", title = ui.t("settings.appearance.inset.label"), terms = ui.t("settings.appearance.inset.terms") },
 	{ key = "interface_font", title = ui.t("settings.appearance.interface_font.label"), section = ui.t("settings.appearance.fonts"), terms = ui.t("settings.appearance.interface_font.terms") },
 	{ key = "text_size", title = ui.t("settings.appearance.text_size.label"), section = ui.t("settings.appearance.fonts"), terms = ui.t("settings.appearance.text_size.terms") },
 	{ key = "code_font", title = ui.t("settings.appearance.code_font.label"), section = ui.t("settings.appearance.fonts"), terms = ui.t("settings.appearance.code_font.terms") },
@@ -44,6 +45,11 @@ search.index(M.ID, ui.t("settings.appearance.title"), ui.t("settings.appearance.
 	{ key = "wallpaper", title = ui.t("settings.appearance.wallpaper.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.wallpaper.terms") },
 	{ key = "wallpaper_image", title = ui.t("settings.appearance.wallpaper.image.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.wallpaper.image.terms") },
 	{ key = "effect", title = ui.t("settings.appearance.effect.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.effect.terms") },
+	{ key = "chat_background", title = ui.t("settings.appearance.chat.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.chat.terms") },
+	{ key = "chat_placement", title = ui.t("settings.appearance.chat.placement.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.chat.placement.terms") },
+	{ key = "chat_opacity", title = ui.t("settings.appearance.chat.opacity.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.chat.opacity.terms") },
+	{ key = "chat_blur", title = ui.t("settings.appearance.chat.blur.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.chat.blur.terms") },
+	{ key = "chat_scrim", title = ui.t("settings.appearance.chat.scrim.label"), section = ui.t("settings.appearance.new_chat"), terms = ui.t("settings.appearance.chat.scrim.terms") },
 })
 
 local function row(key: string, props: any): Node
@@ -54,6 +60,74 @@ end
 -- rules are between rows that are there, never under the last).
 local function later(on: () -> boolean, node: Node): Node
 	return ui.show(on, ui.column { w_full = true, ds.Settings.Rule(), node })
+end
+
+-- One of a few named choices, side by side (each labelled `{base}.{v}.label`).
+local function choice(value: State<string>, label: Message, values: { string }, base: string): Node
+	local options = {}
+	for _, v in values do
+		table.insert(options, { value = v, label = ui.t(`{base}.{v}.label`) })
+	end
+	return ds.Segmented { value = value, label = label, options = options :: any }
+end
+
+local function percent(v: number): string
+	return `{math.floor(v * 100 + 0.5)}%`
+end
+
+local function pt_said(v: number): string
+	return ui.t("settings.appearance.pt", { n = math.floor(v + 0.5) }):get()
+end
+
+-- A row whose control is a slider (its label a locale key).
+local function slider_row(key: string, label: string, value: State<number>, opts: { min: number, max: number, step: number, say: (number) -> string, description: string? }): Node
+	return row(key, {
+		label = ui.t(label),
+		description = if opts.description then ui.t(opts.description) else nil,
+		control = ds.Slider {
+			value = value,
+			min = opts.min,
+			max = opts.max,
+			step = opts.step,
+			w = 180,
+			-- (The slider's name joins its value as a string: read as the page
+			-- is built.)
+			label = ui.t(label):get(),
+			format = opts.say,
+		},
+	})
+end
+
+-- Your picture behind open chats too (screens/shell/appearance `chat_*`):
+-- the switch, and while it's on, where, how strongly, how blurred and
+-- whether a scrim lies over it. (Below a new chat's own rows, in its card.)
+local function chat_rows(): Node
+	local function on(): boolean
+		return appearance.chat_enabled:get()
+	end
+	return ui.column {
+		w_full = true,
+		ds.Settings.Rule(),
+		row("chat_background", {
+			label = ui.t("settings.appearance.chat.label"),
+			description = ui.t("settings.appearance.chat.description"),
+			control = ds.Switch { value = appearance.chat_enabled, label = ui.t("settings.appearance.chat.label") },
+		}),
+		later(on, row("chat_placement", {
+			label = ui.t("settings.appearance.chat.placement.label"),
+			description = function(): string
+				return ui.t(`settings.appearance.chat.placement.{appearance.chat_placement:get()}.description`):get()
+			end,
+			control = choice(appearance.chat_placement, ui.t("settings.appearance.chat.placement.label"), { "hero", "full" }, "settings.appearance.chat.placement"),
+		})),
+		later(on, slider_row("chat_opacity", "settings.appearance.chat.opacity.label", appearance.chat_opacity, { min = 0, max = 1, step = 0.01, say = percent })),
+		later(on, slider_row("chat_blur", "settings.appearance.chat.blur.label", appearance.chat_blur, { min = 0, max = 40, step = 4, say = pt_said })),
+		later(on, row("chat_scrim", {
+			label = ui.t("settings.appearance.chat.scrim.label"),
+			description = ui.t("settings.appearance.chat.scrim.description"),
+			control = ds.Switch { value = appearance.chat_scrim, label = ui.t("settings.appearance.chat.scrim.label") },
+		})),
+	}
 end
 
 -- The fonts installed on this computer (src/fonts.rs: `{ { family, mono }
@@ -370,6 +444,13 @@ function M.view(): Node
 					description = ui.t("settings.appearance.glass.description"),
 					control = ds.Switch { value = material.frosted, label = ui.t("settings.appearance.glass.label") },
 				}),
+				-- The page and sidebar as inset rounded cards, or flush with the
+				-- window (ds.look `inset_card`).
+				row("inset", {
+					label = ui.t("settings.appearance.inset.label"),
+					description = ui.t("settings.appearance.inset.description"),
+					control = ds.Switch { value = appearance.inset_card, label = ui.t("settings.appearance.inset.label") },
+				}),
 				-- The accent in more places (ds.look `accented`).
 				row("accented", {
 					label = ui.t("settings.appearance.accented.label"),
@@ -652,6 +733,7 @@ function M.view(): Node
 							end,
 							control = wallpaper.EffectSelect(appearance.effect),
 						})),
+						chat_rows(),
 					},
 				},
 			},

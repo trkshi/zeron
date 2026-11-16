@@ -186,12 +186,27 @@ function M.accented_ink(own: any): () -> any
 	end
 end
 
+-- "Inset card" (Settings → Appearance): the page (and the sidebar) as
+-- cards set into the window, rounded, with the window's gap round them; off,
+-- flush with the window and each other, square, with no edge. On by
+-- default; kept across launches.
+M.inset_card = ui.persist("inset_card", true)
+
+-- What a window overrides while the cards are flush (nothing while they're
+-- inset): their corners square, their edge gone.
+local function flush_theme(): { [string]: any }?
+	if M.inset_card:get() then
+		return nil
+	end
+	return { ["zeron.inset.radius"] = 0, ["zeron.inset.inner_radius"] = 0, ["zeron.inset.edge"] = "#00000000" }
+end
+
 -- What the main window wears over its theme (ds/palettes, worn by
 -- ds/tokens): the text size, the fonts chosen, an accent chosen over the
--- theme's own, and the accent throughout.
+-- theme's own, the cards flush, and the accent throughout.
 function M.window_theme(): { [string]: any }?
 	local out: { [string]: any }? = nil
-	for _, part in { M.text_theme(), M.font_theme(), M.theme(), M.accented_theme() } do
+	for _, part in { M.text_theme(), M.font_theme(), M.theme(), flush_theme(), M.accented_theme() } do
 		if part then
 			out = out or {}
 			for k, v in part do
