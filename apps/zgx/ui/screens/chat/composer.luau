@@ -1769,6 +1769,13 @@ local function Composer(): Node
 				ui.show(function(): boolean
 					return not route.needs_project:get() and route.current:get().name ~= "plugin"
 				end, composer()),
+				-- Under a new chat's composer, as wide: what plugins put there
+				-- (`slot:zeron.home.below`; a card of what's going on, say).
+				-- Outside the composer's own measures (`on_sizes`), so it never
+				-- moves where the composer stands.
+				ui.show(function(): boolean
+					return new_chat() and not route.needs_project:get() and route.current:get().name ~= "plugin"
+				end, ui.slot("zeron.home.below", { w_full = true, mt = "$space.4", gap = "$space.3" })),
 			},
 		},
 		-- Files carried over the chat (the page or the composer): all of it
