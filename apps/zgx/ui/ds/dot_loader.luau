@@ -1,7 +1,8 @@
 -- Zeron v2's activity loaders, drawn as it drew them (crates/ui/src/
 -- loaders.rs): small grids of round dots whose brightness travels through
--- them. The classic look's loaders (ds/look `classic_sidebar`); the working
--- ring (ds/status) is everything else's.
+-- them. The gradient is the reply's Working line in every look; the mini is
+-- the classic look's (ds/look `classic_sidebar`), the working ring
+-- (ds/status) everything else's.
 --
 --   DotLoader { kind = "mini", size = 14 }       2 × 3 dots, the brightness
 --                                                 chasing round them clockwise:
@@ -57,6 +58,9 @@ local KINDS = {
 	},
 }
 
+-- v2's sunrise tints, a row each, top to bottom (`GSPIN_ROW_TINTS`).
+local SUNRISE = { "#B6D3EF", "#EDB185", "#F888A0" }
+
 local function num(x: number): string
 	return string.format("%.6f", x)
 end
@@ -66,9 +70,18 @@ local function shader(name: Kind): any
 	-- In dots: the grid's width and height (gaps half a dot), each centre.
 	local w, h = g.cols + (g.cols - 1) * 0.5, g.rows + (g.rows - 1) * 0.5
 	-- A row's colour, as the shader reads it: the mini's from its ink, the
-	-- gradient's its own token (params 0 to 2, top to bottom).
+	-- gradient's baked in (v2's fixed sunrise tints, top to bottom). Passed
+	-- as three token params instead, the top two rows came out clear and the
+	-- line showed its bottom three dots alone.
 	local function tint(r: number): string
-		return if name == "mini" then `zr_row({r},input.params[0])` else `input.params[{r}]`
+		if name == "mini" then
+			return `zr_row({r},input.params[0])`
+		end
+		local hex = SUNRISE[r + 1]
+		local function ch(i: number): string
+			return num(tonumber(string.sub(hex, i, i + 1), 16) / 255)
+		end
+		return `vec4({ch(2)},{ch(4)},{ch(6)},1.)`
 	end
 	local dots: { string } = {}
 	for r = 0, g.rows - 1 do
@@ -132,16 +145,6 @@ local function shader_of(name: Kind): any
 	return made
 end
 
-ui.theme.tokens {
-	zeron = {
-		sunrise = {
-			top = "#B6D3EF",
-			middle = "#EDB185",
-			bottom = "#F888A0",
-		},
-	},
-}
-
 return function(props: Props): Node
 	local name: Kind = props.kind or "mini"
 	local size = props.size or 14
@@ -149,7 +152,7 @@ return function(props: Props): Node
 	local still = if motion.reduced_now() then 1 else 0
 	local params = if name == "mini"
 		then { props.ink or "$zeron.status.working", { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { still, 0, 0, 0 } }
-		else { "$zeron.sunrise.top", "$zeron.sunrise.middle", "$zeron.sunrise.bottom", { still, 0, 0, 0 } }
+		else { { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { still, 0, 0, 0 } }
 	-- It plays only while it can be seen (ds/status's ring, `looping`), in
 	-- step with every other as it shows.
 	local playing = false

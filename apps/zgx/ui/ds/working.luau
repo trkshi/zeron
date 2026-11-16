@@ -12,7 +12,6 @@
 local RollText = require("@self/roll_text")
 local status = require("@self/status")
 local locale = require("@self/locale")
-local look = require("@self/look")
 local DotLoader = require("@self/dot_loader")
 
 export type Props = { since: number | () -> number, seed: number?, sending: (() -> boolean)? }
@@ -72,13 +71,9 @@ return ui.component(function(props: Props): Node
 		items = "center",
 		selectable = false,
 		label = locale.t("ds.working.label"),
-		-- (The classic look's is Zeron v2's: the sunrise dots.)
-		ui.switch(function(): string
-			return if look.classic_sidebar:get() then "dots" else "ring"
-		end, {
-			ring = status.StatusIcon { kind = "working", size = 16 },
-			dots = DotLoader { kind = "gradient", size = 16 },
-		}),
+		-- Zeron v2's sunrise dots, whichever look (the ring stays everywhere
+		-- else outside the classic look).
+		DotLoader { kind = "gradient", size = 16 },
 		RollText {
 			function(): string
 				if sending() then
