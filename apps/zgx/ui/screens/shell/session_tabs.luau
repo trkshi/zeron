@@ -167,20 +167,21 @@ local function stack_of(key: string): { string }
 	return out
 end
 
--- What a tab's corner says: of its chats, any awaiting a person first, else any
--- at work or waiting on its background work, else one finished (done, failed
--- or out of its limits) and not yet seen (the sidebar's order of what's most
--- pressing). A finished state clears as its chat is opened (`sessions.seen`).
+-- What a tab's corner says: of its chats, any awaiting a person first, else one
+-- finished (done, failed or out of its limits) and not yet seen (the sidebar's
+-- order of what's most pressing). A finished state clears as its chat is opened
+-- (`sessions.seen`). A chat at work says so on its tile instead (`pane_tile`),
+-- on the tab showing too, as a browser's tab spins in its icon's place.
 local TAB_STATES = {
 	approval = true,
 	input = true,
 	failed = true,
 	limited = true,
-	working = true,
-	waiting = true,
-	connecting = true,
 	done = true,
 }
+-- A chat under way (running, waiting on background work that will wake it,
+-- connecting): its tile is the working loader.
+local AT_WORK = { working = true, waiting = true, connecting = true }
 local function tab_state(key: string): string?
 	local best: string? = nil
 	for _, id in splits.panes(key) do
@@ -473,8 +474,10 @@ local tile_enter = { opacity = { 0, 1 }, scale = { 0.6, 1 }, duration = 220, eas
 local tile_exit = { opacity = 0, scale = 0.6, duration = 120, ease = "inQuad" }
 
 -- The tile for a pane's place in the stack: its chat's agent's mark, as
--- the sidebar's rows have it (ds/session_row `mark`). The focus moving swaps
--- each place's pane, the new one springing up there.
+-- the sidebar's rows have it (ds/session_row `mark`), or while that chat is at
+-- work the working loader in its place (the classic look's dots, else the
+-- ring), on every tab, the one showing too. The focus moving swaps each
+-- place's pane, the new one springing up there.
 local function pane_tile(id: string, place: number): Node
 	return ui.presence(function(): string
 		return stack_of(id)[place] or ""
@@ -487,11 +490,17 @@ local function pane_tile(id: string, place: number): Node
 			h = TILE,
 			items = "center",
 			justify = "center",
-			SessionRow.mark(function(): any
-				return chat_of(chat) or { id = chat, title = "" }
-			end, function(): boolean
-				return true
-			end),
+			ui.switch(function(): string
+				local c = chat_of(chat)
+				return if c and c.status and AT_WORK[c.status] then "working" else "mark"
+			end, {
+				working = ds.StatusIcon { kind = "working", size = 16 },
+				mark = SessionRow.mark(function(): any
+					return chat_of(chat) or { id = chat, title = "" }
+				end, function(): boolean
+					return true
+				end),
+			}),
 		}
 	end, { w = TILE, h = TILE, shrink = 0, enter = tile_enter, exit = tile_exit })
 end
