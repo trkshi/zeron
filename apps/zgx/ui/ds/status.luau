@@ -174,20 +174,16 @@ end
 -- an animation starting then would wait for that look, and leap. Still
 -- when motion is reduced.
 local function looping(props: ContainerProps, start: (el: Element) -> Animation, period: number): Node
-	-- Whether it plays, and not the loop itself: a handle held here strongly
-	-- would hold its element, the element this node, and this node this
-	-- function, a cycle through Rust that no collector sees; held weakly, the
-	-- collector takes it while the loop plays, and nothing could stop it.
-	local playing = false
+	-- Started afresh each time it shows, whatever it did before: hidden by a
+	-- `ui.show` (a header tab's loader, between turns) it may never hear it
+	-- left, and a flag that it plays, still set, kept it from starting again:
+	-- it stood still from the second turn on. (No handle to the loop is held:
+	-- held strongly it would hold its element, the element this node, and
+	-- this node this function, a cycle through Rust that no collector sees.)
 	props.on_visible = function(visible: boolean, el: Element)
-		if visible then
-			if not playing and not motion.reduced_now() then
-				playing = true
-				M.in_phase(start(el), period)
-			end
-		elseif playing then
-			playing = false
-			anime.utils.remove(el)
+		anime.utils.remove(el)
+		if visible and not motion.reduced_now() then
+			M.in_phase(start(el), period)
 		end
 	end
 	return ui.div(props)

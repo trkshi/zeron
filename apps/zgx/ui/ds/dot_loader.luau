@@ -154,8 +154,8 @@ return function(props: Props): Node
 		then { props.ink or "$zeron.status.working", { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { still, 0, 0, 0 } }
 		else { { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { still, 0, 0, 0 } }
 	-- It plays only while it can be seen (ds/status's ring, `looping`), in
-	-- step with every other as it shows.
-	local playing = false
+	-- step with every other as it shows, started afresh each time it does
+	-- (`looping` says why).
 	return ui.div {
 		w = size,
 		h = size,
@@ -165,21 +165,16 @@ return function(props: Props): Node
 		bg_shader = shader_of(name),
 		shader_params = params,
 		on_visible = function(visible: boolean, el: Element)
-			if visible then
-				if not playing and not motion.reduced_now() then
-					playing = true
-					local anim = anime.animate(el, {
-						shaderTime = { 0, CYCLE },
-						duration = period,
-						loop = true,
-						ease = "linear",
-						frameRate = FPS,
-					})
-					anim.currentTime = ui.now() % period
-				end
-			elseif playing then
-				playing = false
-				anime.utils.remove(el)
+			anime.utils.remove(el)
+			if visible and not motion.reduced_now() then
+				local anim = anime.animate(el, {
+					shaderTime = { 0, CYCLE },
+					duration = period,
+					loop = true,
+					ease = "linear",
+					frameRate = FPS,
+				})
+				anim.currentTime = ui.now() % period
 			end
 		end,
 	}
