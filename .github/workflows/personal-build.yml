@@ -1,4 +1,4 @@
-name: personal build
+name: Patched Build
 
 # The Zeron app (apps/zgx) for Linux and Windows from this repository's
 # branch, by hand: zgx-build.yml's jobs at the workspace's version, the
@@ -10,7 +10,7 @@ name: personal build
 # Linux follows zeron.sh's channel: run it with ZERON_AUTO_UPDATE=0 to keep
 # this build.
 #
-# Run it from Actions → personal build → Run workflow.
+# Run it from Actions → Patched Build → Run workflow.
 
 on:
   workflow_dispatch:
@@ -55,7 +55,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           {
-            echo "## Zeron $VERSION (personal build)"
+            echo "## Zeron $VERSION (patched build)"
             echo
             echo "Source commit: $GITHUB_SHA. The downloads are this run's artifacts."
             echo
