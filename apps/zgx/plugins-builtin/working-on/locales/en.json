@@ -1,0 +1,17 @@
+{
+  "label": "Your chats",
+  "needs_you": "Needs you",
+  "running": "Running",
+  "recent": "Recent",
+  "more": "{n} more",
+  "active": "active {ago}",
+  "unseen": "Finished, not opened yet",
+  "untitled": "New chat",
+  "state": {
+    "input": "Needs input",
+    "approval": "Needs approval",
+    "plan": "Plan ready",
+    "failed": "Failed",
+    "limited": "Limit reached"
+  }
+}

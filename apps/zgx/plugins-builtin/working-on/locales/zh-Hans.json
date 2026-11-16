@@ -1,0 +1,17 @@
+{
+  "label": "你的对话",
+  "needs_you": "需要你",
+  "running": "运行中",
+  "recent": "最近",
+  "more": "还有 {n} 个",
+  "active": "{ago}活动",
+  "unseen": "已完成，尚未打开",
+  "untitled": "新对话",
+  "state": {
+    "input": "需要输入",
+    "approval": "需要批准",
+    "plan": "计划已就绪",
+    "failed": "失败",
+    "limited": "已达上限"
+  }
+}
