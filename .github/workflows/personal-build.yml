@@ -1,0 +1,62 @@
+name: personal build
+
+# The Zeron app (apps/zgx) for Linux and Windows from this repository's
+# branch, by hand: zgx-build.yml's jobs at the workspace's version, the
+# artifacts kept on the run. No macOS (its signing needs zeronsh's secrets),
+# no release, no channel.
+#
+# Windows: the package's update feed is this repository's latest release, a
+# feed of its own, so the app never moves itself to zeron.sh's stable build.
+# Linux follows zeron.sh's channel: run it with ZERON_AUTO_UPDATE=0 to keep
+# this build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which to build.
+        type: string
+        default: linux windows
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: the workspace's version
+        id: version
+        run: echo "version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    uses: ./.github/workflows/zgx-build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      platforms: ${{ inputs.platforms }}
+      windows-feed: https://github.com/${{ github.repository }}/releases/latest/download
+
+  summary:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: how to run it
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          {
+            echo "## Zeron $VERSION (personal build)"
+            echo
+            echo "Source commit: $GITHUB_SHA. The downloads are this run's artifacts."
+            echo
+            echo "- Linux: unpack \`zeron-$VERSION-linux-<arch>.tar.gz\`, run its \`install.sh\`, then start it with \`ZERON_AUTO_UPDATE=0 ~/.zeron/app/current/zeron\` so it doesn't update itself to zeron.sh's build."
+            echo "- Windows: run the installer, or unpack the portable zip. Its updates look at this repository's releases only."
+          } >> "$GITHUB_STEP_SUMMARY"
