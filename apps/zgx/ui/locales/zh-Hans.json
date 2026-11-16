@@ -1150,6 +1150,11 @@
         "description": "从新对话开始，而不是上次离开的会话。",
         "terms": "启动 打开 新对话 主页 恢复 上次 会话 launch startup home restore"
       },
+      "zeron_updates": {
+        "label": "提示 Zeron 更新",
+        "description": "从顶栏更新会用官方版本覆盖这个修改版。代理的更新始终显示。",
+        "terms": "更新 升级 版本 跳过 提示 顶栏 设备 update upgrade release"
+      },
       "privacy": "隐私",
       "hide_emails": {
         "label": "隐藏电子邮件地址",

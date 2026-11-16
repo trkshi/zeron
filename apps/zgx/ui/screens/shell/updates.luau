@@ -18,6 +18,7 @@ local Menu = require("@ds/menu")
 local toast = require("@ds/toast")
 local status = require("@ds/status")
 local route = require("@app/screens/shell/route")
+local prefs = require("@app/screens/settings/prefs")
 
 local M = {}
 
@@ -170,7 +171,12 @@ end
 local rows = ui.computed(function(): { any }
 	local out: { any } = {}
 	local passed = skipped:get()
+	local offer_zeron = prefs.zeron_updates:get()
 	local function add(r: any)
+		-- (A patched build's Zeron is updated by hand: off, its rows never show.)
+		if r.kind == "zeron" and not offer_zeron then
+			return
+		end
 		local token = skip_token(r)
 		if token == nil or passed[r.id] ~= token then
 			table.insert(out, r)

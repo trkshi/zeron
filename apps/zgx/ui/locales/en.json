@@ -1150,6 +1150,11 @@
         "description": "Start on a new chat instead of the session you left.",
         "terms": "launch startup start open home restore last session resume"
       },
+      "zeron_updates": {
+        "label": "Offer Zeron updates",
+        "description": "Updating from the top bar installs the official release over this patched build. Agent updates always show.",
+        "terms": "update upgrade release version skip notify top bar devices"
+      },
       "privacy": "Privacy",
       "hide_emails": {
         "label": "Hide email addresses",
