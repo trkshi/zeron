@@ -194,9 +194,10 @@ function M.when(s: Session): string
 end
 
 -- Its corner at rest: its state's glyph, else how long ago it moved.
-function M.standing(cur: () -> Session): Node
+-- (`time_only`: how long ago always, its state shown elsewhere in the row.)
+function M.standing(cur: () -> Session, time_only: boolean?): Node
 	return ui.presence(function(): string
-		return cur().status or "time"
+		return if time_only then "time" else cur().status or "time"
 	end, function(kind: string): Node
 		if kind == "time" then
 			return M.hint(function(): string
@@ -228,6 +229,9 @@ export type CornerProps = {
 	-- What the pointer finds there (archive, unarchive); nil, the corner
 	-- stays as it is under the pointer.
 	action: Node?,
+	-- At rest, how long ago it moved and never its state (the row leads
+	-- with its state instead).
+	time_only: boolean?,
 }
 
 -- The corner as a row wears it: its state (or time) at rest; under the
@@ -254,7 +258,7 @@ function M.Corner(props: CornerProps): Node
 				return if (action ~= nil and hovered:get()) or jump() ~= nil then 0 else 1
 			end,
 			pointer_events = "none",
-			M.standing(props.cur),
+			M.standing(props.cur, props.time_only),
 		},
 		ui.show(
 			function(): boolean

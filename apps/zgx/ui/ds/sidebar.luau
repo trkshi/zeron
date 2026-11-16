@@ -1210,8 +1210,50 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 		card_hide(true)
 	end)
 
+	-- A session's state, leading its row: working's ring, done's check, and
+	-- any other state its dot in its hue (idle, or waiting on background
+	-- work, a faint one). Its name a tooltip.
+	local STATE_W = 13
+	local function state_slot(cur: () -> Session): Node
+		return ui.div {
+			shrink = 0,
+			w = STATE_W,
+			h = STATE_W,
+			items = "center",
+			justify = "center",
+			ui.presence(function(): string
+				return cur().status or "idle"
+			end, function(kind: string): Node
+				local k = if kind == "idle" then nil else status.KINDS[kind :: status.Kind]
+				local word = if k then k.long else nil
+				if kind == "working" then
+					return ui.div { label = word, tooltip = word, status.StatusIcon { kind = "working", size = 12 } }
+				elseif kind == "done" then
+					return ui.div { label = word, tooltip = word, color = "$zeron.status.done", Icon { name = "check", size = 11 } }
+				end
+				local dot = if kind == "idle" or kind == "waiting" then "$text.disabled" else `$zeron.status.{kind}`
+				return ui.div { label = word, tooltip = word, w = 6, h = 6, rounded = "$radius.full", bg = dot }
+			end),
+		}
+	end
+	-- Its agent's mark after its state, in a box of its own width whatever
+	-- the mark (a faint dot for none), so every title starts in one place.
+	local MARK_W = 14
+	local function always(): boolean
+		return true
+	end
+	-- Where a row's title starts past its state and mark (its second line
+	-- starts there too).
+	local function title_at(marked: boolean): number
+		return STATE_W + 4 + (if marked then MARK_W + 4 else 0)
+	end
+
 	local function session_row(s: Session, by: Organize, place: Place?): Node
 		local in_flyout = place ~= nil and place.wide == true
+		-- Whether its agent's mark stands before its title.
+		local function marked(): boolean
+			return details.harness:get() and not in_flyout
+		end
 		-- (On the Archived shelf: Unarchive under the pointer, no drag.)
 		local shelved = place ~= nil and place.list == "archived"
 		local on_pick = if place then place.on_pick else nil
@@ -1390,9 +1432,10 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					return gutter(place.tree :: Tree)
 				end
 				else nil,
-			-- (Its slot holds its harness; hidden, the slot closes.)
+			-- (Its slot only on the rail, where it's all the row shows, and in
+			-- a flyout; in the list, the row leads with its state and mark.)
 			leads = function(): boolean
-				return details.harness:get()
+				return railed() or in_flyout
 			end,
 			wide = in_flyout,
 			hovered = hovered,
@@ -1400,18 +1443,41 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			words = ui.column {
 				w_full = true,
 				gap = "$zeron.space.hair",
-				line(
-					title,
-					if s.pr then ui.show(details.pr, pr_badge(s.pr)) else nil,
-					subagents_pill(function(): number
+				(function(): Node
+					-- Its state, its agent's mark, its title, its badges, and its
+					-- corner: how long ago at rest (its state leads the row); under
+					-- the pointer, archive (on the shelf, unarchive); ⌘ held
+					-- alone, its jump's keys.
+					local parts: { any } = {
+						w_full = true,
+						h = SLOT,
+						pr = "$space.2",
+						gap = "$space.1",
+						items = "center",
+						state_slot(cur),
+						-- (A flyout's row leads with its mark already.)
+						ui.show(marked, ui.div {
+							shrink = 0,
+							w = MARK_W,
+							h = MARK_W,
+							items = "center",
+							justify = "center",
+							y = OPTICAL,
+							agent(s, always, cur),
+						}),
+						title,
+					}
+					if s.pr then
+						table.insert(parts, ui.show(details.pr, pr_badge(s.pr)))
+					end
+					table.insert(parts, subagents_pill(function(): number
 						return cur().subagents or 0
-					end),
-					-- Its state (or time) at rest; under the pointer, archive (on
-					-- the shelf, unarchive); ⌘ held alone, its jump's keys.
-					SessionRow.Corner {
+					end))
+					table.insert(parts, SessionRow.Corner {
 						cur = cur,
 						hovered = hovered,
 						jump = jump,
+						time_only = true,
 						action = if shelved
 							then corner("ds.sidebar.unarchive", "inbox", function()
 								if props.on_unarchive then
@@ -1423,10 +1489,22 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 									props.on_archive(s.id)
 								end
 							end),
-					}
-				),
-				-- Pulled up under the title: the line's own inset is the row's.
-				ui.div { mt = ui.raw(-8, "up a row's inset, under the title"), second },
+					})
+					return ui.row(parts)
+				end)(),
+				-- Pulled up under the title: the line's own inset is the row's;
+				-- in from the row's edge to where its title starts.
+				ui.row {
+					w_full = true,
+					mt = ui.raw(-8, "up a row's inset, under the title"),
+					ui.div {
+						shrink = 0,
+						w = function(): number
+							return title_at(marked())
+						end,
+					},
+					ui.div { grow = 1, min_w = 0, second },
+				},
 			},
 			-- (Every chat of the split showing is selected too.)
 			selected = function(): boolean
@@ -3474,21 +3552,59 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					return if t then gutter(t) else 0
 				end
 				else nil,
-			-- (The shared header's words, ds/session_row: folded, how many;
-			-- a project's new chat under the pointer, in their place.)
-			words = SessionRow.header_words(
-				name,
-				function(): string
-					return tostring(#sessions())
-				end,
-				hidden,
-				if g.new_in then new_corner(g, now) else nil,
-				if g.new_in
-					then function(): boolean
-						return hovered:get()
-					end
-					else nil
-			),
+			-- Its name, quiet; how many it holds, always; a project's new chat
+			-- under the pointer (its place kept at rest, so nothing moves); and
+			-- its chevron, turned aside while it's folded.
+			words = (function(): Node
+				local parts: { any } = {
+					w_full = true,
+					h = SLOT,
+					pr = "$space.2",
+					gap = "$space.2",
+					items = "center",
+					FadeText {
+						name,
+						grow = 1,
+						text_size = "$font.size.sm",
+						weight = "$font.weight.medium",
+						color = "$text.secondary",
+					},
+					ui.text {
+						function(): string
+							return tostring(#sessions())
+						end,
+						shrink = 0,
+						tabular = true,
+						text_size = "$font.size.sm",
+						color = "$text.secondary",
+					},
+				}
+				if g.new_in then
+					table.insert(parts, ui.div {
+						shrink = 0,
+						w = 20,
+						h = 20,
+						items = "center",
+						justify = "center",
+						ui.show(function(): boolean
+							return hovered:get()
+						end, new_corner(g, now)),
+					})
+				end
+				table.insert(parts, ui.div {
+					shrink = 0,
+					w = 12,
+					h = 12,
+					items = "center",
+					justify = "center",
+					color = "$text.secondary",
+					rotate = motion.tween(ui.computed(function(): number
+						return if open:get() then 0 else -90
+					end), { duration = 200, ease = "out(3)" }),
+					Icon { name = "alt-arrow-down", size = 12 },
+				})
+				return ui.row(parts)
+			end)(),
 			on_click = function()
 				fold_set(group_fold(g.key), not open:peek())
 			end,
