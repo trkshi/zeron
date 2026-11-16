@@ -162,14 +162,19 @@ return function(): Node
 	-- ⌘W closes the visible right panel's active tab first, regardless of
 	-- keyboard focus, through the same unsaved-file / busy-terminal gate as ×.
 	-- Without a tab to close, close the focused split chat or the window. On a
-	-- new chat it does nothing: the last chat's tab closed lands there, and a
-	-- second press shouldn't take the window with it.
+	-- new chat it closes the new chat's tab, to the session tab beside it; with
+	-- none, nothing: the last chat's tab closed lands there, and a second press
+	-- shouldn't take the window with it.
 	runs["shell.close"] = function()
 		local panel: any = boundary.load("@app/screens/panel")
 		if panel and panel.close_active_tab and (panel.close_active_tab :: any)() then
 			return
 		end
 		if route.current:peek().name == "home" then
+			local tabs: any = boundary.load("@app/screens/shell/session_tabs")
+			if tabs and tabs.close_draft then
+				tabs.close_draft()
+			end
 			return
 		end
 		if route.current:peek().name == "session" then

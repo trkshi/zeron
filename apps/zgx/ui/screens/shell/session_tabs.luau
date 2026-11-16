@@ -391,6 +391,22 @@ function M.close_showing(): boolean
 	return true
 end
 
+-- The new chat's tab closed (⌘W on it), to the tab beside it, the last of
+-- the sessions' (it stands after them): true if there was one. Alone, it
+-- stays (a second ⌘W mustn't take the window).
+function M.close_draft(): boolean
+	if not draft_shows:peek() then
+		return false
+	end
+	local list = shown:peek()
+	local last = list[#list]
+	if not last then
+		return false
+	end
+	route.open_session(face(last))
+	return true
+end
+
 -- Those tabs closed at once, `keep` gone to if the one showing was among them.
 -- (Each of `close` in turn would open every chat on the way.)
 local function close_many(list: { string }, keep: string)
@@ -684,7 +700,8 @@ local Tab = ui.component(function(props: { chat: string, strip: any, order: () -
 end)
 
 -- The new chat's tab, after the sessions': its pen and "New chat", showing
--- while a new chat is open. (Nothing to close: it goes as a chat opens.)
+-- while a new chat is open. (No ×: it goes as a chat opens, or ⌘W beside
+-- another tab, `close_draft`.)
 local DraftTab = ui.component(function(props: { order: () -> { string } }): Node
 	local hovered = ui.use_state(false)
 	local function active(): boolean
