@@ -14,6 +14,10 @@
 //!                which isn't counted again.
 //!   Grok         `{GROK_HOME}/sessions/**/updates.jsonl`: one
 //!                `turn_completed` per turn, by model, with its cost.
+//!   DSH          `{DSH_HOME}/sessions/**/session.v<N>.jsonl.zstd`
+//!                (DeepSeek Harness; zstd frames it appends to): one
+//!                `assistant/message` per model call, by model; a call
+//!                rewritten into a newer generation counts once by its id.
 //!
 //! A file is read again only when its size or modified time changes.
 
@@ -60,7 +64,7 @@ impl LogDirs {
     pub fn add(&mut self, harness: HarnessId, home: &Path) {
         let dir = match harness {
             HarnessId::ClaudeCode => home.join("projects"),
-            HarnessId::Codex | HarnessId::Grok => home.join("sessions"),
+            HarnessId::Codex | HarnessId::Grok | HarnessId::Dsh => home.join("sessions"),
             _ => return,
         };
         if self.dirs.iter().all(|(_, known)| *known != dir) {
@@ -165,6 +169,10 @@ struct LogFile {
 fn is_log(harness: HarnessId, path: &Path) -> bool {
     match harness {
         HarnessId::Grok => path.file_name().is_some_and(|name| name == "updates.jsonl"),
+        HarnessId::Dsh => path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("session.v") && name.contains(".jsonl")),
         _ => path.extension().is_some_and(|ext| ext == "jsonl"),
     }
 }
@@ -244,6 +252,17 @@ fn read_logs(files: &[LogFile]) -> Vec<Arc<[Call]>> {
 }
 
 fn read_log(file: &LogFile) -> Option<Vec<Call>> {
+    if file.harness == HarnessId::Dsh {
+        // (Compressed: read whole, then line by line.)
+        let text = zeron_harness::acp::read_dsh_session_log(&file.path)?;
+        let mut log = LogReader::new(file.harness);
+        for line in text.split(|byte| *byte == b'\n') {
+            if let Ok(line) = std::str::from_utf8(line) {
+                log.line(line.trim_end());
+            }
+        }
+        return Some(log.calls);
+    }
     let mut reader = BufReader::with_capacity(64 * 1024, std::fs::File::open(&file.path).ok()?);
     let mut log = LogReader::new(file.harness);
     let mut bytes = Vec::new();
@@ -316,11 +335,19 @@ struct LogReader {
     calls: Vec<Call>,
     names: HashMap<String, Arc<str>>,
     codex: CodexState,
+    /// A DSH log's session (its first line says it).
+    dsh_session: Option<Arc<str>>,
 }
 
 impl LogReader {
     fn new(harness: HarnessId) -> Self {
-        Self { harness, calls: Vec::new(), names: HashMap::new(), codex: CodexState::default() }
+        Self {
+            harness,
+            calls: Vec::new(),
+            names: HashMap::new(),
+            codex: CodexState::default(),
+            dsh_session: None,
+        }
     }
 
     /// One shared copy of a model or session name per file.
@@ -344,6 +371,7 @@ impl LogReader {
             HarnessId::ClaudeCode => self.claude(line),
             HarnessId::Codex => self.codex(line),
             HarnessId::Grok => self.grok(line),
+            HarnessId::Dsh => self.dsh(line),
             _ => {}
         }
     }
@@ -482,6 +510,47 @@ impl LogReader {
         self.record(Call { at_ms, model, session, tokens, recorded_usd: None, id: None });
     }
 
+    fn dsh(&mut self, line: &str) {
+        let session_line = line.starts_with(r#"{"type":"session""#);
+        if !session_line && !line.contains(r#""assistant/message""#) {
+            return;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            return;
+        };
+        if session_line {
+            if let Some(id) = event.get("id").and_then(Value::as_str) {
+                self.dsh_session = Some(self.name(id));
+            }
+            return;
+        }
+        if event.get("type").and_then(Value::as_str) != Some("assistant/message") {
+            return;
+        }
+        let data = &event["data"];
+        let Some(usage) = data.get("usage").filter(|u| u.is_object()) else {
+            return;
+        };
+        let Some(at_ms) = event.get("time").and_then(Value::as_i64) else {
+            return;
+        };
+        let source = &data["message"]["source"];
+        let Some(model) = source.get("model").and_then(Value::as_str).filter(|m| !m.is_empty())
+        else {
+            return;
+        };
+        let session = match self.dsh_session.clone() {
+            Some(session) => session,
+            None => self.name(""),
+        };
+        let id = data["message"]
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|message| id_of(&["dsh", &session, message]));
+        let model = self.name(model);
+        self.record(Call { at_ms, model, session, tokens: dsh_tokens(usage), recorded_usd: None, id });
+    }
+
     fn grok(&mut self, line: &str) {
         if !line.contains("turn_completed") {
             return;
@@ -573,6 +642,17 @@ fn grok_tokens(usage: &Value) -> TokenCounts {
         fresh_input: tokens_at(usage, "inputTokens").saturating_sub(cache_read + cache_write),
         cache_read,
         cache_write,
+        output: tokens_at(usage, "outputTokens"),
+    }
+}
+
+/// DSH's `inputTokens` is the fresh input alone: cache reads and writes are
+/// counted apart.
+fn dsh_tokens(usage: &Value) -> TokenCounts {
+    TokenCounts {
+        fresh_input: tokens_at(usage, "inputTokens"),
+        cache_read: tokens_at(usage, "cacheReadTokens"),
+        cache_write: tokens_at(usage, "cacheWriteTokens"),
         output: tokens_at(usage, "outputTokens"),
     }
 }
@@ -691,6 +771,27 @@ mod tests {
             tally.count(harness, call);
         }
         tally.into_usage(false)
+    }
+
+    #[test]
+    fn a_dsh_call_counts_once_across_generations_by_its_model() {
+        let header = r#"{"type":"session","version":4,"id":"s1","cwd":"/x"}"#.to_owned();
+        let call = r#"{"type":"assistant/message","seq":3,"time":1762000000000,"data":{"turn":1,"message":{"role":"assistant","id":"m1","source":{"kind":"model","provider":"deepseek-official","model":"deepseek-flash"}},"usage":{"inputTokens":1058,"outputTokens":62,"cacheReadTokens":12544,"cacheWriteTokens":0,"totalTokens":13664}}}"#.to_owned();
+        let other = r#"{"type":"tool/call","seq":4,"time":1762000000001,"data":{"name":"assistant/message"}}"#.to_owned();
+        let calls = read(HarnessId::Dsh, &[header.clone(), call.clone(), other]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(&*calls[0].model, "deepseek-flash");
+        assert_eq!(&*calls[0].session, "s1");
+        assert_eq!(calls[0].tokens.fresh_input, 1058);
+        assert_eq!(calls[0].tokens.cache_read, 12544);
+        assert_eq!(calls[0].tokens.output, 62);
+        // The same call in a newer generation of the log: once.
+        let again = read(HarnessId::Dsh, &[header, call]);
+        let usage = tally(HarnessId::Dsh, &[calls, again].concat());
+        assert_eq!(usage.slices.len(), 1);
+        assert_eq!(usage.slices[0].tokens.output, 62);
+        assert!(is_log(HarnessId::Dsh, Path::new("/d/sessions/p/s1/session.v4.jsonl.zstd")));
+        assert!(!is_log(HarnessId::Dsh, Path::new("/d/sessions/p/s1/notes.jsonl")));
     }
 
     #[test]

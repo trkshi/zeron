@@ -40,7 +40,7 @@ pub struct DshKeyInput {
 }
 
 /// `$DSH_HOME`, else `~/.dsh`.
-pub(crate) fn home() -> Option<PathBuf> {
+pub fn home() -> Option<PathBuf> {
     std::env::var_os("DSH_HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)

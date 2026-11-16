@@ -28,7 +28,7 @@ local CHART_H = 200
 -- The agents Zeron drives (their names and marks), as the rail reads them.
 local catalog = ui.shared("chat.catalog", { state = "looking", harnesses = {}, models = {} } :: any)
 -- (Names for agents the catalog doesn't list on this device.)
-local KNOWN: { [string]: string } = { ["claude-code"] = "Claude Code", codex = "Codex", grok = "Grok" }
+local KNOWN: { [string]: string } = { ["claude-code"] = "Claude Code", codex = "Codex", grok = "Grok", dsh = "DeepSeek Harness" }
 
 local function agent(harness: string): any
 	for _, h in catalog:get().harnesses or {} do
@@ -36,7 +36,7 @@ local function agent(harness: string): any
 			return h
 		end
 	end
-	return { id = harness, label = KNOWN[harness] or harness }
+	return { id = harness, label = KNOWN[harness] or harness, mark = if harness == "dsh" then "provider-deepseek" else nil }
 end
 
 -- What's asked and what came back. The range and the measure are kept

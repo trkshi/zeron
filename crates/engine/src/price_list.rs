@@ -150,6 +150,7 @@ fn home_provider(harness: HarnessId) -> Option<&'static str> {
         HarnessId::Codex => Some("openai"),
         HarnessId::Grok => Some("xai"),
         HarnessId::Antigravity => Some("google"),
+        HarnessId::Dsh => Some("deepseek"),
         _ => None,
     }
 }

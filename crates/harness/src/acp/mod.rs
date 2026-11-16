@@ -39,6 +39,13 @@ mod hermes_names;
 /// out with ids.
 const HERMES_NAMING_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 mod dsh_log;
+
+/// A DeepSeek Harness session log's JSONL text (`session.v<N>.jsonl.zstd`,
+/// zstd frames DSH appends to), up to its last complete line: for the
+/// engine's Usage page (`token_usage`), which reads every agent's own logs.
+pub fn read_dsh_session_log(path: &std::path::Path) -> Option<Vec<u8>> {
+    dsh_log::read_log(path)
+}
 mod normalize;
 mod permission;
 mod subagent;

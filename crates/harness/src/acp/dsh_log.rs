@@ -149,7 +149,7 @@ fn newest_generation(dir: &Path) -> Option<PathBuf> {
 
 /// The log's JSONL text, up to its last complete line. DSH appends one zstd
 /// frame per batch, so a frame still being written only cuts the tail.
-fn read_log(path: &Path) -> Option<Vec<u8>> {
+pub(super) fn read_log(path: &Path) -> Option<Vec<u8>> {
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
     if path.extension().is_some_and(|ext| ext == "zstd") {

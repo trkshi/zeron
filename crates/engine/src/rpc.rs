@@ -5546,7 +5546,10 @@ impl RpcService for EngineRpc {
             methods::GET_TOKEN_USAGE => {
                 let p: zeron_proto::token_usage::TokenUsageParams = parse_params(params)?;
                 let (claude, codex, grok) = self.agent_accounts.homes();
-                let dirs = crate::token_usage::LogDirs::of_homes(&claude, &codex, &grok);
+                let mut dirs = crate::token_usage::LogDirs::of_homes(&claude, &codex, &grok);
+                if let Some(dsh) = zeron_harness::dsh_credentials::home() {
+                    dirs.add(HarnessId::Dsh, &dsh);
+                }
                 let usage = tokio::task::spawn_blocking(move || {
                     crate::token_usage::report(&dirs, p.days, chrono::Local::now())
                 })
