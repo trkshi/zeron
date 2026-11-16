@@ -808,7 +808,6 @@ return {
 	["ds.command_palette.scope.files"] = "Files",
 	["ds.command_palette.scope.settings"] = "Settings",
 	["ds.command_palette.pr"] = "Pull request {n}, {state, select, open {open} merged {merged} closed {closed} other {draft}}",
-	["ds.command_palette.pinned"] = "Pinned",
 	["ds.command_palette.recent"] = "Recent",
 	["ds.command_palette.loading"] = "Loading…",
 	["ds.command_palette.back_from"] = "Back from {title}",

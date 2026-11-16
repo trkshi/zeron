@@ -615,7 +615,7 @@ test("a chat in another tab goes to that tab, replacing nothing", function()
 	expect(app:error()).to_be_nil()
 end)
 
-test("from a new chat's page a chat opened replaces the tab for a chat alone too", function()
+test("a new chat keeps the tab it left, as a browser's: a chat opened from it takes a tab of its own", function()
 	local app = mount("shell_fixture.luau")
 	app:resize(1400, 800)
 	app:frames(30)
@@ -625,8 +625,17 @@ test("from a new chat's page a chat opened replaces the tab for a chat alone too
 	open(app, "Write the docs")
 	app:frames(30)
 	local kept = app:state("inset_split_trees") :: any
-	expect(#kept).to_be(1)
-	expect(kept[1].id).to_be("a2")
+	expect(#kept).to_be(2)
+	expect(kept[1].id).to_be("a1")
+	expect(kept[1].kept).to_be(true)
+	expect(kept[2].id).to_be("a2")
+	-- From there, another chat opened replaces the new one's tab, not the kept one.
+	open(app, "Ship the release")
+	app:frames(30)
+	kept = app:state("inset_split_trees") :: any
+	expect(#kept).to_be(2)
+	expect(kept[1].id).to_be("a1")
+	expect(kept[2].id).to_be("b1")
 	expect(app:error()).to_be_nil()
 end)
 

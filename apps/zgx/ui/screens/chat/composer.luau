@@ -1256,13 +1256,17 @@ local function Composer(): Node
 			on_account = accounts.on_account,
 			on_accounts_open = accounts.on_accounts_open,
 			-- What its context holds (the ring shows once a window is
-			-- reported, its card saying the numbers).
+			-- reported, its card saying the numbers), a ring or its long
+			-- form as Settings → Appearance says. None on a new chat.
 			usage = function(): ds.ComposerUsage?
 				local s = open()
-				if not s or (s.context_tokens == nil and s.context_window == nil) then
+				if shown_new() or not s or (s.context_tokens == nil and s.context_window == nil) then
 					return nil
 				end
 				return { tokens = s.context_tokens, window = s.context_window }
+			end,
+			usage_style = function(): string
+				return prefs.context_usage:get()
 			end,
 			-- A new chat stands over its wallpaper (Settings → Appearance):
 			-- the footer's chips take their backing.
@@ -1285,6 +1289,9 @@ local function Composer(): Node
 			branches = where.branches,
 			branches_empty = where.branches_empty,
 			branch_fixed = branch_fixed,
+			-- (An open chat's footer has no where-it-works chip: only a new
+			-- chat's picker shows.)
+			fixed_place = false,
 			cargo = shared.cargo,
 			on_remove_cargo = shared.remove_cargo,
 			on_attach = function()
@@ -1504,9 +1511,12 @@ local function Composer(): Node
 		return Placement.dock_offset(h, rest, tall, FOOT, Dock.hero_offset())
 	end
 	-- Moving between a new chat and a session: its own send from a new chat
-	-- slides it down with the prompt (`slide_to`); any other move (another
-	-- chat opened, a new chat) puts it there at once, in its new form and
-	-- size, no fade, no slide, nothing growing (and as that size is
+	-- slides it down with the prompt (`slide_to`); a chat opened from a new
+	-- chat settles it down to the foot, and back to a new chat it rises
+	-- (`rise`), each easing into its new form, as Zeron v2's did (Settings →
+	-- Appearance's "Animate new chat transitions"; off, they land at once).
+	-- Any other move (one chat to another) puts it there at once, in its new
+	-- form and size, no fade, no slide, nothing growing (and as that size is
 	-- measured, it follows at once too). In the page, as it grows or the window resizes, it
 	-- moves there as the dock's spring did. Motion reduced, it's there.
 	local GLIDE = { duration = 260, ease = "out(3)" }
@@ -1525,7 +1535,27 @@ local function Composer(): Node
 	local function cancel_hold()
 		if holding then holding:cancel(); holding = nil end
 	end
-	local function glide_to(y: number)
+	-- Back to a new chat from a session (cmd+n, New chat): it rises from
+	-- where it was docked to its place mid-page, its form and size easing
+	-- there as it goes, as Zeron's return does (composer_dock.rs: 470 ms
+	-- on a fast-starting, soft-landing glide). `rise`: how far under its
+	-- place it still stands.
+	local RISE = { duration = 470, ease = "out(5)" }
+	-- And from a new chat into a chat it opens (the sidebar's, a search's):
+	-- down to the foot, as Zeron's docking does (420 ms on the same curve).
+	local SETTLE = { duration = 420, ease = "out(5)" }
+	local rise = ui.state("chat_composer_rise", 0)
+	local rising: any = nil
+	local function cancel_rise()
+		if rising then rising:cancel(); rising = nil end
+	end
+	-- Whether going between a new chat and a chat moves (Settings →
+	-- Appearance, and motion not reduced).
+	local function animated(): boolean
+		return prefs.animate_new_chat:peek() and not motion.reduced_now()
+	end
+	local function glide_to(y: number, spec: { duration: number, ease: string }?)
+		local how = spec or GLIDE
 		local immediate = motion.reduced() or place_snap:get()
 		if not immediate and gliding and glide_goal == y then return end
 		cancel_glide()
@@ -1534,11 +1564,12 @@ local function Composer(): Node
 			return
 		end
 		glide_goal = y
-		gliding = anime.animate(place, { value = y, duration = GLIDE.duration, ease = GLIDE.ease })
+		gliding = anime.animate(place, { value = y, duration = how.duration, ease = how.ease })
 	end
 	ui.on_cleanup(function()
 		cancel_glide()
 		cancel_hold()
+		cancel_rise()
 	end)
 	ui.effect(function()
 		local y = target_y()
@@ -1548,16 +1579,24 @@ local function Composer(): Node
 		-- (A send's move: out of the new chat, to the session it opened. Its
 		-- form and size ease there as it slides, not snapped.)
 		local sent = switched and not nc and slide_to ~= nil
+		-- (Back to a new chat from a session: it rises there, easing into its
+		-- new form, as a send eases into its docked one. Not as Settings or a
+		-- plugin's page stands over it, nor with motion reduced.)
+		local returned = switched and nc and route.chat:peek().name == "home" and animated()
+		-- (Into a chat opened from a new chat: it settles to the foot, from
+		-- where it stood mid-page (`place` kept that), easing into its docked
+		-- form.)
+		local opened = switched and not nc and not sent and route.chat:peek().name == "session" and animated()
 		if switched and nc then
 			slide_to = nil
 		end
-		if switched and not sent then
+		if switched and not sent and not returned and not opened then
 			ui.batch(function()
 				place_snap:set(true)
 				form_new:set(nc)
 				snap:set(snap:peek() + 1)
 			end)
-		elseif sent then
+		elseif sent or returned or opened then
 			ui.batch(function()
 				place_snap:set(false)
 				form_new:set(nc)
@@ -1570,6 +1609,27 @@ local function Composer(): Node
 		if nc then
 			cancel_glide()
 			place:set(y)
+			if returned then
+				-- From its docked top to its top mid-page, as laid out now.
+				local h = page.height or 0
+				if h <= 0 then
+					h = page_h:peek()
+				end
+				-- (Its sizes not measured again yet as the route moves: its
+				-- docked height still.)
+				local sizes = composer_sizes:peek()
+				local docked_tall = if sizes then sizes.presented else shared.dock_h:peek()
+				local now_tall = presented_height()
+				local rest = rest_tall:peek() or now_tall
+				local from_top = h - FOOT - docked_tall
+				local to_top = h / 2 + Placement.new_offset(h, rest, now_tall, FOOT, Dock.hero_offset())
+				cancel_rise()
+				rise:set(from_top - to_top)
+				rising = anime.animate(rise, { value = 0, duration = RISE.duration, ease = RISE.ease })
+			elseif switched then
+				cancel_rise()
+				rise:set(0)
+			end
 			local tall = presented_height()
 			if model_open:get() then
 				cancel_hold()
@@ -1586,7 +1646,9 @@ local function Composer(): Node
 		cancel_hold()
 		held_tall = nil
 		hold:set(0)
-		glide_to(y)
+		cancel_rise()
+		rise:set(0)
+		glide_to(y, if opened then SETTLE else nil)
 	end)
 	-- Split focus can change the draft without changing page mode. Every
 	-- such context owns its snap; only an intentional new-chat send glides.
@@ -1594,9 +1656,21 @@ local function Composer(): Node
 	ui.effect(function()
 		local now = route.chat:get().session
 		if now ~= chat_was then
+			local was = chat_was
 			chat_was = now
 			-- (The session a send opened: the page's move glides, no snap.)
 			if slide_to ~= nil and now == slide_to then
+				place_snap:set(false)
+				return
+			end
+			-- (A chat opened from a new chat: it settles there, no snap.)
+			if was == nil and now ~= nil and route.chat:peek().name == "session" and animated() then
+				place_snap:set(false)
+				return
+			end
+			-- (Back to a new chat: it rises there, no snap; see `rise`.)
+			if now == nil and route.chat:peek().name == "home" and animated() then
+				slide_to = nil
 				place_snap:set(false)
 				return
 			end
@@ -1660,7 +1734,7 @@ local function Composer(): Node
 				end
 				local rest = rest_tall:get() or tall
 				local at = Placement.new_offset(page.height or 0, rest, tall, FOOT, Dock.hero_offset())
-				return at + hold:get()
+				return at + hold:get() + rise:get()
 			end,
 			ui.div {
 				id = "chat-composer",

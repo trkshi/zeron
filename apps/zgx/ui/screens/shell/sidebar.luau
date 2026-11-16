@@ -40,6 +40,9 @@ export type Props = {
 	limit: (() -> number)?,
 	direct: (() -> boolean)?,
 	island: boolean?,
+	-- The rail docked down the window's left edge (screens/shell/init), not
+	-- floating: its tiles fill its height.
+	docked: boolean?,
 	-- Room left at its top for the title bar laid over it.
 	top: number?,
 }
@@ -1615,13 +1618,16 @@ M.Sidebar = ui.component(function(props: Props): Node
 			return sessions.state:get() ~= "ready"
 		end,
 		island = props.island,
+		docked = props.docked,
 		selected = shared.selected,
 		projects = projects,
 		here = function(): string?
 			local _, here = devices()
 			return here
 		end :: any,
-		user = user,
+		-- (You and Settings stand on the app's rail while it's there: the
+		-- sidebar's foot row goes.)
+		user = if view.app_rail then nil else user,
 		top = props.top,
 		card = not props.island,
 		-- (A device's "+", inside a project's group: on that device too.)

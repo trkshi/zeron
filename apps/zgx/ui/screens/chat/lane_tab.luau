@@ -748,13 +748,17 @@ local function composer(chat: string, view: any, name: string, focus: State<numb
 		on_account = accounts.on_account,
 		on_accounts_open = accounts.on_accounts_open,
 		-- What its context holds: the chat page's ring and card, from the
-		-- side chat's own numbers (once it has run and they're reported).
+		-- side chat's own numbers (once it has run and they're reported),
+		-- a ring or its long form as Settings → Appearance says.
 		usage = function(): any
 			local s = session:get()
 			if not s or (s.context_tokens == nil and s.context_window == nil) then
 				return nil
 			end
 			return { tokens = s.context_tokens, window = s.context_window }
+		end,
+		usage_style = function(): string
+			return prefs.context_usage:get()
 		end,
 		project = project,
 		projects = where.projects,

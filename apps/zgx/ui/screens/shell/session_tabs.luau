@@ -13,7 +13,6 @@ local control = require("@ds/control")
 local SessionRow = require("@ds/session_row")
 local motion = require("@ds/motion")
 local TabStrip = require("@ds/tab_strip")
-local look = require("@app/screens/shell/project_look")
 local route = require("@app/screens/shell/route")
 local sessions = require("@account/sessions")
 local splits = require("@app/screens/shell/split")
@@ -43,17 +42,6 @@ local function chat_of(id: string): any
 	for _, c in sessions.now:get().chats do
 		if c.id == id then
 			return c
-		end
-	end
-	return nil
-end
-local function project_of(c: any): any
-	if not c or not c.project then
-		return nil
-	end
-	for _, p in sessions.projects:get() do
-		if p.id == c.project then
-			return p
 		end
 	end
 	return nil
@@ -144,11 +132,13 @@ end)
 local function close(key: string)
 	local before = shown:peek()
 	local at = table.find(before, key)
-	local alone = #splits.panes(key) == 1
+	-- (A kept one closes as a browser's tab does, to the one beside it.)
+	local alone = #splits.panes(key) == 1 and not splits.kept(key)
 	local was_showing = splits.current_key() == key
 	splits.close_tabs({ key })
 	if was_showing then
-		-- The one beside it, else a new chat. (A chat alone: always a new chat.)
+		-- The one beside it, else a new chat. (A chat alone, not kept: always a new
+		-- chat.)
 		local after = shown:peek()
 		local next_key = if at and not alone then after[math.min(at, #after)] else nil
 		if next_key then
@@ -198,46 +188,26 @@ end
 local tile_enter = { opacity = { 0, 1 }, scale = { 0.6, 1 }, duration = 220, ease = "outBack(1.6)" }
 local tile_exit = { opacity = 0, scale = 0.6, duration = 120, ease = "inQuad" }
 
--- The tile for a pane's place in the stack: its project's. The focus moving
--- swaps each place's pane, the new one springing up there.
+-- The tile for a pane's place in the stack: its chat's agent's mark, as
+-- the sidebar's rows have it (ds/session_row `mark`). The focus moving swaps
+-- each place's pane, the new one springing up there.
 local function pane_tile(id: string, place: number): Node
 	return ui.presence(function(): string
-		local chat = stack_of(id)[place]
-		if not chat then
-			return ""
+		return stack_of(id)[place] or ""
+	end, function(chat: string): Node
+		if chat == "" then
+			return ui.div {}
 		end
-		-- (A chat with no project shows the side chat's glyph: a real swap.)
-		return if project_of(chat_of(chat)) then chat else `{chat}\0loose`
-	end, function(which: string): Node
-		local chat = string.match(which, "^[^%z]*") or ""
-		if which ~= chat then
-			return ds.Tile { size = TILE, inside = ds.Icon { name = "side-chat", size = 14 } }
-		end
-		local function now(): any
-			return project_of(chat_of(chat))
-		end
-		return ds.Tile {
-			size = TILE,
-			label = function(): string?
-				local p = now()
-				return if p then p.name else "Chat"
-			end,
-			hue = function(): string?
-				local p = now()
-				return if p then look.of(p).hue else nil
-			end,
-			src = function(): string?
-				local p = now()
-				return if p then look.of(p).src else nil
-			end,
-			emoji = function(): string?
-				local p = now()
-				return if p then look.of(p).emoji else nil
-			end,
-			project = function(): string?
-				local p = now()
-				return if p then p.id else nil
-			end,
+		return ui.row {
+			w = TILE,
+			h = TILE,
+			items = "center",
+			justify = "center",
+			SessionRow.mark(function(): any
+				return chat_of(chat) or { id = chat, title = "" }
+			end, function(): boolean
+				return true
+			end),
 		}
 	end, { w = TILE, h = TILE, shrink = 0, enter = tile_enter, exit = tile_exit })
 end
@@ -618,8 +588,8 @@ function M.Strip(props: { window_x: () -> number, start: () -> number, right: ()
 			left += w + gap
 		end
 	end)
-	-- Where they start, eased as the sidebar's "…" before them comes and goes.
-	local start = motion.tween(ui.computed(props.start), motion.sidebar)
+	-- Where they start: past the sidebar's end, followed as it moves.
+	local start = props.start
 	-- From the window's left whatever the sidebar is doing, so they stay put as
 	-- it moves. (Only the tabs' own part takes the pointer: the sidebar's "…"
 	-- lies under the rest, past the margin.)

@@ -350,6 +350,10 @@ function M.tokens(p: Palette): ({ [string]: any }?, { Fix })
 		["zeron.segmented.thumb"] = pick(a(text, 0.14), a(card, 0.55)),
 		["zeron.menu.tint"] = a(shell, pick(0.65, 0.45)),
 		["zeron.menu.solid"] = menu,
+		-- (A hover card's popup, opaque: the theme's background frosted, its
+		-- menu's fill solid.)
+		["zeron.popup.tint"] = bg,
+		["zeron.popup.solid"] = menu,
 		["zeron.menu.selected"] = a(text, pick(0.09, 0.06)),
 		-- The composer: the chrome's glass, opaque the card's.
 		["zeron.composer.tint"] = pick(a(shell, 0.35), a(card, 0.55)),

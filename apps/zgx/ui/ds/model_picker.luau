@@ -119,6 +119,9 @@ export type Props = {
 	-- How far its chip folds (Dropdown's `fold`): 1, without the effort; 2, its
 	-- mark alone.
 	fold: (() -> number)?,
+	-- Whether the chip shows the plan ring of the account in use (as it
+	-- reports one); without, it doesn't (the app's rail carries usage).
+	usage_shown: (() -> boolean)?,
 }
 
 -- Devin Fusion's lead (what runs), listed first among its options.
@@ -699,7 +702,11 @@ return ui.component(function(props: Props): Node
 	local function usage_ring(): Node
 		return ui.show(function(): boolean
 			local a = in_use()
-			return a ~= nil and a.used ~= nil and (props.fold == nil or props.fold() < 2)
+			return a ~= nil
+				and a.used ~= nil
+				and (props.fold == nil or props.fold() < 2)
+				and props.usage_shown ~= nil
+				and props.usage_shown()
 		end, ui.div {
 			id = "model-picker-usage",
 			self = "center",

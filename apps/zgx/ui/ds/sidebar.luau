@@ -177,6 +177,10 @@ export type Props = {
 	-- The sessions haven't been heard yet: none isn't "none" until they have.
 	loading: (() -> boolean)?,
 	island: boolean?,
+	-- The rail docked down the window's left edge (the app's card for it),
+	-- not floating: its tiles take all the height it has, scrolling past
+	-- it, rather than four at most.
+	docked: boolean?,
 	-- Its width open (dragging its edge resizes it, 242 to 400).
 	width: State<number>?,
 	-- The width a double click on its edge puts back (the theme's own else).
@@ -4543,6 +4547,13 @@ fn layer(input:LayerInput)->vec4<f32> {
 				return stack(4) + pinned_room()
 			end
 			local rail_offset = ui.use_state(0)
+			-- (Docked: as tall as the rail's room under its actions, measured.)
+			local room_h = ui.use_state(0)
+			if props.docked then
+				most = function(): number
+					return math.max(room_h:get() - ROOM * 2, 0)
+				end
+			end
 			return ui.scroll {
 				-- Wider than the rail (it has no surface to overhang), so a
 				-- tile's badge isn't cut at its sides either. Its room is its
@@ -4550,9 +4561,20 @@ fn layer(input:LayerInput)->vec4<f32> {
 				-- edge fades would fall on nothing), so its clip and its fades
 				-- are at its edge, reaching through the room into the icons.
 				w = RAIL_SLOT + ROOM * 2,
-				h = function(): number
-					return math.min(tall(), most()) + ROOM * 2
-				end,
+				h = if props.docked
+					then nil
+					else function(): number
+						return math.min(tall(), most()) + ROOM * 2
+					end,
+				grow = if props.docked then 1 else nil,
+				min_h = if props.docked then 0 else nil,
+				on_resize = if props.docked
+					then function(size: { w: number, h: number })
+						if math.abs(room_h:peek() - size.h) >= 1 then
+							room_h:set(size.h)
+						end
+					end
+					else nil,
 				offset = rail_offset,
 				fade = edge_fades(rail_offset, function(): number
 					return tall() - math.min(tall(), most())
@@ -4578,6 +4600,9 @@ fn layer(input:LayerInput)->vec4<f32> {
 		end
 		return ui.column {
 			w = island.thickness(),
+			-- (Docked, the rail's whole height: its tiles fill what's under
+			-- its actions.)
+			h_full = props.docked == true,
 			p = "$zeron.island.pad",
 			-- (The scroll's room round its icons is part of the gap above it.)
 			gap = RAIL_GROUP - ROOM,
@@ -4598,6 +4623,11 @@ fn layer(input:LayerInput)->vec4<f32> {
 			end, tiles, {
 				enter = { opacity = { 0, 1 }, duration = COME, delay = GO },
 				exit = { opacity = 0, duration = GO },
+				-- (Docked: the room under the actions, for the tiles' scroll.)
+				grow = if props.docked then 1 else nil,
+				min_h = if props.docked then 0 else nil,
+				w_full = props.docked == true,
+				items = if props.docked then "center" else nil,
 			}),
 		}
 	end
@@ -5181,9 +5211,10 @@ fn layer(input:LayerInput)->vec4<f32> {
 				bottom = 5,
 				overflow = "hidden",
 				rounded = "$zeron.inset.radius",
-				-- (Frosted, its own wash over the window's glass, Zeron's
-				-- sidebar tone; opaque, the page's card's fill.)
-				bg = material.pick("$zeron.sidebar.tint", "$zeron.sidebar.solid"),
+				-- (Its own fill, `zeron.sidebar.bg`, frosted or opaque. Was
+				-- frosted, its own wash over the window's glass, Zeron's sidebar
+				-- tone (`zeron.sidebar.tint`); opaque, the page's card's fill.)
+				bg = "$zeron.sidebar.bg",
 				ui.column(body),
 			}
 			else ui.column(body),
@@ -5211,12 +5242,8 @@ fn layer(input:LayerInput)->vec4<f32> {
 		ui.div {
 			absolute = true,
 			left = function(): number
-				-- (A card's: on the top bar, past Back and Forward, the window's
-				-- gap before the card taken off.)
-				if props.card then
-					-- (`controls_end` holds the row's own 10 past its last control.)
-					return ui.raw(TitleBar.controls_end() - 10 + 8 - 5, "past the title bar's controls, by its group gap")
-				end
+				-- (A card's too: on the top bar over its right end, where the
+				-- open card ends; the session tabs start past it.)
 				local button = (ui.theme.get("zeron.icon_button.md") :: number?) or 24
 				return room() - PAD - button
 			end,

@@ -795,22 +795,18 @@ test("a chat mentioned (a session dropped from the sidebar) goes as production's
 	expect(n).to_be(1)
 end)
 
--- An existing chat's footer says where it works, live, and opens nothing:
--- the branch git has checked out in its folder (not the one the chat began
--- on), with a worktree's icon. Only a new chat picks where to work.
-test("a chat's footer shows its own branch, fixed, not the new chat's picker", function()
+-- An existing chat's footer has no where-it-works chip (screens/chat/composer
+-- `fixed_place = false`): neither the picker nor where it works. Only a new
+-- chat shows it, to pick where to work.
+test("a chat's footer has no where-it-works chip; a new chat's picker stays", function()
 	local app = mount("chat_fixture.luau")
 	app:resize(900, 700)
 	app:command("go_s2")
 	app:frames(30)
 	app:command("session_in_worktree")
 	app:frames(30)
-	expect(app:state("calls")).to_contain("refs:/tmp/atlas-wt/pr:here")
-	expect(app:wait('~"zeron/readme-pr"', { timeout_ms = 2000 })).to_be(true)
-	-- A worktree's glyph, its project's name before it.
-	expect(app:has("#composer-place-lead >> .place-lead-worktree")).to_be(true)
-	expect(app:text("#composer-place-project[1]")).to_be("Atlas")
-	-- No picker: nothing called Branch to open.
+	expect(app:has("#composer-place-lead")).to_be(false)
+	expect(app:has("#composer-place-project")).to_be(false)
 	expect(app:has('role:button "Branch"')).to_be(false)
 	-- A new chat still has it.
 	app:command("go_home")

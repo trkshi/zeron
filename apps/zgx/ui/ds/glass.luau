@@ -17,7 +17,10 @@
 
 local material = require("@self/material")
 
-export type Kind = "menu" | "island"
+-- (`popup`: what stands in a popup window of its own, a hover card: gpui's
+-- menu tone, opaque, since the system's material under anything
+-- translucent reads lighter than gpui's own and shows what's under it.)
+export type Kind = "menu" | "island" | "popup"
 
 local function frosted(): boolean
 	return material.see_through()
@@ -42,6 +45,15 @@ function M.style(props: { [any]: any }, kind: Kind?): { [any]: any }
 		return props
 	end
 	props.rounded = props.rounded or "$radius.lg"
+	if kind == "popup" then
+		props.bg = function()
+			return if material.see_through() then "$zeron.popup.tint" else "$zeron.popup.solid"
+		end
+		props.border = 1
+		props.border_color = "$border"
+		props.shadow = "$zeron.menu.shadow"
+		return props
+	end
 	-- (Where popups can't blur what's under them, Windows', solid too.)
 	props.bg = function()
 		return if material.menus_see_through() then "$zeron.menu.tint" else "$zeron.menu.solid"

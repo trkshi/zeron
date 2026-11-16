@@ -271,13 +271,13 @@ local function Session(id: Id?): Node
 						return shared.shown:get() or ""
 					end, function(id: string): Node
 						return T.Transcript {
-							-- Settings' "Conversation width", followed as it moves.
-							-- (A little wider than the composer each side, so it's
-							-- seen fading as it passes behind.)
+							-- Settings' "Conversation width", followed as it moves:
+							-- the text's own column, as Zeron's (transcript.rs), with
+							-- its 48 each side.
 							measure = function(): number
-								return prefs.conversation_width:get() + 24
+								return prefs.conversation_width:get()
 							end,
-							side = 20,
+							side = 48,
 							fade_lead = 12,
 							messages = store.messages,
 							offset = offset,

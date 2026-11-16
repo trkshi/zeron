@@ -1,5 +1,5 @@
--- The model picker's accounts, as Zeron's composer has them: an Account row and
--- a usage ring on the chip, for the composer's device (this one or another),
+-- The model picker's accounts, as Zeron's composer has them: an Account row
+-- (no usage ring on the chip; the app's rail carries usage), for the composer's device (this one or another),
 -- reading the fuller window (Cursor's, the pool of the model chosen); no usage
 -- reported, no ring; one that can't be switched to, not offered.
 
@@ -30,7 +30,7 @@ end
 
 test("an agent with accounts has the row, the address and how much is used", function()
 	local app = with_accounts(here(accounts()))
-	expect(app:has("#model-picker-usage")).to_be(true)
+	expect(app:has("#model-picker-usage")).to_be(false)
 	app:click('role:button "Model"')
 	app:frames(30)
 	local row = app:tree("#model-picker-account")
@@ -77,7 +77,7 @@ test("a chat on another computer reads that computer's accounts", function()
 	})
 	app:set_state("chat_device", "box")
 	app:frames(10)
-	expect(app:has("#model-picker-usage")).to_be(true)
+	expect(app:has("#model-picker-usage")).to_be(false)
 	app:click('role:button "Model"')
 	app:frames(30)
 	local row = app:tree("#model-picker-account")

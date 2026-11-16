@@ -3,8 +3,9 @@
 -- page beside it shows where the route is (a new chat, a session, settings)
 -- with the window's one composer travelling between a new chat and a
 -- session; the title bar lies over both. Collapsed, the sidebar folds away
--- entirely (its rail, floating at the window's bottom left, is kept behind
--- `view.rail`, off).
+-- and its rail takes its place, docked down the window's left edge
+-- (`view.rail_docked`); its floating rail at the window's bottom left is kept
+-- behind `view.rail`, off.
 --
 -- Every part is its own module, required as `@app/screens/shell/…`, so a
 -- trusted plugin can replace one whole: `route` (where the window is),
@@ -44,6 +45,7 @@ local host = require("@app/screens/settings/host")
 -- (The look chosen, applied as it loads.)
 local appearance = require("@app/screens/shell/appearance")
 local motion = require("@ds/motion")
+local rail = require("@app/screens/shell/rail")
 
 local TITLE_H = 38
 
@@ -83,6 +85,10 @@ return function(): Node
 	local collapsed = ui.computed(function(): boolean
 		return view.collapsed:get() or not fit.current:get().sidebar
 	end)
+	-- The docked rail's card (view.rail_docked): the island's thickness with its
+	-- inset either side, and the window's gap before it.
+	local RAIL_W = ds.island.thickness() + ds.island.metrics().inset * 2
+	local RAIL_GAP = 5
 	local function sidebar_limit(): number
 		return fit.sidebar_room:get()
 	end
@@ -408,6 +414,33 @@ return function(): Node
 		end
 		was_settings = now
 	end)
+	-- Settings' list of pages folds with the sidebar: opening settings with
+	-- the sidebar folded opens it, so the list is there, and leaving folds
+	-- it again, unless it was folded by hand in between.
+	local opened_for_settings = false
+	local settings_before = in_settings()
+	ui.effect(function()
+		local now = in_settings()
+		if now == settings_before then
+			return
+		end
+		settings_before = now
+		if now and view.collapsed:peek() then
+			opened_for_settings = true
+			fit.toggle_sidebar()
+		elseif not now and opened_for_settings then
+			opened_for_settings = false
+			if not view.collapsed:peek() then
+				fit.toggle_sidebar()
+			end
+		end
+	end)
+	-- (Folded by hand while there: it stays as it's left.)
+	ui.effect(function()
+		if view.collapsed:get() then
+			opened_for_settings = false
+		end
+	end)
 	-- Settings: in the page's place, under the top bar and beside the panel, its tabs
 	-- still there, its own list of pages down its side and the way back to the chats at
 	-- its head.
@@ -450,7 +483,8 @@ return function(): Node
 		ref = root,
 		-- (The window's width: the columns fit it.)
 		on_resize = function(size)
-			fit.set_viewport(size.w)
+			-- (Less the app rail's, which stands left of everything they fit.)
+			fit.set_viewport(size.w - (if view.app_rail then rail.W else 0))
 		end,
 		id = "shell",
 		-- The mouse's back and forward buttons, anywhere not taken by a
@@ -538,6 +572,51 @@ return function(): Node
 				grow = 1,
 				min_h = 0,
 				w_full = true,
+				-- The app's rail, always there, left of the sidebar (view.app_rail).
+				-- (Settings stand over the window, not in its place: it stays, its
+				-- Settings lit.)
+				if view.app_rail
+					then boundary.screen(boundary.named("shell.boundary.screen.app_rail"), "@app/screens/shell/rail", function(r): Node
+						return r.Rail()
+					end)
+					else nil,
+				-- The rail, while the sidebar is collapsed: docked down the
+				-- window's left edge as a card of the sidebar's own, under the top
+				-- bar, its icons in a column (view.rail_docked). Its width eases
+				-- in as the sidebar folds and out as it comes back, on the
+				-- sidebar's clock, so the page beside them moves once.
+				if view.rail_docked
+					then ui.div {
+						id = "shell-rail",
+						h_full = true,
+						shrink = 0,
+						relative = true,
+						overflow = "hidden",
+						hidden = in_settings,
+						w = motion.tween(ui.computed(function(): number
+							return if collapsed:get() then RAIL_W + RAIL_GAP else 0
+						end), motion.sidebar),
+						ui.div {
+							absolute = true,
+							left = ui.raw(RAIL_GAP, "the window's gap before the rail's card, as the sidebar's"),
+							top = ui.raw(42, "the top bar, as the sidebar's card"),
+							bottom = ui.raw(RAIL_GAP, "the window's gap under it, as the sidebar's card"),
+							w = ui.raw(RAIL_W, "the rail: the island's thickness and its inset either side"),
+							rounded = "$zeron.inset.radius",
+							bg = "$zeron.sidebar.bg",
+							overflow = "hidden",
+							ui.column {
+								w_full = true,
+								h_full = true,
+								items = "center",
+								pt = "$zeron.island.inset",
+								boundary.screen(boundary.named("shell.boundary.screen.rail"), "@app/screens/shell/sidebar", function(Sidebar): Node
+									return Sidebar { collapsed = collapsed :: any, island = true, docked = true }
+								end, { pass = true }),
+							},
+						},
+					}
+					else nil,
 				-- (Settings stand in its place and the page's, under the top bar.)
 				ui.div {
 					h_full = true,

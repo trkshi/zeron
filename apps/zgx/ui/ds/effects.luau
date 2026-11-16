@@ -6,9 +6,9 @@
 --
 -- Each works in linear light on the picture's own grid (the picture fitted
 -- to 2048 a side, as Zeron's proxy of it, so the cells hold to the picture
--- and grow and shrink with it). Halftone and scanlines print each cell
--- with ink on paper so that, seen from a step back, the cell is the
--- picture's own colour there:
+-- and grow and shrink with it), but for scanlines, which keep v0.2's lines
+-- on the window's pixels. Halftone prints each cell with ink on paper so
+-- that, seen from a step back, the cell is the picture's own colour there:
 --
 -- 1. the picture recedes into the paper by one small offset (`RECEDE`);
 -- 2. a cell's ink covers a share of it from `FLOOR` to `MOST`, by how far
@@ -52,7 +52,8 @@ local COMMON = string.format(
 // params[1]: the picture's grid (its pixels across, down: 0 for no
 //   picture) and where its overflow is cut (0 to 1, 0.5 centred).
 // params[2]: its zoom, the ink's least and most share, the recede.
-// params[3]: the push.
+// params[3]: the push; the window's room above and below the box (points)
+//   and whether the fade is Zeron's hero's (1) or the box's (0).
 // The paper, by scheme (sRGB).
 const FX_PAPER_DARK=vec3<f32>(%.4f,%.4f,%.4f);
 const FX_PAPER_LIGHT=vec3<f32>(%.4f,%.4f,%.4f);
@@ -110,8 +111,16 @@ fn fx_share(input:LayerInput,c:vec3<f32>)->f32 {
  return mix(input.params[2].y,input.params[2].z,fx_reach(c,fx_paper(input)));
 }
 // How much of the art shows here: full at the top, nothing at the foot.
+// As Zeron's hero (crates/ui shell.rs `new_thread_background_height`): the
+// fade runs from the window's top over .72 of its height (760 at most), so
+// the art is gone well above the window's foot; else over the box's height.
 fn fx_alpha(input:LayerInput)->f32 {
  if input.params[0].w<.5 {return 1.;}
+ if input.params[3].w>.5 {
+  let top=input.params[3].y;
+  let h=min(.72*(input.size.y+top+input.params[3].z),760.);
+  return smoothstep(0.,h,h-(input.p.y+top));
+ }
  return smoothstep(0.,input.size.y,input.size.y-input.p.y);
 }
 // What of the window's pixel at `x` (`w` wide, both in cells) falls in the
@@ -279,23 +288,19 @@ fn fx_effect(input:LayerInput,g:vec3<f32>,q:vec2<f32>,fp:f32)->vec3<f32> {
 }
 ]]
 
--- Scanlines: a CRT's rows, 4 of the picture's pixels apart, 55% of each
--- lit, soft at its edges, the dark between lifting where the picture is
--- bright.
+-- Scanlines, as v0.2 drew them (Zeron's `scanline_pixels`): on the
+-- window's pixels, not the picture's grid, every `FX_PITCH` points a line a
+-- third of it tall, darkened (in the light, lifted towards white) by
+-- `FX_K`; the picture between them as it is. In sRGB, hard-edged.
 local SCANLINES = [[
-const FX_PERIOD:f32=4.;
-const FX_BAND:f32=.55;
-const FX_SOFT:f32=.25;
+const FX_PITCH:f32=3.;
+const FX_K:f32=.48;
 fn fx_effect(input:LayerInput,g:vec3<f32>,q:vec2<f32>,fp:f32)->vec3<f32> {
- let y=q.y/FX_PERIOD;
- let row=floor(y);
- let c=fx_mean(input,g,vec2(q.x,(row+.5)*FX_PERIOD),vec2(FX_PERIOD*.5,FX_PERIOD));
- let ink=fx_split(input,c,FX_BAND);
- // The band, centred in its row, its edge over the window's pixel (and
- // softened by FX_SOFT of a row).
- let d=(abs(y-row-.5)-.5*FX_BAND)*FX_PERIOD;
- let edge=max(fp,FX_SOFT*FX_PERIOD);
- return mix(ink.gap,ink.ink,clamp(.5-d/edge,0.,1.));
+ let pitch=max(3.,round(FX_PITCH*input.scale));
+ let row=floor(input.p.y*input.scale);
+ let c=input.color.rgb;
+ if (row%pitch)>=max(1.,round(pitch/3.)) {return fx_lin(c);}
+ return fx_lin(select(c*(1.-FX_K),c+(vec3(1.)-c)*FX_K,input.params[0].z>.5));
 }
 ]]
 
@@ -324,6 +329,9 @@ export type Params = {
 	light: boolean?,
 	faded: boolean?,
 	picture: Grid?,
+	-- The window's room above and below the box (points): given, the fade
+	-- is Zeron's hero's (72% of the window's height, 760 at most).
+	window: { top: number, bottom: number }?,
 }
 
 -- The picture's grid: its pixels as Zeron's proxy of it has them (the
@@ -346,7 +354,7 @@ function M.params(o: Params): { any }
 		{ o.strength or 1, o.threshold or 0, if o.light then 1 else 0, if o.faded == false then 0 else 1 },
 		{ gw, gh, if p then math.clamp(p.x or 0.5, 0, 1) else 0.5, if p then math.clamp(p.y or 0.5, 0, 1) else 0.5 },
 		{ if p then math.clamp(p.zoom or 1, 1, 4) else 1, M.FLOOR, M.MOST, M.RECEDE[scheme] },
-		{ M.PUSH[scheme], 0, 0, 0 },
+		{ M.PUSH[scheme], if o.window then o.window.top else 0, if o.window then o.window.bottom else 0, if o.window then 1 else 0 },
 	}
 end
 

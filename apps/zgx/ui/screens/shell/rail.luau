@@ -1,0 +1,611 @@
+-- The app's rail: a column of icons down the window's left edge, left of the
+-- sidebar, always there whether the sidebar is open or folded (after
+-- gpui's app rail). New chat and Search, then each plugin's pages, at its
+-- top; at its foot, the usage ring (your agents' plan limits, its card each
+-- account's windows), then you (your profile) and Settings, which the
+-- sidebar's foot row gave up for it (`view.app_rail`). (The composer keeps
+-- its context ring, a chat's own, not a plan's: screens/chat/composer.)
+--
+--   rail.Rail()     the rail
+--   rail.W          its width, which the window's fit leaves it (screens/shell/init)
+
+local ds = require("@ds")
+local AgentMark = require("@ds/agent_mark")
+local Avatar = require("@ds/avatar")
+local context_usage = require("@ds/context_usage")
+local HoverCard = require("@ds/hover_card")
+local locale = require("@ds/locale")
+local PrivateText = require("@ds/private_text")
+local Tooltip = require("@ds/tooltip")
+local agents = require("@account/agents")
+local boundary = require("@app/screens/shell/boundary")
+local keys = require("@app/screens/shell/keys")
+local route = require("@app/screens/shell/route")
+local view = require("@app/screens/shell/view")
+
+local M = {}
+
+-- Its width, its buttons and their glyphs, the gap between them; its top
+-- under the title bar, and its padding (gpui's rail's).
+M.W = view.app_rail_w
+local BUTTON, GLYPH, GAP, TOP, PAD = 34, 18, 6, 44, 8
+local AVATAR = 24
+-- The window's gap between the rail and the card beside it (the sidebar's,
+-- or the page's with the sidebar folded): screens/shell/page's WINDOW_EDGE.
+local EDGE = 5
+-- Its hover eases in and out, as gpui's rail does (ds.IconButton's snaps).
+local HOVER = { duration = 150, ease = "out(3)" }
+-- The usage ring: its radius and stroke round the button's middle, the
+-- agent's mark inside it, and its hover card's width.
+local RING_RADIUS, RING_STROKE, RING_GLYPH = 13, 2.5, 14
+local CARD_W = 290
+
+-- A label with its shortcut, for a tooltip ("New chat (⌘N)").
+local function with_key(label: string, id: string): string
+	return locale.s("shell.rail.with_key", { label = label, key = ui.shortcut_text(keys.combo(id)) })
+end
+
+-- The shell's sidebar module (you, your profile, settings' toggle), as it's
+-- loaded now; nil while it fails.
+local function sidebar(): any
+	return boundary.load("@app/screens/shell/sidebar")
+end
+
+type ButtonProps = {
+	key: string,
+	label: () -> string,
+	tooltip: (() -> string)?,
+	lit: (() -> boolean)?,
+	on_click: (() -> ())?,
+	[number]: Node,
+}
+
+-- A rail button: its glyph in the secondary ink, brightening with a wash
+-- under the pointer and while it's lit (its page is open).
+local RailButton = ui.component(function(props: ButtonProps): Node
+	local over = ui.use_state(false)
+	local bright = ui.computed(function(): number
+		return if over:get() or (props.lit ~= nil and props.lit()) then 1 else 0
+	end)
+	return ui.button {
+		id = props.key,
+		label = props.label,
+		tooltip = if props.tooltip then Tooltip { props.tooltip } else nil,
+		tooltip_placement = { side = "right", align = "center", offset = 6 },
+		relative = true,
+		w = BUTTON,
+		h = BUTTON,
+		shrink = 0,
+		p = 0,
+		items = "center",
+		justify = "center",
+		rounded = "$radius.lg",
+		bg = "#00000000",
+		hover = { bg = "#00000000" },
+		active = { bg = "$pressed" },
+		cursor = if props.on_click then "pointer" else nil,
+		color = function(): string
+			return if bright:get() > 0 then "$text.primary" else "$text.secondary"
+		end,
+		on_hover = function(inside: boolean)
+			over:set(inside)
+		end,
+		on_click = props.on_click,
+		-- Its wash, fading in and out.
+		ui.div {
+			absolute = true,
+			left = 0,
+			right = 0,
+			top = 0,
+			bottom = 0,
+			rounded = "$radius.lg",
+			bg = "$hover",
+			opacity = ui.tween(bright, HOVER),
+			pointer_events = "none",
+		},
+		props[1],
+	}
+end)
+
+local function new_chat(): Node
+	return RailButton {
+		key = "rail-new-chat",
+		label = function(): string
+			return locale.s("ds.sidebar.new_chat")
+		end,
+		tooltip = function(): string
+			return with_key(locale.s("ds.sidebar.new_chat"), "shell.new_chat")
+		end,
+		lit = function(): boolean
+			return route.current:get().name == "home"
+		end,
+		on_click = function()
+			route.new_chat()
+		end,
+		ds.Icon { name = "pen-new-square", size = GLYPH },
+	}
+end
+
+local function search(): Node
+	return RailButton {
+		key = "rail-search",
+		label = function(): string
+			return locale.s("ds.sidebar.search")
+		end,
+		tooltip = function(): string
+			return locale.s("shell.rail.with_key", { label = locale.s("ds.sidebar.search"), key = ui.shortcut_text("cmd+k") })
+		end,
+		lit = function(): boolean
+			return view.palette:get()
+		end,
+		on_click = function()
+			view.palette:set(true)
+		end,
+		ds.Icon { name = "magnifer", size = GLYPH },
+	}
+end
+
+-- Each plugin's pages, as the sidebar lists them (each follows its page: a
+-- plugin renaming one or changing its icon shows here in place).
+local function pages(): Node
+	local list = ui.shared("plugins.pages", {} :: { any })
+	return ui.each(list, function(_: any, _i: number, now: State<any>): Node
+		local function title(): string
+			return now:get().title or ""
+		end
+		return RailButton {
+			key = `rail-page-{now:peek().plugin}-{now:peek().id}`,
+			label = title,
+			tooltip = title,
+			lit = function(): boolean
+				local c = route.current:get()
+				local p = now:get()
+				return c.name == "plugin" and (c :: any).plugin == p.plugin and (c :: any).page == p.id
+			end,
+			on_click = function()
+				local p = now:peek()
+				route.plugin_page(p.plugin, p.id)
+			end,
+			ui.presence(function(): string
+				return now:get().icon or "widget"
+			end, function(icon: string): Node
+				return ds.Icon { name = icon :: any, size = GLYPH }
+			end),
+		}
+	end, {
+		key = function(p: any): string
+			return `{p.plugin}/{p.id}`
+		end,
+		items = "center",
+		gap = ui.raw(GAP, "the rail's gap, as gpui's"),
+	})
+end
+
+-- You: your avatar, opening your profile (lit while it's open); nothing
+-- until the engine has said who you are.
+local function account(): Node
+	local function who(): any
+		local s = sidebar()
+		return if s then s.user() else { name = "" }
+	end
+	local function name(): string
+		return who().name or ""
+	end
+	return ui.show(function(): boolean
+		return name() ~= ""
+	end, RailButton {
+		key = "rail-account",
+		label = name,
+		tooltip = name,
+		lit = function(): boolean
+			local s = sidebar()
+			return s ~= nil and s.account.user_open()
+		end,
+		on_click = function()
+			local s = sidebar()
+			if s then
+				s.account.on_user()
+			end
+		end,
+		ui.presence(function(): string
+			local u = who()
+			return u.id or u.name or ""
+		end, function(seed: string): Node
+			return Avatar {
+				seed = seed,
+				size = AVATAR,
+				label = name(),
+				src = function(): string?
+					return who().avatar
+				end,
+			}
+		end),
+	})
+end
+
+-- Settings: a toggle, lit while a page of theirs other than your profile is
+-- open, a click again leaving them (the sidebar's foot button's own).
+local function settings(): Node
+	local function open(): boolean
+		local s = sidebar()
+		return s ~= nil and s.account.settings_open()
+	end
+	local function name(): string
+		return locale.s(if open() then "shell.rail.close_settings" else "ds.sidebar.settings")
+	end
+	return RailButton {
+		key = "rail-settings",
+		label = name,
+		tooltip = function(): string
+			return with_key(name(), "shell.settings")
+		end,
+		lit = open,
+		on_click = function()
+			local s = sidebar()
+			if s then
+				s.account.on_settings()
+			end
+		end,
+		ds.Icon { name = "settings", size = GLYPH },
+	}
+end
+
+-- Usage: each agent's account in use on this device, with how much of its
+-- plan's windows (a session's, a week's) it has used, as the agents report
+-- them (account/agents). Clicked, Settings → Usage.
+
+-- The agents Zeron drives, in the catalog's order: their names and marks.
+local catalog = ui.shared("chat.catalog", { state = "looking", harnesses = {}, models = {} } :: any)
+
+type Live = { harness: any, account: any }
+
+-- One an agent: its account in use, while that reports windows.
+local function live_accounts(): { Live }
+	local on = agents.on_device:get()[""]
+	local out: { Live } = {}
+	if not on then
+		return out
+	end
+	for _, h in catalog:get().harnesses or {} do
+		for _, account in on[h.id] or {} do
+			if account.active and account.windows and #account.windows > 0 then
+				table.insert(out, { harness = h, account = account })
+				break
+			end
+		end
+	end
+	return out
+end
+
+-- How much of its tightest window an account has used (0 to 1).
+local function most_used(account: any): number
+	local most = 0
+	for _, w in account.windows do
+		most = math.max(most, math.clamp(w.used, 0, 1))
+	end
+	return most
+end
+
+-- The account nearest its limit, which the ring shows.
+local function tightest(list: { Live }): Live?
+	local best: Live? = nil
+	for _, live in list do
+		if best == nil or most_used(live.account) >= most_used(best.account) then
+			best = live
+		end
+	end
+	return best
+end
+
+-- A window's name, as said here ("5h", "Weekly"), else as the agent says it.
+local function window_name(label: string): string
+	local key = string.lower(label or "")
+	if key == "session" or key == "week" or key == "day" then
+		return locale.s(`shell.rail.usage.window.{key}`)
+	end
+	return label
+end
+
+local function percent(used: number): string
+	return `{math.floor(math.clamp(used, 0, 1) * 100 + 0.5)}%`
+end
+
+local function mark_of(h: any, size: number): Node
+	return AgentMark.Mark { label = h.label, mark = h.mark, icon = h.icon, seed = h.id, size = size, bare = true }
+end
+
+-- The ring's name: the account nearest its limit and its windows.
+local function ring_label(): string
+	local shown = tightest(live_accounts())
+	if not shown then
+		local loading = agents.on_device:get()[""] == nil
+		return locale.s(if loading then "shell.rail.usage.loading" else "shell.rail.usage.none")
+	end
+	if most_used(shown.account) >= 1 then
+		return locale.s("shell.rail.usage.limit")
+	end
+	local parts: { string } = {}
+	for _, w in shown.account.windows do
+		table.insert(parts, `{window_name(w.label)} {percent(w.used)}`)
+	end
+	return locale.s("shell.rail.usage.line", { name = shown.harness.label, windows = table.concat(parts, ", ") })
+end
+
+-- A window of an account: its name, a bar of how much is used (amber from
+-- 80%, red from 95%), and the share; the binding one at its limit says so.
+local function window_row(w: any, binding: boolean): Node
+	local hot = w.used >= 1
+	local tone = if hot then "$danger" else "$text.secondary"
+	return ui.column {
+		gap = ui.raw(2, "a window's bar and the line under it, as gpui's card"),
+		ui.row {
+			items = "center",
+			gap = "$space.2",
+			ui.text { window_name(w.label), w = ui.raw(62, "gpui's window column"), shrink = 0, truncate = true, color = tone },
+			ds.ProgressBar {
+				value = function(): number
+					return math.clamp(w.used, 0, 1)
+				end,
+				tone = if w.used >= 0.95 then "danger" elseif w.used >= 0.8 then "warning" else "accent",
+				grow = 1,
+			},
+			ui.text {
+				percent(w.used),
+				w = ui.raw(44, "gpui's percent column"),
+				shrink = 0,
+				tabular = true,
+				align = "right",
+				color = if hot then "$danger" else "$text.primary",
+			},
+		},
+		if hot and binding
+			then ui.text {
+				ui.t("shell.rail.usage.limit_reached"),
+				pl = ui.raw(70, "under the bar: the name's column and its gap"),
+				color = tone,
+			}
+			else nil,
+	}
+end
+
+-- An agent's account: its mark, name and plan, its email (hidden while
+-- addresses are), what went wrong asking, then each window.
+local function account_section(live: Live, binding: any): Node
+	local a = live.account
+	local rows: { any } = {
+		gap = "$space.2",
+		ui.row {
+			items = "center",
+			gap = "$zeron.space.tight",
+			mark_of(live.harness, 13),
+			ui.text { live.harness.label, shrink = 0, weight = "$font.weight.medium", text_size = "$font.size.sm" },
+			if a.plan and a.plan ~= "" then ui.text { a.plan, shrink = 0, color = "$text.secondary" } else nil,
+			ui.div { grow = 1 },
+			PrivateText { a.email or "", reveal = false, truncate = true, shrink = 1, min_w = 0, color = "$text.secondary", text_size = "$font.size.xs" },
+		},
+	}
+	if a.error then
+		table.insert(rows, ui.text { a.error, wrap = true, color = "$warning" })
+	end
+	for _, w in a.windows do
+		table.insert(rows, window_row(w, w == binding))
+	end
+	return ui.column(rows)
+end
+
+-- The ring's card: each account's windows, else what the ring says.
+local function hover_card(): Node
+	return HoverCard.Card {
+		id = "rail-usage-hover-card",
+		w = function(): any
+			return if #live_accounts() > 0 then CARD_W else "auto"
+		end,
+		p = 0,
+		gap = 0,
+		text_size = "$font.size.xs",
+		ui.switch(function(): string
+			return if #live_accounts() > 0 then "accounts" else "none"
+		end, {
+			accounts = ui.column {
+				w_full = true,
+				gap = 0,
+				ui.column {
+					w_full = true,
+					p = "$space.2",
+					gap = "$space.3",
+					ui.row {
+						w_full = true,
+						items = "baseline",
+						justify = "between",
+						ui.text { ui.t("shell.rail.usage.title"), weight = "$font.weight.medium", text_size = "$font.size.sm" },
+						ui.text { ui.t("shell.rail.usage.used"), color = "$text.secondary" },
+					},
+					ui.column {
+						w_full = true,
+						gap = "$space.3",
+						ui.each(ui.computed(function(): { any }
+							local list = live_accounts()
+							local best = tightest(list)
+							local binding: any = nil
+							if best then
+								for _, w in best.account.windows do
+									if binding == nil or w.used > binding.used then
+										binding = w
+									end
+								end
+							end
+							local out: { any } = {}
+							for _, live in list do
+								table.insert(out, { live = live, binding = binding })
+							end
+							return out
+						end), function(item: any): Node
+							return account_section(item.live, item.binding)
+						end, {
+							key = function(item: any): string
+								return `{item.live.harness.id}:{item.live.account.id}`
+							end,
+							gap = "$space.3",
+						}),
+					},
+				},
+				ui.div { w_full = true, h = 1, bg = "$border.subtle" },
+				ui.row {
+					w_full = true,
+					px = "$space.2",
+					py = "$space.2",
+					items = "center",
+					justify = "between",
+					color = "$text.secondary",
+					ui.text { ui.t("shell.rail.usage.open_page") },
+					ds.Icon { name = "alt-arrow-right", size = 12 },
+				},
+			},
+			none = ui.text { ring_label, px = "$space.2", py = "$space.1", color = "$text.primary", wrap = true },
+		}),
+	}
+end
+
+-- The ring: the account nearest its limit, how much of it is used round
+-- its agent's mark (red, with a badge, at its limit). Hovered, its card
+-- (asking the agents again); pressed, Settings → Providers, its accounts.
+local function usage_ring(): Node
+	ui.effect(function()
+		agents.watch_device("")
+	end)
+	local over = ui.use_state(false)
+	local clicked = ui.use_state(false)
+	local function shown(): Live?
+		return tightest(live_accounts())
+	end
+	local function hot(): boolean
+		local s = shown()
+		return s ~= nil and most_used(s.account) >= 1
+	end
+	local function lit(): boolean
+		local c = route.current:get()
+		return c.name == "settings" and (c :: any).page == "providers"
+	end
+	local bright = ui.computed(function(): number
+		return if over:get() or lit() then 1 else 0
+	end)
+	return ui.button {
+		id = "rail-usage",
+		label = ring_label,
+		tooltip = ui.show(function(): boolean
+			return not clicked:get()
+		end, hover_card()),
+		tooltip_placement = { side = "right", align = "end", offset = 6 },
+		tooltip_delay = 120,
+		relative = true,
+		w = BUTTON,
+		h = BUTTON,
+		shrink = 0,
+		p = 0,
+		items = "center",
+		justify = "center",
+		rounded = "$radius.lg",
+		bg = "#00000000",
+		hover = { bg = "#00000000" },
+		active = { bg = "$pressed" },
+		cursor = "pointer",
+		color = "$text.primary",
+		on_hover = function(inside: boolean)
+			over:set(inside)
+			if inside then
+				agents.refresh_device("")
+			else
+				clicked:set(false)
+			end
+		end,
+		on_click = function()
+			clicked:set(true)
+			route.settings("usage")
+		end,
+		ui.div {
+			absolute = true,
+			left = 0,
+			right = 0,
+			top = 0,
+			bottom = 0,
+			rounded = "$radius.lg",
+			bg = "$hover",
+			opacity = ui.tween(bright, HOVER),
+			pointer_events = "none",
+		},
+		ui.canvas {
+			absolute = true,
+			left = 0,
+			top = 0,
+			w = BUTTON,
+			h = BUTTON,
+			pointer_events = "none",
+			draw = function(c, w, h)
+				local s = shown()
+				local f = if hot() then 1 elseif s then most_used(s.account) else 0
+				c:stroke(ui.path():arc(w / 2, h / 2, RING_RADIUS, 0, 360), "$border", RING_STROKE)
+				if f > 0 then
+					local ink = if hot() then "$danger" else context_usage.usage_ink(f)
+					c:stroke(ui.path():arc(w / 2, h / 2, RING_RADIUS, -90, 360 * f), ink, RING_STROKE, { cap = "round" })
+				end
+			end,
+		},
+		ui.presence(function(): string
+			local s = shown()
+			return if s then s.harness.id else ""
+		end, function(id: string): Node
+			for _, h in catalog:peek().harnesses or {} do
+				if h.id == id then
+					return mark_of(h, RING_GLYPH)
+				end
+			end
+			return ui.div {}
+		end),
+		ui.show(hot, ui.row {
+			id = "rail-usage-limit",
+			absolute = true,
+			top = ui.raw(1, "gpui's badge on the ring's corner"),
+			right = 0,
+			w = 12,
+			h = 12,
+			items = "center",
+			justify = "center",
+			rounded = "$radius.full",
+			bg = "$danger",
+			pointer_events = "none",
+			ui.text { "!", text_size = "$font.size.xs", weight = "$font.weight.bold", color = "$accent.text" },
+		}),
+	}
+end
+
+M.Rail = ui.component(function(): Node
+	return ui.column {
+		id = "app-rail",
+		role = "toolbar",
+		label = function(): string
+			return locale.s("shell.rail.label")
+		end,
+		w = M.W,
+		h_full = true,
+		shrink = 0,
+		pt = ui.raw(TOP + PAD, "under the title bar, as gpui's rail starts"),
+		pb = ui.raw(PAD, "gpui's rail padding"),
+		-- (The window's gap that follows it, before the sidebar's card or the
+		-- page's, read as the rail's own: so its buttons centre in the strip
+		-- the eye sees from the window's edge to the card, not 2.5 short.)
+		pl = ui.raw(EDGE, "the window's gap after the rail, matched before it"),
+		gap = ui.raw(GAP, "gpui's rail gap"),
+		items = "center",
+		-- (Its empty stretches move the window, as the title bar does.)
+		window_drag = true,
+		new_chat(),
+		search(),
+		pages(),
+		ui.div { grow = 1 },
+		usage_ring(),
+		account(),
+		settings(),
+	}
+end)
+
+return M

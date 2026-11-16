@@ -10,8 +10,7 @@
 -- kind of match first (a word's start, then an acronym, a run inside a
 -- word, letters scattered through a title), then the field (title over
 -- project, branch, device), every word somewhere in the row, the letters it
--- matched marked. With nothing typed, pinned and recently used things come
--- first. At the root, scopes (All, Sessions, Commands, Settings) narrow it
+-- matched marked. With nothing typed, recently used things come first. At the root, scopes (All, Sessions, Commands, Settings) narrow it
 -- to one kind, each saying how many it holds.
 --
 -- Everything is on the keys, from the field: ↑ ↓ move (round the ends),
@@ -103,8 +102,6 @@ export type Item = {
 	-- The current choice on its page (a check at its end; highlighted as
 	-- the page opens).
 	checked: (() -> boolean)?,
-	-- Listed first while nothing is typed.
-	pinned: boolean?,
 	-- What Enter does (the palette closes first), and what the footer calls
 	-- it ("Open", "Run"); ⌘Enter's.
 	run: (() -> ())?,
@@ -220,7 +217,6 @@ local SCOPES_SEARCHED = {
 -- The sections the palette names itself (the rows keep these names, as
 -- data), each drawn in the locale's words; the rest are their callers'.
 local OWN_TITLES: { [string]: string } = {
-	Pinned = "ds.command_palette.pinned",
 	Recent = "ds.command_palette.recent",
 	["Loading…"] = "ds.command_palette.loading",
 }
@@ -828,15 +824,12 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 				s = got
 				new_hits[item.id] = hits :: any
 				table.insert(matched, item)
-				-- A little ahead: what was used lately, what is pinned; behind,
-				-- what is archived. Among commands, shorter titles edge ahead
+				-- A little ahead: what was used lately; behind, what is
+				-- archived. Among commands, shorter titles edge ahead
 				-- (sessions tie by when they last moved, below).
 				local u = used_at[item.id]
 				if u then
 					s += (RECENT * 2 + 2 - u) * 4
-				end
-				if item.pinned then
-					s += 8
 				end
 				if archived then
 					s *= 0.5
@@ -877,7 +870,7 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		last.page, last.q, last.found, last.list = p, q, if #terms > 0 then matched else {}, items
 		hits_of = new_hits
 
-		-- Into sections: with nothing typed, pinned and recent first, then
+		-- Into sections: with nothing typed, recent first, then
 		-- each section as the page orders it (sessions by when they last
 		-- moved); with a search, every section best match first, the
 		-- sections by their best.
@@ -897,13 +890,6 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		if #terms == 0 then
 			local taken: { [Item]: boolean } = {}
 			if at_root then
-				local pinned = section("Pinned", 0)
-				for _, h in found do
-					if h.item.pinned then
-						table.insert(pinned.hits, h)
-						taken[h.item] = true
-					end
-				end
 				if sc == "all" then
 					local recent_s = section("Recent", 0)
 					local by: { [string]: Hit } = {}
@@ -972,7 +958,7 @@ local Body = ui.component(function(props: Props & { recent_state: State<{ string
 		if at_root and scoped and sc == "all" then
 			for _, s in sections do
 				local of_sessions = #s.hits > 0 and scope_of(s.hits[1].item) == "sessions"
-				if of_sessions and s.title ~= "Pinned" and s.title ~= "Recent" and #s.hits > ALL_SESSIONS + 1 then
+				if of_sessions and s.title ~= "Recent" and #s.hits > ALL_SESSIONS + 1 then
 					s.hits = table.move(s.hits, 1, ALL_SESSIONS, 1, {})
 					s.more = "sessions"
 				end

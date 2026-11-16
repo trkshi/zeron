@@ -28,6 +28,19 @@ local M = {}
 -- collapsed, the sidebar folds away entirely, as Zeron's does, and the
 -- title bar's toggle (⌘B) brings it back. `true` mounts it again.
 M.rail = false
+-- The collapsed sidebar's rail docked instead: a narrow card down the window's
+-- left edge, under the top bar, the sidebar's icons in a column (its actions,
+-- then each group's tile, opening its flyout). It eases in as the sidebar folds
+-- and out as it comes back (screens/shell/init). Off: collapsed, the sidebar
+-- folds away entirely. (Off while the app rail stands there: below.)
+M.rail_docked = false
+-- The app's rail, always there down the window's left edge, left of the
+-- sidebar (screens/shell/rail): New chat, Search and plugins' pages, you and
+-- Settings at its foot, which the sidebar's foot row gives up for it. Off: the
+-- sidebar runs to the window's edge, you and Settings at its foot.
+M.app_rail = true
+-- Its width (screens/shell/rail `W`): what stands left of the sidebar.
+M.app_rail_w = 46
 
 M.collapsed = ui.persist("shell_collapsed", false)
 -- Each session's panel, open (by session id; absent, closed).

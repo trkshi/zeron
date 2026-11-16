@@ -14,6 +14,7 @@
 
 local ds = require("@ds")
 local motion = require("@ds/motion")
+local prefs = require("@app/screens/settings/prefs")
 local seam = require("@ds/seam")
 local locale = require("@ds/locale")
 local route = require("@app/screens/shell/route")
@@ -100,6 +101,27 @@ return function(props: Props): Node
 		return route.current:get().name == "plugin"
 	end
 
+	-- Its swap between a new chat and a session, as Zeron v2's (composer_dock.rs):
+	-- what it leaves fades in the first quarter of the move (a session's
+	-- transcript going first as the composer rises to a new chat), and what
+	-- comes fades in from a fifth of it to two thirds (a chat's transcript
+	-- as the composer settles to its foot). The presence keeps these tables
+	-- and reads them as each swap plays, so Settings' "Animate new chat
+	-- transitions" (and Reduce motion) is followed in place: off, nothing
+	-- fades.
+	local page_enter: { [string]: any } = {}
+	local page_leave: { [string]: any } = {}
+	ui.effect(function()
+		local on = prefs.animate_new_chat:get() and not motion.reduced()
+		page_enter.opacity = if on then { 0, 1 } else { 1, 1 }
+		page_enter.duration = if on then 190 else 0
+		page_enter.delay = if on then 84 else 0
+		page_enter.ease = "out(3)"
+		page_leave.opacity = if on then 0 else 1
+		page_leave.duration = if on then 120 else 0
+		page_leave.ease = "out(3)"
+	end)
+
 	-- What the chat route shows, under the title bar: a new chat, or a
 	-- session (a page swap; another session is the same page, showing it,
 	-- in place).
@@ -121,7 +143,12 @@ return function(props: Props): Node
 		return boundary.screen(boundary.named("shell.boundary.screen.new_chat_page"), "@app/screens/chat", function(chat): Node
 			return chat.Home()
 		end)
-	end, { w_full = true, h_full = true })
+	end, {
+		w_full = true,
+		h_full = true,
+		enter = page_enter,
+		exit = page_leave,
+	})
 
 	-- Split chats (screens/shell/split): the chats of the split showing laid
 	-- out in the page, side by side and above one another, the window's gap
@@ -203,6 +230,11 @@ return function(props: Props): Node
 	-- (Its edge's room; the edge itself is drawn with the fill, below.)
 	pane.border = 1
 	pane.border_color = "#00000000"
+	-- Lifted off the window, the sidebar beside it lying on the window
+	-- itself. (None in a split: there the panes are the cards.)
+	pane.shadow = function(): any
+		return if grouped() then false else "$zeron.inset.lift"
+	end
 	-- The card's fill and edge, under all it holds (the fill lighter than the
 	-- window, lifting it), faded by a tween zgx runs as a split starts and ends,
 	-- so no script runs and nothing is laid out as it fades. None in a split:
@@ -252,6 +284,13 @@ return function(props: Props): Node
 			-- (Laid at the window's width, as a state zgx follows: a resize
 			-- runs no script here.)
 			width = fit.viewport,
+			-- (The card's room to the window's top and foot: the fade is
+			-- Zeron's, over 72% of the window's height.)
+			window = { top = TOP_BAR, bottom = WINDOW_EDGE },
+			-- (Fading in and out with a new chat, as Settings says.)
+			animate = function(): boolean
+				return prefs.animate_new_chat:get()
+			end,
 			beside = function(): number
 				return panel_beside()
 			end,
@@ -2023,13 +2062,12 @@ return function(props: Props): Node
 				-- width leaves, followed as the sidebar moves.)
 				return props.width() - (row_ref.width or props.width())
 			end,
+			-- (Past Back and Forward, or, the sidebar open, where its card
+			-- ends (its "…" over that end): each frame as it folds or opens.)
 			start = function(): number
 				local past = ds.TitleBar.last_control_end() + 8
-				if sidebar_settled() <= 0 then
-					return past
-				end
-				local button = (ui.theme.get("zeron.icon_button.md") :: number?) or 24
-				return past + button + 8
+				local rail = if shell_view.app_rail then shell_view.app_rail_w else 0
+				return math.max(past, rail + shell_view.sidebar_shown:get() + 8)
 			end,
 			-- (Clear of the panel toggle, and of Expand while the panel's open.)
 			right = function(): number

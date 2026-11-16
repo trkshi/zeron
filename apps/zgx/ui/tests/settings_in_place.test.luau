@@ -416,7 +416,7 @@ end)
 
 test("Appearance's conversation width is a slider kept as set, within production's range", function()
 	local app = open("Appearance")
-	expect(app:state("settings_conversation_width")).to_be(660)
+	expect(app:state("settings_conversation_width")).to_be(736)
 	local slider = `{PAGE} >> role:slider ~"Conversation width"`
 	expect(app:has(slider)).to_be(true)
 	-- (Under the theme and motion sections: brought into view.)

@@ -3,8 +3,7 @@
 -- your projects (archived ones too, marked so), what you can do (a new
 -- chat, in a project of your choosing), where you can go (settings' pages)
 -- and what you can flip (the look, the sidebar, the template in use). With
--- nothing typed,
--- pinned sessions and what you used lately come first.
+-- nothing typed, what you used lately comes first.
 --
 -- `Palette()`: placed once in the window.
 
@@ -43,10 +42,6 @@ local function session_items(): { Item }
 	for _, d in now.devices do
 		devices[d.id] = d.name
 	end
-	local pinned: { [string]: boolean } = {}
-	for _, id in now.places.pinned do
-		pinned[id] = true
-	end
 	local out: { Item } = {}
 	local function add(c: sessions.Chat, archived: boolean)
 		local p = if c.project then projects[c.project] else nil
@@ -67,7 +62,6 @@ local function session_items(): { Item }
 				device = devices[c.device],
 				archived = archived,
 			},
-			pinned = pinned[c.id],
 			verb = locale.s("shell.palette.open"),
 			run = function()
 				route.open_session(c.id)

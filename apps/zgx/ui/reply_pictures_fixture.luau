@@ -172,6 +172,8 @@ local Page = ui.component(function(): Node
 				return width:get()
 			end,
 			T.Transcript {
+				-- (A 660-point column, as tests/reply_pictures measures.)
+				measure = 660,
 				messages = messages,
 				offset = offset,
 				draft = draft,

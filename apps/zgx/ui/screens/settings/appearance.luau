@@ -30,6 +30,8 @@ search.index(M.ID, ui.t("settings.appearance.title"), ui.t("settings.appearance.
 	{ key = "themes", title = ui.t("settings.appearance.theme.more"), terms = ui.t("settings.appearance.theme.terms") },
 	{ key = "accent", title = ui.t("settings.appearance.accent.label"), terms = ui.t("settings.appearance.accent.terms") },
 	{ key = "reduce_motion", title = ui.t("settings.appearance.reduce_motion.label"), section = ui.t("settings.appearance.motion"), terms = ui.t("settings.appearance.reduce_motion.terms") },
+	{ key = "animate_new_chat", title = ui.t("settings.appearance.animate_new_chat.label"), section = ui.t("settings.appearance.motion"), terms = ui.t("settings.appearance.animate_new_chat.terms") },
+	{ key = "context_usage", title = ui.t("settings.appearance.context_usage.label"), terms = ui.t("settings.appearance.context_usage.terms") },
 	{ key = "glass", title = ui.t("settings.appearance.glass.label"), terms = ui.t("settings.appearance.glass.terms") },
 	{ key = "interface_font", title = ui.t("settings.appearance.interface_font.label"), section = ui.t("settings.appearance.fonts"), terms = ui.t("settings.appearance.interface_font.terms") },
 	{ key = "text_size", title = ui.t("settings.appearance.text_size.label"), section = ui.t("settings.appearance.fonts"), terms = ui.t("settings.appearance.text_size.terms") },
@@ -374,6 +376,19 @@ function M.view(): Node
 					description = ui.t("settings.appearance.accented.description"),
 					control = ds.Switch { value = ds.look.accented, label = ui.t("settings.appearance.accented.label") },
 				}),
+				-- How a chat's composer shows its context (prefs.context_usage).
+				row("context_usage", {
+					label = ui.t("settings.appearance.context_usage.label"),
+					description = ui.t("settings.appearance.context_usage.description"),
+					control = ds.Segmented {
+						value = prefs.context_usage,
+						label = ui.t("settings.appearance.context_usage.label"),
+						options = {
+							{ value = "ring", label = ui.t("settings.appearance.context_usage.ring") },
+							{ value = "detail", label = ui.t("settings.appearance.context_usage.detail") },
+						} :: any,
+					},
+				}),
 			},
 		},
 		-- Every move the app makes asks ds/motion: on, they land at once.
@@ -389,6 +404,12 @@ function M.view(): Node
 						return ui.t("settings.appearance.reduce_motion.description"):get()
 					end,
 					control = ds.Switch { value = motion.reduce, label = ui.t("settings.appearance.reduce_motion.label") },
+				}),
+				-- Going between a new chat and a chat, as Zeron v2 moved it.
+				row("animate_new_chat", {
+					label = ui.t("settings.appearance.animate_new_chat.label"),
+					description = ui.t("settings.appearance.animate_new_chat.description"),
+					control = ds.Switch { value = prefs.animate_new_chat, label = ui.t("settings.appearance.animate_new_chat.label") },
 				}),
 			},
 		},

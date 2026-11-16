@@ -656,7 +656,9 @@
         "no_limit": "Context limit not reported",
         "capacity": "{n} token capacity",
         "waiting": "Waiting for context usage",
-        "unreported": "Context usage not reported by this agent yet"
+        "unreported": "Context usage not reported by this agent yet",
+        "label": "Context",
+        "brief": "{used}/{window} ({n}%)"
       }
     },
     "markdown": {
@@ -999,7 +1001,6 @@
         "settings": "Settings"
       },
       "pr": "Pull request {n}, {state, select, open {open} merged {merged} closed {closed} other {draft}}",
-      "pinned": "Pinned",
       "recent": "Recent",
       "loading": "Loading…",
       "back_from": "Back from {title}",
@@ -1233,11 +1234,23 @@
         "label": "Accent color",
         "terms": "tint highlight swatch colour"
       },
+      "animate_new_chat": {
+        "label": "Animate new chat transitions",
+        "terms": "animation new chat open chat glide fade composer wallpaper transition",
+        "description": "Going to a new chat or opening a chat from one, the message box glides there and the page and wallpaper fade, as in Zeron v2."
+      },
       "reduce_motion": {
         "label": "Reduce motion",
         "terms": "animation accessibility movement fade spring",
         "system_on": "On while your computer's Reduce motion is on: moves land at once and fades stay short.",
         "description": "Moves land at once and fades stay short. On whenever your computer's Reduce motion is on."
+      },
+      "context_usage": {
+        "label": "Context usage",
+        "terms": "context window tokens usage ring bar detail composer meter",
+        "description": "How a chat shows how full its context window is, beside the model in the message box.",
+        "ring": "Ring",
+        "detail": "Detail"
       },
       "accented": {
         "label": "Accent color throughout",
@@ -1492,19 +1505,6 @@
         "allow": "Enable text capture"
       }
     },
-    "providers": {
-      "title": "Providers",
-      "terms": "harnesses agents cli claude code codex cursor devin grok hermes pi opencode antigravity muse install enable disable accounts sign in login",
-      "agent_settings": "Agent settings",
-      "agents": {
-        "label": "Your agents",
-        "terms": "accounts sign in usage plan switch remove"
-      },
-      "native_subagents": {
-        "label": "Native subagents",
-        "terms": "subagent delegate side chats tasks spawn",
-        "description": "Off, it delegates through side chats."
-      },
     "usage": {
       "title": "Usage",
       "terms": "usage tokens cost spend price dollars cache hit rate models claude codex grok",
@@ -1553,6 +1553,19 @@
         "hour": "Hour"
       }
     },
+    "providers": {
+      "title": "Providers",
+      "terms": "harnesses agents cli claude code codex cursor devin grok hermes pi opencode antigravity muse install enable disable accounts sign in login",
+      "agent_settings": "Agent settings",
+      "agents": {
+        "label": "Your agents",
+        "terms": "accounts sign in usage plan switch remove"
+      },
+      "native_subagents": {
+        "label": "Native subagents",
+        "terms": "subagent delegate side chats tasks spawn",
+        "description": "Off, it delegates through side chats."
+      },
       "update_policy": {
         "label": "Update policy",
         "terms": "automatic upgrade version cli"
@@ -2416,6 +2429,26 @@
     "edit": "Edit"
   },
   "shell": {
+    "rail": {
+      "label": "App",
+      "with_key": "{label} ({key})",
+      "close_settings": "Close settings",
+      "usage": {
+        "loading": "Loading usage…",
+        "none": "No plan usage reported",
+        "limit": "Usage: limit reached",
+        "line": "Usage: {name} · {windows}",
+        "title": "Usage",
+        "used": "used",
+        "limit_reached": "Limit reached",
+        "open_page": "Click the ring for your accounts",
+        "window": {
+          "session": "5h",
+          "week": "Weekly",
+          "day": "Daily"
+        }
+      }
+    },
     "sidebar": {
       "unknown_device": "Unknown device",
       "chats": "Chats",

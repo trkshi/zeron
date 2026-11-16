@@ -19,7 +19,11 @@
 --   prefs.code_font_size:get()      points of code: the editor, markdown's code, diffs
 --                                   (not terminals); the gallery's 13 by default
 --   prefs.conversation_width:get()  the transcript's and composer's widest, in points
---                                   (560–1200; the gallery's 660 by default)
+--                                   (560–1200; Zeron's 736 by default)
+--   prefs.animate_new_chat:get()    going between a new chat and a chat glides
+--                                   and fades, as Zeron v2's (on by default)
+--   prefs.context_usage:get()       how a chat's composer shows its context: "ring"
+--                                   (the default) or "detail" (a bar and its figures)
 --   prefs.sound(kind):get()         whether a session's chime plays ("done",
 --                                   "request", "attention"; and `sounds`, all of them)
 --
@@ -82,9 +86,21 @@ M.CODE_FONT_SIZES = { 11, 12, 13, 14, 15, 16 }
 
 -- How wide a conversation and its composer go (crates/ui settings.rs
 -- TRANSCRIPT_WIDTH_*: 560 to 1200; the default is the gallery's measure,
--- `zeron.prose.measure`).
-M.CONVERSATION_WIDTH = { min = 560, max = 1200, step = 20 }
-M.conversation_width = ui.persist("settings_conversation_width", 660)
+-- `zeron.prose.measure`: Zeron's 736, by steps of 16).
+M.CONVERSATION_WIDTH = { min = 560, max = 1200, step = 16 }
+M.conversation_width = ui.persist("settings_conversation_width", 736)
+
+-- Whether going between a new chat and a chat moves as Zeron v2's did: the
+-- composer gliding between mid-page and the foot, the page and the
+-- wallpaper fading (screens/chat/composer `rise`, screens/shell/page,
+-- ds/wallpaper). Off, it lands at once. (Reduce motion lands it at once
+-- whatever this says.)
+M.animate_new_chat = ui.persist("settings_animate_new_chat", true)
+
+-- How a chat's composer shows how full its context is, beside the model:
+-- "ring", a small ring (its card on hover), or "detail", the word, a bar of
+-- segments and its figures ("Context ▮▮▯▯ 223k/1.0M (22%)").
+M.context_usage = ui.persist("settings_context_usage", "ring")
 
 -- The chimes: all of them, then each (each counts only while all are on).
 M.sounds = ui.persist("settings_sounds", true)

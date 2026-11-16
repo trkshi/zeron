@@ -67,7 +67,7 @@ end
 
 test("a ChatGPT model's row is its ChatGPT account, and lists ChatGPT's alone", function()
 	local app = with_model("pi/openai-codex/gpt-6")
-	expect(app:has("#model-picker-usage")).to_be(true)
+	expect(app:has("#model-picker-usage")).to_be(false)
 	open_panel(app)
 	local row = app:tree("#model-picker-account")
 	expect(row).to_contain("ChatGPT account")

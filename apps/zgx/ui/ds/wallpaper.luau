@@ -36,6 +36,7 @@
 -- stands in it can follow the pointer (`px`, `py`, 0 to 1, 0.5 at rest).
 
 local effects = require("@self/effects")
+local motion = require("@self/motion")
 
 local M = {}
 
@@ -59,6 +60,12 @@ export type Props = {
 	density: (State<string> | () -> string)?,
 	-- Faded from the top across its height (by default), or full.
 	faded: (State<boolean> | () -> boolean)?,
+	-- The window's room above and below its box (points): given, the fade
+	-- is Zeron's hero's, over 72% of the window's height (760 at most).
+	window: { top: number, bottom: number }?,
+	-- Whether it fades in and out as it's shown and hidden (on, by
+	-- default); else it's there and gone at once.
+	animate: (() -> boolean)?,
 	-- How wide the art is laid, from its box's right edge (the window's
 	-- width, so it holds still as a sidebar comes and goes): a state is
 	-- followed by zgx alone. Its box's, by default.
@@ -168,6 +175,14 @@ end
 -- How long art takes to fade in over what it replaces.
 local FADE = 320
 
+-- The darkening over the foot (top to bottom): none through the upper
+-- half, deepening to a third black at the foot.
+local FOOT = {
+	{ 0.45, "#00000000" },
+	{ 0.7, "#00000033" },
+	{ 1, "#00000059" },
+}
+
 function M.Wallpaper(props: Props): Node
 	local function effect(): string
 		return read(props.effect, "none")
@@ -202,6 +217,33 @@ function M.Wallpaper(props: Props): Node
 	local function faded(): boolean
 		return read(props.faded, true)
 	end
+	-- How much of it shows: back on a new chat, it unfolds behind the
+	-- rising composer, and as a chat opens it dissolves as the composer
+	-- settles (Zeron v2's, composer_dock.rs: over most of the move). Its
+	-- layer is kept until it's gone. With `animate` off, or motion reduced,
+	-- at once.
+	local shown_k = ui.state(if shown() then 1 else 0)
+	local unfolding: any = nil
+	ui.effect(function()
+		local on = shown()
+		if unfolding then
+			unfolding:cancel()
+			unfolding = nil
+		end
+		if motion.reduced_now() or not (props.animate == nil or props.animate()) then
+			shown_k:set(if on then 1 else 0)
+			return
+		end
+		local goal = if on then 1 else 0
+		if shown_k:peek() ~= goal then
+			unfolding = anime.animate(shown_k, { value = goal, duration = if on then 400 else 360, ease = "out(3)" })
+		end
+	end)
+	ui.on_cleanup(function()
+		if unfolding then
+			unfolding:cancel()
+		end
+	end)
 	-- What stands in it and its effect, made again as either changes (the
 	-- shader is fixed as it's made), crossfading: the new fades in over the
 	-- old as the old fades out. What stands there is built straight in the
@@ -216,7 +258,7 @@ function M.Wallpaper(props: Props): Node
 		bottom = 0,
 		pointer_events = "none",
 		opacity = function(): number
-			return if shown() then 1 else 0
+			return shown_k:get()
 		end,
 		ui.presence(key, function(k: string): Node
 			if k == "" then
@@ -239,9 +281,12 @@ function M.Wallpaper(props: Props): Node
 				x = props.beside,
 				overflow = "hidden",
 				provide = props.provide,
-				-- (Away, its layer goes: zgx frees the window-sized texture it's
-				-- composited from, and draws it again in one frame on return.)
-				layer_on = shown,
+				-- (Away, its layer goes once it has faded: zgx frees the
+				-- window-sized texture it's composited from, and draws it again
+				-- in one frame on return.)
+				layer_on = function(): boolean
+					return shown() or shown_k:get() > 0
+				end,
 				layer_shader = effects.shader(how),
 				-- What changes in place (its strength, density, fade, the
 				-- scheme's paper): followed, the layer composited again, never
@@ -253,6 +298,7 @@ function M.Wallpaper(props: Props): Node
 						light = light(),
 						faded = faded(),
 						picture = picture,
+						window = props.window,
 					}
 				end,
 				props.content(w or ""),
@@ -272,6 +318,21 @@ function M.Wallpaper(props: Props): Node
 			enter = { opacity = { 0, 1 }, duration = FADE, ease = "out(3)" },
 			exit = { opacity = 0, duration = FADE, ease = "in(3)" },
 		}),
+		-- The foot darkened a little under the art (in the dark only), so
+		-- what the art fades into reads deeper.
+		ui.div {
+			id = "wallpaper-foot",
+			absolute = true,
+			left = 0,
+			right = 0,
+			top = 0,
+			bottom = 0,
+			pointer_events = "none",
+			opacity = function(): number
+				return if what() ~= "" and not light() then 1 else 0
+			end,
+			gradient = { angle = 180, stops = FOOT },
+		},
 	}
 end
 

@@ -48,7 +48,9 @@ M.GAP = (ui.theme.get("zeron.inset.gap") :: number?) or 4
 
 -- (`shares`: how a row or a column divides among its parts, a share each, summing
 -- to 1; none: equally. A divider dragged sets them.)
-export type Node = { kind: string, id: string?, children: { Node }?, shares: { number }?, key: string? }
+-- `kept`: a chat alone's tab left for a new chat, kept as a browser keeps a
+-- tab when a new one opens: navigating no longer replaces it.
+export type Node = { kind: string, id: string?, children: { Node }?, shares: { number }?, key: string?, kept: boolean? }
 -- An edge: `p` of the page's length, plus `q` points.
 export type Edge = { p: number, q: number }
 export type Box = { left: Edge, right: Edge, top: Edge, bottom: Edge }
@@ -369,6 +371,11 @@ local function holds(t: Node, id: string): boolean
 	return table.find(leaves(t), id) ~= nil
 end
 
+-- The tab navigating replaces: a chat alone's, not kept.
+local function replaceable(t: Node): boolean
+	return #leaves(t) == 1 and not t.kept
+end
+
 local function tab_with_key(list: { Node }, key: string?): Node?
 	for _, t in list do
 		if key_of(t) == key then
@@ -493,10 +500,37 @@ ui.effect(function()
 		trees:set(out)
 	end
 end)
+-- Going to a new chat keeps the chat it left in its tab, as a browser keeps a tab
+-- when a new one opens: the chat started there, or opened from it, takes a tab of
+-- its own rather than that one's place.
+local was_focused: string? = M.focused:peek()
+ui.effect(function()
+	local id = M.focused:get()
+	local before = was_focused
+	was_focused = id
+	if id or not before or route.chat:peek().name ~= "home" then
+		return
+	end
+	local out: { Node } = {}
+	local changed = false
+	for _, t in trees:peek() do
+		if holds(t, before) and replaceable(t) then
+			local k = table.clone(t)
+			k.kept = true
+			table.insert(out, k)
+			changed = true
+		else
+			table.insert(out, t)
+		end
+	end
+	if changed then
+		trees:set(out)
+	end
+end)
 -- A chat focused with no tab takes the one tab for a chat alone, in its place, or a
--- new one at the end: navigating replaces it, until chats are composed in it. (As the
--- focus moves, not as the tabs change: a tab just closed, the focus on its way to
--- another, doesn't come back.)
+-- new one at the end: navigating replaces it, until chats are composed in it or it's
+-- kept (above). (As the focus moves, not as the tabs change: a tab just closed, the
+-- focus on its way to another, doesn't come back.)
 ui.effect(function()
 	local id = M.focused:get()
 	if not id then
@@ -510,7 +544,7 @@ ui.effect(function()
 		local more: { Node } = {}
 		local placed = false
 		for _, other in list do
-			if #leaves(other) >= 2 then
+			if not replaceable(other) then
 				table.insert(more, other)
 			elseif not placed then
 				table.insert(more, tab)
@@ -523,15 +557,16 @@ ui.effect(function()
 		trees:set(more)
 	end
 end)
--- One tab for a chat alone, however it came to be more (a split left with one, tabs
--- kept from before): the focused chat's, else the last.
+-- One tab for a chat alone that navigating replaces, however it came to be more (a
+-- split left with one, tabs kept from before): the focused chat's, else the last.
+-- (Kept ones stay, each.)
 ui.effect(function()
 	local list = trees:get()
 	local focused = M.focused:peek()
 	local keep: Node? = nil
 	local alone = 0
 	for _, t in list do
-		if #leaves(t) == 1 then
+		if replaceable(t) then
 			alone += 1
 			if not (keep and focused and holds(keep, focused)) then
 				keep = t
@@ -543,7 +578,7 @@ ui.effect(function()
 	end
 	local out: { Node } = {}
 	for _, t in list do
-		if #leaves(t) >= 2 or t == keep then
+		if not replaceable(t) or t == keep then
 			table.insert(out, t)
 		end
 	end
@@ -573,6 +608,13 @@ end
 
 -- Those tabs closed, and forgotten: a chat of theirs opened again gets a tab of its
 -- own.
+-- Whether a tab is a chat alone's kept one (left for a new chat): closed while it
+-- shows, the one beside it shows, as a browser's tab does.
+function M.kept(key: string): boolean
+	local t = tab_with_key(trees:get(), key)
+	return t ~= nil and t.kept == true and #leaves(t) == 1
+end
+
 function M.close_tabs(keys: { string })
 	local list: { Node } = {}
 	for _, t in trees:peek() do

@@ -666,12 +666,12 @@ test("the composer is made once: the sessions arriving, changing and growing lea
 	expect(`field @{field()}`).to_be(`field @{first}`)
 end)
 
-test("signed out, the foot says Local; Star on GitHub shows over it until put away", function()
+test("signed out, the rail's you says Local; Star on GitHub shows at the sidebar's foot until put away", function()
 	local app = open()
-	expect(app:has(`{SIDE} >> "Local"`)).to_be(true)
+	-- (You stand on the app's rail, the sidebar's foot row gone for it.)
+	expect(app:has('#app-rail >> role:button "Local"')).to_be(true)
+	expect(app:has(`{SIDE} >> "Local"`)).to_be(false)
 	expect(app:has(`{SIDE} >> #star-banner`)).to_be(true)
-	-- (Over you at the foot.)
-	expect(top_of(app, SIDE, "Star on GitHub") < top_of(app, SIDE, "Local")).to_be(true)
 	app:click(`#star-banner >> role:button "Dismiss"`)
 	app:frames(20)
 	expect(app:has(`{SIDE} >> #star-banner`)).to_be(false)
@@ -1058,25 +1058,26 @@ test("the palette's In Files lists lines found in the session's files, with thei
 	expect(list:find('"Files"', 1, true) < list:find('"In Files"', 1, true)).to_be(true)
 end)
 
--- At the sidebar's foot: you open your profile, chosen while it's open;
--- settings' own button beside you opens them, on while they're open, and a
--- press again leaves them. The settings window has the same foot.
-test("the foot's you opens your profile, and its settings button toggles settings", function()
+-- On the app's rail (the sidebar's foot row gone for it): you open your
+-- profile; Settings opens them, saying Close settings while they're open, and
+-- a press again leaves them. The settings window keeps its own foot, a toggle.
+test("the rail's you opens your profile, and its Settings toggles settings", function()
 	local app = open()
 	app:frames(20)
-	-- Settings' button (a toggle): open, on, then off again.
-	expect(app:tree("#shell-sidebar")).to_contain('checkbox "Settings"')
-	app:click('#shell-sidebar >> role:checkbox "Settings"')
+	expect(app:tree("#shell-sidebar")).never.to_contain('checkbox "Settings"')
+	-- Settings' button: open, then Close settings, which leaves them.
+	app:click('#app-rail >> role:button "Settings"')
 	app:frames(20)
 	expect(app:has("#settings-nav")).to_be(true)
+	expect(app:has('#app-rail >> role:button "Close settings"')).to_be(true)
+	-- (The settings window's own foot toggle, on while they're open.)
 	expect(app:tree("#settings-nav")).to_contain('checkbox "Settings"')
-	expect(app:tree("#settings-nav")).never.to_contain('"Settings" 0')
 	expect(app:tree("#settings-nav")).never.to_contain('"Settings" unchecked')
-	app:click('#settings-nav >> role:checkbox "Settings"')
+	app:click('#app-rail >> role:button "Close settings"')
 	app:frames(20)
 	expect(app:has("#settings-nav")).to_be(false)
 	-- You: your profile.
-	app:click('#shell-sidebar >> role:button "Local"')
+	app:click('#app-rail >> role:button "Local"')
 	app:frames(20)
 	expect(app:has("#settings-nav")).to_be(true)
 	expect(app:tree()).to_contain('heading "Account"')

@@ -47,6 +47,8 @@ function M.setup()
 				bg = "{surface.raised}",
 				edge = "{border.subtle}",
 				edge_hover = "{border.strong}",
+				-- The page's card lifted off the window (and the sidebar on it).
+				lift = "0 6 20 0 #00000059",
 				-- Split chats (screens/shell/split): what lies over a pane
 				-- that isn't focused (lighter under the pointer), the focused
 				-- one's edge, and where a chat dragged over the panes lands.
@@ -69,7 +71,14 @@ function M.setup()
 			-- The sidebar's card: frosted, its own wash over the window's glass
 			-- (`tint`, the themes': shipping's sidebar tone, theme.rs
 			-- `wash(0.05)`); opaque, the page's card's fill (`solid`).
-			sidebar = { tint = "{zeron.inset.bg}", solid = "{zeron.inset.bg}" },
+			sidebar = {
+				tint = "{zeron.inset.bg}",
+				solid = "{zeron.inset.bg}",
+				-- The whole sidebar's fill, frosted or opaque, card or not:
+				-- none, the window's own, so it's the bottom layer the page's
+				-- card stands over.
+				bg = "#00000000",
+			},
 			-- Between the items of any list (a menu's rows, a sidebar's pages):
 			-- enough that one row's wash (hover, selected) never touches the
 			-- next's, no more.
@@ -152,6 +161,14 @@ function M.setup()
 				-- (Zeron's frost::MENU_BLUR, as its popovers, palette and
 				-- dialogs blur.)
 				blur = 16,
+			},
+			-- What stands in a popup window of its own (ds/glass `popup`: hover
+			-- cards): frosted and solid, opaque either way, so its number is the
+			-- token's. The themes set gpui's numbers.
+			popup = {
+				tint = "{zeron.menu.solid}",
+				solid = "{zeron.menu.solid}",
+				selected = "{zeron.menu.selected}",
 			},
 			-- An island: controls gathered on glass over the page (the title
 			-- bar's at the window's top left as the sidebar goes, the sidebar's
@@ -328,11 +345,13 @@ function M.setup()
 			-- The bubble: Zeron's wash (one step softer than a selection) and
 			-- its 16 corner; an attachment's thumbnail, Zeron's size.
 			prose = {
-				size = 15,
-				line = 24,
-				h1 = { size = 22, line = 30 },
-				h2 = { size = 18, line = 26 },
-				h3 = { size = 15, line = 24 },
+				-- Zeron's own (markdown/render.rs): 14 on 22, its headings 19,
+				-- 16 and 15.
+				size = 14,
+				line = 22,
+				h1 = { size = 19, line = 27 },
+				h2 = { size = 16, line = 24 },
+				h3 = { size = 15, line = 22 },
 				small = { size = 14, line = 20 },
 				code = {
 					size = 13,
@@ -341,7 +360,7 @@ function M.setup()
 					bg = "alpha({text.primary}, 0.04)",
 					edge = "{border.subtle}",
 				},
-				measure = 660,
+				measure = 736,
 				bubble = { bg = "{zeron.secondary.bg}", radius = 16 },
 				thumb = { w = 120, h = 84, radius = 10 },
 				-- A picture a reply shows (ds/reply_picture): at most the

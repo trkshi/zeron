@@ -656,7 +656,9 @@
         "no_limit": "未报告上下文上限",
         "capacity": "容量 {n} tokens",
         "waiting": "正在等待上下文用量",
-        "unreported": "此智能体尚未报告上下文用量"
+        "unreported": "此智能体尚未报告上下文用量",
+        "label": "上下文",
+        "brief": "{used}/{window}（{n}%）"
       }
     },
     "markdown": {
@@ -999,7 +1001,6 @@
         "settings": "设置"
       },
       "pr": "拉取请求 {n}，{state, select, open {打开} merged {已合并} closed {已关闭} other {草稿}}",
-      "pinned": "已置顶",
       "recent": "最近",
       "loading": "正在加载…",
       "back_from": "从{title}返回",
@@ -1233,11 +1234,23 @@
         "label": "强调色",
         "terms": "色调 高亮 颜色 tint highlight swatch colour"
       },
+      "animate_new_chat": {
+        "label": "新对话切换动画",
+        "terms": "动画 新对话 打开对话 滑动 淡入淡出 输入框 壁纸 animation new chat open chat glide fade composer wallpaper transition",
+        "description": "前往新对话或从新对话打开对话时，输入框滑动到位，页面和壁纸淡入淡出，与 Zeron v2 相同。"
+      },
       "reduce_motion": {
         "label": "减弱动态效果",
         "terms": "动画 辅助功能 动态 淡入淡出 animation accessibility movement fade spring",
         "system_on": "电脑的“减弱动态效果”开启时启用：移动立即完成，淡入淡出时间缩短。",
         "description": "移动立即完成，淡入淡出时间缩短。电脑的“减弱动态效果”开启时始终启用。"
+      },
+      "context_usage": {
+        "label": "上下文用量",
+        "terms": "上下文 窗口 tokens 用量 圆环 进度条 详细 context usage ring detail",
+        "description": "对话在输入框中模型旁显示上下文窗口用量的方式。",
+        "ring": "圆环",
+        "detail": "详细"
       },
       "accented": {
         "label": "全局强调色",
@@ -1492,19 +1505,6 @@
         "allow": "启用文本截取"
       }
     },
-    "providers": {
-      "title": "提供方",
-      "terms": "提供方 智能体 命令行 安装 启用 停用 账户 登录 harnesses agents cli claude code codex cursor devin grok hermes pi opencode antigravity muse install enable disable accounts sign in login",
-      "agent_settings": "智能体设置",
-      "agents": {
-        "label": "你的智能体",
-        "terms": "账户 登录 用量 套餐 切换 移除 accounts sign in usage plan switch remove"
-      },
-      "native_subagents": {
-        "label": "原生子智能体",
-        "terms": "子智能体 委派 侧边对话 任务 创建 subagent delegate side chats tasks spawn",
-        "description": "关闭时，通过侧边对话委派任务。"
-      },
     "usage": {
       "title": "用量",
       "terms": "用量 tokens 费用 花费 价格 缓存 命中率 模型 usage cost",
@@ -1553,6 +1553,19 @@
         "hour": "小时"
       }
     },
+    "providers": {
+      "title": "提供方",
+      "terms": "提供方 智能体 命令行 安装 启用 停用 账户 登录 harnesses agents cli claude code codex cursor devin grok hermes pi opencode antigravity muse install enable disable accounts sign in login",
+      "agent_settings": "智能体设置",
+      "agents": {
+        "label": "你的智能体",
+        "terms": "账户 登录 用量 套餐 切换 移除 accounts sign in usage plan switch remove"
+      },
+      "native_subagents": {
+        "label": "原生子智能体",
+        "terms": "子智能体 委派 侧边对话 任务 创建 subagent delegate side chats tasks spawn",
+        "description": "关闭时，通过侧边对话委派任务。"
+      },
       "update_policy": {
         "label": "更新策略",
         "terms": "自动 升级 版本 命令行 automatic upgrade version cli"
@@ -2416,6 +2429,26 @@
     "edit": "编辑"
   },
   "shell": {
+    "rail": {
+      "label": "应用",
+      "with_key": "{label}（{key}）",
+      "close_settings": "关闭设置",
+      "usage": {
+        "loading": "正在加载用量…",
+        "none": "没有报告套餐用量",
+        "limit": "用量：已达上限",
+        "line": "用量：{name} · {windows}",
+        "title": "用量",
+        "used": "已用",
+        "limit_reached": "已达上限",
+        "open_page": "点击圆环查看你的账号",
+        "window": {
+          "session": "5 小时",
+          "week": "每周",
+          "day": "每日"
+        }
+      }
+    },
     "sidebar": {
       "unknown_device": "未知设备",
       "chats": "对话",

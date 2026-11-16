@@ -187,6 +187,8 @@
 			// Menus and dropdowns: a deep charcoal over macOS's popover material
 			// (a light grey frost in dark), so it reads as our dark glass.
 			"menu": { "tint": "#08080826", "solid": "#1c1c1f", "shadow": "0 20 56 0 #00000052", "selected": "#ebebeb17" },
+			// What stands in a popup window (a hover card): gpui's numbers, frost on and off.
+			"popup": { "tint": "#0c0c0c", "solid": "#27272a", "selected": "#ebebeb1c" },
 			// A search's matched letters: the accent's wash firmer than light's
 			// (a faint violet on charcoal all but vanishes).
 			"match": { "wash": "alpha({accent}, 0.34)" },

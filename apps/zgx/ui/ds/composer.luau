@@ -158,6 +158,13 @@ export type Props = {
 	-- one has none), and hovering or focusing it opens a card saying the
 	-- numbers, as Zeron's does (crates/ui/src/context_usage.rs).
 	usage: (() -> Usage?)?,
+	-- How the usage shows: "ring" (or nil), the ring; "detail", its long
+	-- form (ds/context_usage `Detail`: "Context", a bar, "223k/1.0M (22%)"),
+	-- the same card on it.
+	usage_style: (() -> string)?,
+	-- Whether the model's chip shows its account's plan ring (ds.ModelPicker
+	-- `usage_shown`); without, it doesn't.
+	plan_usage: (() -> boolean)?,
 	-- The footer stands over a wallpaper (a new chat's art): the pill's glass
 	-- continues under it as a tray, the chips on it rather than on the art,
 	-- easing in and out as the art comes and goes. Without, it stays bare.
@@ -178,6 +185,9 @@ export type Props = {
 	-- chip says so and opens nothing, as a chat can't move. Nil (a new
 	-- chat): the picker.
 	branch_fixed: (() -> Fixed?)?,
+	-- Whether that fixed chip shows at all (false: an existing chat's
+	-- footer has no where-it-works chip; a new chat's picker still shows).
+	fixed_place: boolean?,
 	on_send: ((text: string) -> ())?,
 	on_stop: (() -> ())?,
 	-- A bare Escape no one else took (no mention list, question or
@@ -733,7 +743,11 @@ end
 -- chips beside it are. Given what the context holds, it opens the card
 -- above (below, with the menus below) as the pointer rests on it or the
 -- keys reach it.
-local function ring(used: number | () -> number, usage: (() -> Usage?)?, side: () -> string): Node
+local function ring(used: number | () -> number, usage: (() -> Usage?)?, side: () -> string, style: (() -> string)?): Node
+	-- (Its long form, given what the context holds and asked for it.)
+	local function detailed(): boolean
+		return usage ~= nil and style ~= nil and style() == "detail"
+	end
 	local function fraction(): number
 		if usage then
 			return context_usage.fraction(usage()) or 0
@@ -753,7 +767,10 @@ local function ring(used: number | () -> number, usage: (() -> Usage?)?, side: (
 			tooltip = if usage then context_usage.Card { usage = usage } else nil,
 			tooltip_placement = if at then { side = at, align = "end", offset = 8 } else nil,
 			tooltip_delay = 150,
-			context_usage.Ring { fraction = fraction },
+			ui.show(function(): boolean
+				return not detailed()
+			end, context_usage.Ring { fraction = fraction }),
+			if usage then ui.show(detailed, context_usage.Detail { usage = usage }) else nil,
 		}
 	end
 	if not usage then
@@ -1015,6 +1032,15 @@ return ui.component(function(props: Props): Node
 	local model_w = kept("model_w", 0)
 	local access_w = kept("access_w", 0)
 	local where_w = kept("where_w", 0)
+	-- Whether the where-it-works chip is there: given a branch, unless it's
+	-- an existing chat's and that's asked not to show (`fixed_place`).
+	local function has_place(): boolean
+		if not props.branch then
+			return false
+		end
+		local fixed = props.branch_fixed
+		return not (props.fixed_place == false and fixed ~= nil and fixed() ~= nil)
+	end
 	local name_w = kept("name_w", 0)
 	local branch_w = kept("branch_w", 0)
 	local device_w = kept("device_w", 0)
@@ -1312,8 +1338,9 @@ return ui.component(function(props: Props): Node
 			return level
 		end
 		local a = if props.access then access_w:get() else 0
-		local w = if props.branch then where_w:get() else 0
-		if (props.access and a <= 0) or (props.branch and w <= 0) then
+		local placed = has_place()
+		local w = if placed then where_w:get() else 0
+		if (props.access and a <= 0) or (placed and w <= 0) then
 			return level
 		end
 		local says = `{props.model:get()}/{props.effort:get()}`
@@ -1331,13 +1358,13 @@ return ui.component(function(props: Props): Node
 		model_at[model_fold(level)] = m
 		-- The footer's room: less its sides, what's on the right but the model,
 		-- and the gaps.
-		local chips = (if props.branch then 1 else 0) + (if props.access then 1 else 0)
+		local chips = (if placed then 1 else 0) + (if props.access then 1 else 0)
 		local room = f - FOOTER_SIDES - FOOTER_GAP * math.max(chips, 1) - (r - m)
 		-- What fold `lv` takes; nil, not yet measured.
 		local function needs(lv: number): number?
 			local left = left_fold(lv)
 			local access_w = access_at[math.min(left, 2)]
-			local where_w = if not props.branch then 0 elseif left >= 3 then where_icon else where_min(left)
+			local where_w = if not placed then 0 elseif left >= 3 then where_icon else where_min(left)
 			local chip_w = model_at[model_fold(lv)]
 			if access_w == nil or where_w == nil or chip_w == nil then
 				return nil
@@ -1400,6 +1427,7 @@ return ui.component(function(props: Props): Node
 			fold = function(): number
 				return model_fold(fold:get())
 			end,
+			usage_shown = props.plan_usage,
 		}
 	end)
 
@@ -2176,15 +2204,18 @@ return ui.component(function(props: Props): Node
 				else nil
 			table.insert(
 				left,
-				ui.row {
-					on_resize = measure(where_w, "w"),
-					min_w = 0,
-					if static
-						then ui.show(function(): boolean
-							return (fixed :: any)() ~= nil
-						end, static, picker)
-						else picker,
-				}
+				ui.show(
+					has_place,
+					ui.row {
+						on_resize = measure(where_w, "w"),
+						min_w = 0,
+						if static
+							then ui.show(function(): boolean
+								return (fixed :: any)() ~= nil
+							end, static, picker)
+							else picker,
+					}
+				)
 			)
 		end
 		footer = ui.row {
@@ -2243,7 +2274,7 @@ return ui.component(function(props: Props): Node
 					then ui.show(function(): boolean
 						local u = (props.usage :: () -> Usage?)()
 						return u ~= nil and u.window ~= nil and u.window > 0
-					end, ring(0, props.usage, side))
+					end, ring(0, props.usage, side, props.usage_style))
 					elseif props.context then ring(props.context, nil, side)
 					else nil,
 			},
