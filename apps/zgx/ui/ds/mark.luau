@@ -18,6 +18,7 @@ export type Name =
 	| "pi"
 	| "hermes"
 	| "muse"
+	| "deepseek"
 	-- Model providers (an agent's accounts per provider, their API keys):
 	-- one set, one ink each.
 	| "provider-anthropic"
@@ -38,6 +39,9 @@ local FILES: { [Name]: string } = {
 	pi = "pi-mark",
 	hermes = "hermes-mark",
 	muse = "muse-mark",
+	-- The DeepSeek Harness: DeepSeek's whale in its brand blue (the
+	-- provider set's copy below stays one ink).
+	deepseek = "deepseek-mark",
 	["provider-anthropic"] = "provider-anthropic",
 	["provider-openai"] = "provider-openai",
 	["provider-openrouter"] = "provider-openrouter",

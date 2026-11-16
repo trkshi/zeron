@@ -183,7 +183,8 @@ function M.disc(inside: Node, tone: string?): Node
 end
 
 -- What the card knows of a provider an API key is for, by the agent's own
--- id for the provider: its mark (one set, one ink) and the shape its keys start
+-- id for the provider: its mark (one set, one ink, except DeepSeek's whale in
+-- its brand blue, as the DeepSeek Harness wears it) and the shape its keys start
 -- with (the field's placeholder).
 local KEY_PROVIDERS: { [string]: { mark: string, shape: string } } = {
 	anthropic = { mark = "provider-anthropic", shape = "sk-ant-…" },
@@ -193,7 +194,7 @@ local KEY_PROVIDERS: { [string]: { mark: string, shape: string } } = {
 	google = { mark = "provider-gemini", shape = "AIza…" },
 	gemini = { mark = "provider-gemini", shape = "AIza…" },
 	xai = { mark = "provider-xai", shape = "xai-…" },
-	deepseek = { mark = "provider-deepseek", shape = "sk-…" },
+	deepseek = { mark = "deepseek", shape = "sk-…" },
 }
 
 -- What a card's page does with it (setup's step and Settings share the

@@ -36,7 +36,7 @@ local function agent(harness: string): any
 			return h
 		end
 	end
-	return { id = harness, label = KNOWN[harness] or harness, mark = if harness == "dsh" then "provider-deepseek" else nil }
+	return { id = harness, label = KNOWN[harness] or harness, mark = if harness == "dsh" then "deepseek" else nil }
 end
 
 -- What's asked and what came back. The range and the measure are kept
