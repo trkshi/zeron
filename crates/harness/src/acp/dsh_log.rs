@@ -6,8 +6,8 @@
 //! which Zeron's DSH plugin runs instead of sending them to the model, report
 //! nothing over ACP either. DSH persists both: every `assistant/message` event
 //! in `$DSH_HOME/sessions/<project>/<session id>/session.v4.jsonl.zstd`
-//! carries the request's `usage` plus a timed stream to measure generation
-//! speed, and every command leaves a `command/done` with its result text.
+//! carries the request's `usage`, and every command leaves a `command/done`
+//! with its result text.
 //! After each prompt this reads the events DSH logged since the last one. The
 //! log format is private to DSH; anything unexpected reads as "nothing
 //! reported", never as an error.
@@ -17,9 +17,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::Value;
-use zeron_proto::{GenerationUsage, TokenUsage};
-
-use crate::generation;
 
 /// How long to wait for DSH to persist a settled prompt's events.
 const SETTLE_WAIT: Duration = Duration::from_secs(2);
@@ -32,10 +29,18 @@ pub(super) struct DshLog {
     reported_seq: Option<u64>,
 }
 
+/// A prompt's model calls' tokens, summed: input with cache reads and writes
+/// in it (as Zeron counts input), and output.
+#[derive(Debug, Default, PartialEq, Clone, Copy)]
+pub(super) struct Tokens {
+    pub input: u64,
+    pub output: u64,
+}
+
 /// What one prompt did: model turns' summed usage and slash-command results.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Activity {
-    pub usage: Option<TokenUsage>,
+    pub usage: Option<Tokens>,
     /// Each finished command's result text (possibly empty), in log order.
     pub commands: Vec<String>,
     last_seq: Option<u64>,
@@ -176,8 +181,7 @@ fn activity(bytes: &[u8], after: Option<u64>) -> Activity {
         last_seq: after,
         ..Activity::default()
     };
-    let mut total = TokenUsage::default();
-    let mut generation_usage: Option<GenerationUsage> = None;
+    let mut total: Option<Tokens> = None;
     let mut open_turn = false;
     let mut open_command = false;
     let mut closed = false;
@@ -210,49 +214,16 @@ fn activity(bytes: &[u8], after: Option<u64>) -> Activity {
                 let cache_read = count("cacheReadTokens").unwrap_or(0);
                 let cache_write = count("cacheWriteTokens").unwrap_or(0);
                 let input = count("inputTokens").unwrap_or(0) + cache_read + cache_write;
-                let add = |field: &mut Option<u64>, value: u64| {
-                    *field = Some(field.unwrap_or(0).saturating_add(value));
-                };
-                add(&mut total.input_tokens, input);
-                add(&mut total.output_tokens, output);
-                add(&mut total.cached_input_tokens, cache_read);
-                add(&mut total.cache_write_input_tokens, cache_write);
-                add(
-                    &mut total.total_tokens,
-                    count("totalTokens").unwrap_or(input + output),
-                );
-                if let Some(elapsed) = decode_window(&event) {
-                    generation_usage = generation::accumulate(generation_usage, output, elapsed);
-                }
+                let sum = total.get_or_insert_default();
+                sum.input = sum.input.saturating_add(input);
+                sum.output = sum.output.saturating_add(output);
             }
             _ => {}
         }
     }
-    if total.output_tokens.is_some() {
-        total.generation = generation_usage;
-        activity.usage = Some(total);
-    }
+    activity.usage = total;
     activity.settled = closed && !open_turn && !open_command;
     activity
-}
-
-/// From the reply's first streamed token to its settlement, the window DSH's
-/// own tokens-per-second uses. Bursts too short to measure are left out.
-fn decode_window(event: &Value) -> Option<Duration> {
-    let end = event["time"].as_u64()?;
-    let stream = event["data"]["stream"].as_array()?;
-    let first = stream
-        .iter()
-        .find_map(|record| match record["type"].as_str()? {
-            "chunk" => match record["chunk"]["type"].as_str()? {
-                "block-start" | "block-end" | "finish" => None,
-                _ => record["time"].as_u64(),
-            },
-            _ => record["time0"].as_u64(),
-        })?;
-    let elapsed = Duration::from_millis(end.checked_sub(first)?);
-    let records = u32::try_from(stream.len()).unwrap_or(u32::MAX);
-    generation::qualifies(records, elapsed).then_some(elapsed)
 }
 
 #[cfg(test)]
@@ -312,13 +283,10 @@ mod tests {
         let activity = activity(&bytes, Some(2));
         assert!(activity.settled);
         assert_eq!(activity.last_seq, Some(6));
-        let usage = activity.usage.unwrap();
-        assert_eq!(usage.input_tokens, Some(1000 + 25_000));
-        assert_eq!(usage.output_tokens, Some(300));
-        assert_eq!(usage.cached_input_tokens, Some(25_000));
-        assert_eq!(usage.total_tokens, Some(26_300));
-        // 300 tokens over two 1 s decode windows.
-        assert_eq!(usage.generation.unwrap().tps(), Some(150.0));
+        assert_eq!(
+            activity.usage,
+            Some(Tokens { input: 1000 + 25_000, output: 300 })
+        );
         let nothing = super::activity(&bytes, Some(6));
         assert_eq!((nothing.usage, nothing.settled), (None, false));
     }

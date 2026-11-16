@@ -702,8 +702,13 @@ fn dsh_spec() -> AcpAgentSpec {
         // `model` select, whose ids are DSH's JSON `[provider, model]` routes.
         models: || {
             vec![Model {
+                default: false,
                 id: r#"["deepseek-official","deepseek-v4-flash"]"#.into(),
                 label: "deepseek-v4-flash".into(),
+                provider: Some(zeron_proto::ModelProvider {
+                    id: "deepseek-official".into(),
+                    name: "DeepSeek".into(),
+                }),
                 description: Some("DeepSeek".into()),
                 reasoning_levels: vec![
                     ReasoningLevel::Minimal,
@@ -729,6 +734,9 @@ fn dsh_spec() -> AcpAgentSpec {
         skill_dirs: Vec::new,
         hidden_commands: &[],
         drops_unstarted_cancelled_prompt: false,
+        // Launched with DSH's danger-full-access preset (no sandbox, never
+        // asks): Zeron runs every agent unattended.
+        access_modes: FULL_ACCESS_ONLY,
     }
 }
 
@@ -4329,6 +4337,15 @@ fn usage_from_response(res: &Result<Value, HarnessError>) -> Option<AgentEvent> 
     })
 }
 
+/// A DSH prompt's tokens, read from its session log, as the usage other ACP
+/// agents settle their prompts with ([`usage_from_response`]).
+fn dsh_usage_event(usage: dsh_log::Tokens) -> AgentEvent {
+    AgentEvent::Usage {
+        input_tokens: usage.input,
+        output_tokens: usage.output,
+    }
+}
+
 /// What a DSH prompt did, read from its session log; empty for other agents.
 async fn dsh_activity(log: &mut Option<dsh_log::DshLog>) -> dsh_log::Activity {
     match log {
@@ -6086,7 +6103,7 @@ async fn run_session(session: Session) {
                     break 'main;
                 }
                 if let Some(usage) = dsh.usage
-                    && !send(&event_tx, AgentEvent::TurnUsage { usage }).await
+                    && !send(&event_tx, dsh_usage_event(usage)).await
                 {
                     break 'main;
                 }
@@ -6322,7 +6339,7 @@ async fn run_session(session: Session) {
                             let _ = send(&event_tx, usage).await;
                         }
                         if let Some(usage) = dsh.usage {
-                            let _ = send(&event_tx, AgentEvent::TurnUsage { usage }).await;
+                            let _ = send(&event_tx, dsh_usage_event(usage)).await;
                         }
                         let (status, error) =
                             dsh_command_outcome(stop_outcome(&res, interrupted), &dsh, interrupted);
@@ -8020,7 +8037,7 @@ mod tests {
         );
         let available = [flash, free];
         assert_eq!(
-            pick_model_value(free, &available, false),
+            pick_model_value(free, &available, None),
             Some(free.to_owned())
         );
     }

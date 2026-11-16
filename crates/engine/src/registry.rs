@@ -1157,12 +1157,11 @@ fn full_registry() -> HarnessRegistry {
             installed: true,
             can_install: false,
             enabled: None,
-            access_modes: AccessMode::ALL.to_vec(),
+            access_modes: vec![AccessMode::FullAccess],
             supports_plan: false,
         },
         Box::new(|| zeron_harness::AcpHarness::dsh().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::dsh()) as Arc<dyn Harness>)),
-    );
     );
     registry
 }
