@@ -129,6 +129,7 @@ export type Name =
 	| "tuning"
 	| "plug-circle"
 	| "wallet"
+	| "chart-square"
 	| "smartphone"
 	-- A picture to keep (saving a card as an image).
 	| "gallery"

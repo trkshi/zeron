@@ -633,5 +633,7 @@ ui.command {
 require("./cloud_stub")
 -- The ACP registry's agents (Settings → Providers → Add an agent).
 require("./registry_stub")
+-- Settings → Usage's figures, answered without an engine.
+require("./usage_stub")
 
 return M
