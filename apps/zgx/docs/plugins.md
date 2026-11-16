@@ -42,7 +42,7 @@ Your own plugins are signed as yours, and re-signed and reloaded each time you s
 | `ui.add` | place nodes before or after Zeron's elements (`zeron.place`), add menu items |
 | `ui.change` | replace the elements listed in `ui.change` |
 | `ui.replace` | replace the screens listed in `ui.replace` |
-| `sessions.read` | read sessions' title, status, project, device, times, branch, worktree |
+| `sessions.read` | read sessions' title, status, project, device, times, branch, worktree, agent, and whether a chat started it |
 | `messages.read` | read the open chat's messages (role, text) |
 | `profile.read` | read your id, name, username, avatar |
 | `account.email` | read your email (unless you hide email addresses) |
@@ -187,7 +187,7 @@ Records hold only what you were allowed. A field you weren't allowed is absent, 
 
 | name | value |
 |---|---|
-| `session` | `{ id }` + `title, status, project, device, updated, created, branch, worktree` with `sessions.read` |
+| `session` | `{ id }` + `title, status, project, device, updated, created, branch, worktree, harness, agent, child_kind` with `sessions.read` (`agent`: ds.Mark's name for its harness; `child_kind`: `"subagent"` or `"side"` for a chat a Zeron chat started) |
 | `message` | `{ id }` + `role, text` with `messages.read` |
 | `project` | `{ id }` + `name, device, icon` (`{ emoji?, image?, hue? }`, as its people chose it) with `sessions.read` |
 | `profile` | `{}` + `id, name, username, avatar` with `profile.read`, `email` with `account.email` |

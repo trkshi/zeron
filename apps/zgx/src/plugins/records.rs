@@ -78,7 +78,13 @@ pub fn session_records(permissions: &[String], list: &Value) -> (Value, Value) {
     let mut sessions: Vec<(Rc<str>, Value)> = Vec::new();
     for chat in items("chats") {
         let Some(id) = text(chat.field("id")) else { continue };
-        let mut fields = pick(&chat, &["title", "status", "project", "device", "updated", "created", "branch", "source_branch"]);
+        // (`harness` and `agent`, which agent runs it and ds.Mark's name for
+        // it; `child_kind`, "subagent" or "side" for a chat a Zeron chat
+        // started, none for one the person did.)
+        let mut fields = pick(
+            &chat,
+            &["title", "status", "project", "device", "updated", "created", "branch", "source_branch", "harness", "agent", "child_kind"],
+        );
         let cwd = text(chat.field("cwd"));
         // Each project's folder: a session elsewhere is in a worktree of its
         // own (said as yes or no; the path is files.read's).
