@@ -881,7 +881,10 @@ function M.Strip(props: { window_x: () -> number, start: () -> number, right: ()
 		left = 0,
 		right = 0,
 		top = 0,
-		h = BAR,
+		-- (A point past the bar: over the card's top edge, its 1-point hairline
+		-- from the bar's foot down, so the tab runs into the card with no line
+		-- between; the shape keeps to `h + 1`.)
+		h = ui.raw(BAR + 1, "over the card's 1-point edge"),
 		pointer_events = "none",
 		bg = "$zeron.inset.bg",
 		layer_shader = TAB_KEEP,
