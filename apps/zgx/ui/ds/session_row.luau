@@ -52,6 +52,7 @@ local icon_button = require("@self/icon_button")
 local motion = require("@self/motion")
 local ContextMenu = require("@self/context_menu")
 local locale = require("@self/locale")
+local look = require("@self/look")
 
 local M = {}
 
@@ -359,6 +360,11 @@ export type Tree = { last: () -> boolean, trunk: () -> number, through: (() -> {
 -- between the branch's tip and what starts the row (Zeron's 6, 0, 4).
 M.BEND, M.REACH, M.BREAK = 6, 0, 4
 function M.gutter(t: Tree): number
+	-- (Classic sidebar, ds/look: no indent, rows straight under their
+	-- header, as v2's.)
+	if look.classic_sidebar:get() then
+		return 0
+	end
 	return t.trunk() + M.BEND + M.REACH
 end
 -- A row under its group's header: the branch off the trunk in the gutter

@@ -497,7 +497,14 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 		end
 		by[p.id] = group :: any
 	end
-	local loose: ds.SidebarProject = { id = NO_PROJECT, name = locale.s("shell.sidebar.chats"), icon = "side-chat", sessions = {} }
+	-- (Classic sidebar, ds.look: v2's "No project", under a plain folder.)
+	local classic = ds.look.classic_sidebar:get()
+	local loose: ds.SidebarProject = {
+		id = NO_PROJECT,
+		name = if classic then locale.s("ds.session_card.no_project") else locale.s("shell.sidebar.chats"),
+		icon = if classic then "folder" else "side-chat",
+		sessions = {},
+	}
 	-- (Which have sessions listed, and which archived ones.)
 	-- (By group: a repository isn't empty while any clone of it has a session.)
 	local just_group = if just then by[just] else nil

@@ -34,6 +34,7 @@ search.index(M.ID, ui.t("settings.appearance.title"), ui.t("settings.appearance.
 	{ key = "context_usage", title = ui.t("settings.appearance.context_usage.label"), terms = ui.t("settings.appearance.context_usage.terms") },
 	{ key = "glass", title = ui.t("settings.appearance.glass.label"), terms = ui.t("settings.appearance.glass.terms") },
 	{ key = "inset", title = ui.t("settings.appearance.inset.label"), terms = ui.t("settings.appearance.inset.terms") },
+	{ key = "classic_sidebar", title = ui.t("settings.appearance.classic_sidebar.label"), terms = ui.t("settings.appearance.classic_sidebar.terms") },
 	{ key = "interface_font", title = ui.t("settings.appearance.interface_font.label"), section = ui.t("settings.appearance.fonts"), terms = ui.t("settings.appearance.interface_font.terms") },
 	{ key = "text_size", title = ui.t("settings.appearance.text_size.label"), section = ui.t("settings.appearance.fonts"), terms = ui.t("settings.appearance.text_size.terms") },
 	{ key = "code_font", title = ui.t("settings.appearance.code_font.label"), section = ui.t("settings.appearance.fonts"), terms = ui.t("settings.appearance.code_font.terms") },
@@ -450,6 +451,12 @@ function M.view(): Node
 					label = ui.t("settings.appearance.inset.label"),
 					description = ui.t("settings.appearance.inset.description"),
 					control = ds.Switch { value = appearance.inset_card, label = ui.t("settings.appearance.inset.label") },
+				}),
+				-- The sidebar as Zeron v2 drew it (ds.look `classic_sidebar`).
+				row("classic_sidebar", {
+					label = ui.t("settings.appearance.classic_sidebar.label"),
+					description = ui.t("settings.appearance.classic_sidebar.description"),
+					control = ds.Switch { value = ds.look.classic_sidebar, label = ui.t("settings.appearance.classic_sidebar.label") },
 				}),
 				-- The accent in more places (ds.look `accented`).
 				row("accented", {

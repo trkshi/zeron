@@ -1272,6 +1272,11 @@
         "description": "让页面位于窗口背景之上的圆角卡片中。",
         "terms": "card rounded shell gap window 卡片 圆角 内嵌"
       },
+      "classic_sidebar": {
+        "label": "经典侧边栏",
+        "description": "按 Zeron v2 的样式绘制对话列表，并关闭动态视图。",
+        "terms": "v2 old legacy classic sidebar 经典 旧版 侧边栏 对话 列表 项目"
+      },
       "font_default": "默认（{name}）",
       "font_search": "搜索字体",
       "font_none": "没有匹配的字体。",

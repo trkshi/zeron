@@ -33,6 +33,19 @@ local M = {}
 
 -- (The sidebar Zeron opens with; turned off, it lists by project, then device.)
 M.on = ui.persist("shell_sidebar_activity", true)
+-- Settings → Appearance "Classic sidebar" turned on turns this off (v2 had
+-- no Activity view), once, as it's turned on: back on by hand, it stays.
+do
+	local classic = require("@ds/look").classic_sidebar
+	local was = classic:peek()
+	ui.effect(function()
+		local now = classic:get()
+		if now and not was and M.on:peek() then
+			M.on:set(false)
+		end
+		was = now
+	end)
+end
 M.working_shelf = ui.persist("activity_working_shelf", true)
 M.archive_after = ui.persist("activity_archive_after", 0)
 

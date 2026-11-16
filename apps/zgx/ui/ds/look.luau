@@ -192,6 +192,38 @@ end
 -- default; kept across launches.
 M.inset_card = ui.persist("inset_card", true)
 
+-- "Classic sidebar" (Settings → Appearance): the sidebar drawn as Zeron v2's
+-- (crates/ui shell.rs, spaces.rs): one even wash for hover and selection,
+-- titles all one weight, quiet project letters, no tree lines or indent,
+-- every session of a group listed, headers counting only while folded.
+-- Off by default; kept across launches.
+M.classic_sidebar = ui.persist("classic_sidebar", false)
+-- A classic row's title at rest: v2's text at 0.8.
+ui.theme.tokens {
+	zeron = {
+		classic_title = "alpha({text.primary}, 0.8)",
+	},
+}
+
+-- What the sidebar wears over the window's theme while it's classic (nil
+-- otherwise): v2's washes (dark hsla(0,0,0.92,0.11), light ink at 0.06,
+-- hover and selected the same) and no tree lines.
+function M.classic_sidebar_theme(): { [string]: any }?
+	if not M.classic_sidebar:get() then
+		return nil
+	end
+	local kind = ui.theme.kind()
+	local light = kind == "light" or kind == "high-contrast-light"
+	local wash = if light then "#0000000f" else "#ebebeb1c"
+	return {
+		hover = wash,
+		zeron = {
+			selected = { flat = { bg = wash } },
+			tree = "#00000000",
+		},
+	}
+end
+
 -- What a window overrides while the cards are flush (nothing while they're
 -- inset): their corners square, their edge gone.
 local function flush_theme(): { [string]: any }?

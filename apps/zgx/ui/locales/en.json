@@ -1272,6 +1272,11 @@
         "description": "Hold the page in a rounded card above the window background.",
         "terms": "card rounded shell gap window"
       },
+      "classic_sidebar": {
+        "label": "Classic sidebar",
+        "description": "Draw the chat list as Zeron v2 did. Turns the Activity view off.",
+        "terms": "v2 old legacy classic sidebar chat list projects rows tree indent"
+      },
       "font_default": "Default ({name})",
       "font_search": "Search fonts",
       "font_none": "No fonts match.",

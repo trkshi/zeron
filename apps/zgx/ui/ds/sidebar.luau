@@ -52,6 +52,7 @@ local ContextMenu = require("@self/context_menu")
 local motion = require("@self/motion")
 local seam = require("@self/seam")
 local locale = require("@self/locale")
+local classic = require("@self/look")
 -- A session's row, its corner, its group's header and pager: shared with
 -- every other list of sessions (the panel home's).
 local SessionRow = require("@self/session_row")
@@ -1060,6 +1061,85 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	local label = SessionRow.label
 	local hint = SessionRow.hint
 
+	-- Classic sidebar (ds/look): drawn as Zeron v2's.
+	local function is_classic(): boolean
+		return classic.classic_sidebar:get()
+	end
+	-- A session row's title: classic, one weight whatever its state, at v2's
+	-- 0.8 ink at rest; else as the shared row's (`label`).
+	local function row_title(text: () -> string, strong: () -> boolean): Node
+		return FadeText {
+			text,
+			grow = 1,
+			text_size = "$font.size.md",
+			weight = function(): string
+				if is_classic() then
+					return "$font.weight.regular"
+				end
+				return if strong() then "$font.weight.medium" else "$font.weight.regular"
+			end,
+			color = function(): string
+				if strong() then
+					return "$text.primary"
+				end
+				return if is_classic() then "$zeron.classic_title" else "$text.secondary"
+			end,
+		}
+	end
+	-- A project's quiet letter (classic, as v2's project_icon.rs): its hue's
+	-- faint wash and its initial in mono, small. A picture or emoji keeps
+	-- its tile, at this size.
+	local function monogram(name: string, hue: () -> string?, size: number, src: (() -> string?)?, emoji: (() -> string?)?, project: string?): Node
+		local box = ui.raw(size, "a classic project letter's box, v2's 13")
+		return ui.div {
+			shrink = 0,
+			relative = true,
+			w = box,
+			h = box,
+			ui.show(function(): boolean
+				return (src ~= nil and (src() or "") ~= "") or (emoji ~= nil and (emoji() or "") ~= "")
+			end, Tile { label = name, hue = hue, src = src, emoji = emoji, size = size, project = project }),
+			ui.show(function(): boolean
+				return not ((src ~= nil and (src() or "") ~= "") or (emoji ~= nil and (emoji() or "") ~= ""))
+			end, ui.div {
+				absolute = true,
+				left = 0,
+				top = 0,
+				w = box,
+				h = box,
+				rounded = ui.raw(3, "v2's project letter corner"),
+				items = "center",
+				justify = "center",
+				ui.div {
+					absolute = true,
+					left = 0,
+					right = 0,
+					top = 0,
+					bottom = 0,
+					rounded = ui.raw(3, "v2's project letter corner"),
+					opacity = 0.16,
+					bg = function(): string
+						return `$palette.{hue() or "gray"}.500`
+					end,
+				},
+				ui.text {
+					string.upper(string.sub(name, 1, 1)),
+					font = "$font.mono",
+					text_size = ui.raw(9, "v2's project letter"),
+					weight = "$font.weight.medium",
+					color = function(): string
+						return `$palette.{hue() or "gray"}.400`
+					end,
+				},
+			}),
+		}
+	end
+	-- How many of a group's sessions show before "Show N more": classic,
+	-- every one (v2 pages none).
+	local function group_first(): number
+		return if is_classic() then math.huge else GROUP_FIRST
+	end
+
 	-- A session as it stands now: `s` while there's no newer.
 	-- (Through a computed of its own: the row's bindings wake when its
 	-- session's table changes, not whenever any session's does. A caller
@@ -1369,9 +1449,9 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					ui.after(16, take)
 				end,
 			})),
-			label(function(): string
+			row_title(function(): string
 				return cur().title
-			end, strong, nil)
+			end, strong)
 		)
 		-- (Its project's tile, unless the group it stands in now is its project:
 		-- a row dragged to another list keeps its node.)
@@ -1386,7 +1466,13 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					return details.project_icon:get() and not SessionRow.groups_by(by_now, "project")
 				end, ui.div { shrink = 0, y = OPTICAL, if p.icon then Tile { inside = Icon { name = p.icon, size = 10 }, size = 16 } else (function(): Node
 					local hue, src, emoji = look(p)
-					return Tile { label = p.name, hue = hue, src = src, emoji = emoji, size = 16, project = p.id }
+					-- (Classic: v2's quiet 13-point letter.)
+					return ui.div {
+						ui.show(is_classic, monogram(p.name, hue, 13, src, emoji, p.id)),
+						ui.show(function(): boolean
+							return not is_classic()
+						end, Tile { label = p.name, hue = hue, src = src, emoji = emoji, size = 16, project = p.id }),
+					}
 				end)() }),
 				title,
 			}
@@ -1749,7 +1835,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 	-- own), or the project's own artwork; and, when its sessions can't be
 	-- seen, a badge for the most pressing of them.
 	-- (`project`: a project's id, its tile then `.project-icon`.)
-	local function group_tile(hue: string | { bg: string, ink: string } | () -> string?, inside: Node, sessions: Sessions, hidden: () -> boolean, src: (string | () -> string?)?, emoji: (() -> string?)?, project: string?): Node
+	local function group_tile(hue: string | { bg: string, ink: string } | () -> string?, inside: Node, sessions: Sessions, hidden: () -> boolean, src: (string | () -> string?)?, emoji: (() -> string?)?, project: string?, name: string?): Node
 		local function badge(kind: status.Kind): Node
 			return ui.div {
 				absolute = true,
@@ -1758,13 +1844,30 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				status.StatusDot { kind = kind, size = 8 },
 			}
 		end
+		local tile = Tile { hue = if type(hue) == "string" or type(hue) == "function" then hue :: any else nil, inside = inside, size = 18, src = src, emoji = emoji, project = project }
+		-- (A project's, classic: v2's quiet 13-point letter in the tile's place.)
+		if name and type(hue) == "function" then
+			local function src_now(): string?
+				return if type(src) == "function" then src() elseif type(src) == "string" then src else nil
+			end
+			tile = ui.div {
+				w = 18,
+				h = 18,
+				items = "center",
+				justify = "center",
+				ui.show(is_classic, monogram(name, hue :: () -> string?, 13, src_now, emoji, project)),
+				ui.show(function(): boolean
+					return not is_classic()
+				end, tile),
+			}
+		end
 		if type(sessions) == "table" then
 			local most = pressing(sessions)
 			return ui.div {
 				relative = true,
 				w = 18,
 				h = 18,
-				Tile { hue = if type(hue) == "string" or type(hue) == "function" then hue :: any else nil, inside = inside, size = 18, src = src, emoji = emoji, project = project },
+				tile,
 				if most then ui.show(hidden, badge(most)) else nil,
 			}
 		end
@@ -1774,7 +1877,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 			relative = true,
 			w = 18,
 			h = 18,
-			Tile { hue = if type(hue) == "string" or type(hue) == "function" then hue :: any else nil, inside = inside, size = 18, src = src, emoji = emoji, project = project },
+			tile,
 			ui.presence(function(): status.Kind?
 				return if hidden() then pressing(listed(sessions)) else nil
 			end, badge),
@@ -1927,7 +2030,20 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 							-- (A group that isn't a folder, the chats in none, wears
 							-- its glyph on the chrome's quiet wash, not a letter.)
 							if p.icon then
-								return group_tile(QUIET, Icon { name = p.icon, size = 12 }, live or own, hidden)
+								-- (Classic: its glyph alone, faint, no tile under it.)
+								return ui.div {
+									ui.show(is_classic, ui.div {
+										w = 18,
+										h = 18,
+										items = "center",
+										justify = "center",
+										color = "$text.tertiary",
+										Icon { name = p.icon, size = 13 },
+									}),
+									ui.show(function(): boolean
+										return not is_classic()
+									end, group_tile(QUIET, Icon { name = p.icon, size = 12 }, live or own, hidden)),
+								}
 							end
 							local hue, src, emoji = look(p)
 							return group_tile(
@@ -1943,7 +2059,8 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 								hidden,
 								src,
 								emoji,
-								p.id
+								p.id,
+								p.name
 							)
 						end,
 					})
@@ -3009,7 +3126,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 								holds_open = true
 							end
 						end
-						if i <= GROUP_FIRST or holds_open or peeking[c] then
+						if i <= group_first() or holds_open or peeking[c] then
 							within[c] = true
 						else
 							past += 1
@@ -3070,7 +3187,7 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 				local within: { [string]: boolean } = {}
 				local past = 0
 				for i, sess in all do
-					if i <= GROUP_FIRST or sess.id == open_id or peeks(sess) then
+					if i <= group_first() or sess.id == open_id or peeks(sess) then
 						within[sess.id] = true
 					else
 						past += 1
@@ -3562,22 +3679,32 @@ local places: State<Places> = props.places or ui.use_state({ pinned = pinned_ids
 					pr = "$space.2",
 					gap = "$space.2",
 					items = "center",
+					-- (Classic: v2's muted name, its count only while folded.)
 					FadeText {
 						name,
 						grow = 1,
 						text_size = "$font.size.sm",
 						weight = "$font.weight.medium",
-						color = "$text.secondary",
-					},
-					ui.text {
-						function(): string
-							return tostring(#sessions())
+						color = function(): string
+							return if is_classic() then "$text.tertiary" else "$text.secondary"
 						end,
-						shrink = 0,
-						tabular = true,
-						text_size = "$font.size.sm",
-						color = "$text.secondary",
 					},
+					ui.show(
+						function(): boolean
+							return not is_classic() or not open:get()
+						end,
+						ui.text {
+							function(): string
+								return tostring(#sessions())
+							end,
+							shrink = 0,
+							tabular = true,
+							text_size = "$font.size.sm",
+							color = function(): string
+								return if is_classic() then "$text.tertiary" else "$text.secondary"
+							end,
+						}
+					),
 				}
 				if g.new_in then
 					table.insert(parts, ui.div {
@@ -5305,6 +5432,10 @@ fn layer(input:LayerInput)->vec4<f32> {
 	end, edge_drag)
 	local root = ui.column {
 		id = if is_island then "rail" else nil,
+		-- (Classic: v2's washes, no tree lines; ds/look.)
+		theme = function(): any
+			return classic.classic_sidebar_theme()
+		end,
 		w = if props.card
 			then "100%" :: any
 			else card_w,
