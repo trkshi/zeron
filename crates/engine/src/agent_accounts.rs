@@ -852,6 +852,13 @@ pub struct AgentAccounts {
 }
 
 impl AgentAccounts {
+    /// Where Claude Code, Codex and Grok keep their own files (config dir,
+    /// `CODEX_HOME`, `GROK_HOME`): their session logs are under these.
+    pub fn homes(&self) -> (PathBuf, PathBuf, PathBuf) {
+        let config = &self.inner.config;
+        (config.claude_config_dir.clone(), config.codex_home.clone(), config.grok_home.clone())
+    }
+
     pub fn new(config: AgentAccountsConfig) -> Self {
         Self::with_endpoints(config, ProbeEndpoints::default(), Default::default())
     }

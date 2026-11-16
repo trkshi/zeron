@@ -326,6 +326,9 @@ pub mod methods {
     /// remove only its untracked, non-ignored paths.
     pub const DISCARD_WORKING_TREE: &str = "DiscardWorkingTree";
     pub const GET_CHECKOUT_FILE_DIFF_TEXT: &str = "GetCheckoutFileDiffText";
+    /// `{days}` → `TokenUsage`: what this device's coding agents spent, from
+    /// their own session logs, by hour (`days: 1`) or day, agent and model.
+    pub const GET_TOKEN_USAGE: &str = "GetTokenUsage";
     // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
     pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
     pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";

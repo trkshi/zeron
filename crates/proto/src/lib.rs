@@ -24,6 +24,7 @@ pub mod relay_gen;
 pub mod providers;
 pub mod run_errors;
 pub mod sidebar_pins;
+pub mod token_usage;
 pub mod view;
 pub mod voice;
 pub mod workspace;

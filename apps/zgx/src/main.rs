@@ -70,6 +70,7 @@ mod terminal;
 mod tool_details;
 mod themes;
 mod transparency;
+mod usage;
 mod visuals;
 #[cfg(test)]
 mod audit_shots;
@@ -825,6 +826,8 @@ fn script_host_at(cx: &mut WindowContext, path: PathBuf, entry: &str) -> ScriptH
         updates::install(&host);
         // Adding a project, removing one (src/projects.rs).
         projects::install(&host);
+        // Settings → Usage: what this device's agents spent (src/usage.rs).
+        usage::install(cx, &host);
         // A session's files (src/files.rs): the files pane and editor.
         files::install(cx, &host);
         // The composer's `/` commands and `$` skills, from the engine.

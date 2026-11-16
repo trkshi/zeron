@@ -5529,6 +5529,17 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&status)
             }
+            methods::GET_TOKEN_USAGE => {
+                let p: zeron_proto::token_usage::TokenUsageParams = parse_params(params)?;
+                let (claude, codex, grok) = self.agent_accounts.homes();
+                let dirs = crate::token_usage::LogDirs::of_homes(&claude, &codex, &grok);
+                let usage = tokio::task::spawn_blocking(move || {
+                    crate::token_usage::report(&dirs, p.days, chrono::Local::now())
+                })
+                .await
+                .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&usage)
+            }
             methods::LIST_AGENT_ACCOUNTS => {
                 let p: ListAgentAccountsParams = parse_params(params)?;
                 let snapshot = self

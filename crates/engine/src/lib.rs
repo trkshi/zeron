@@ -62,6 +62,7 @@ pub mod managed;
 mod hosted_models;
 mod model_catalogs;
 mod plugin_agents;
+mod price_list;
 pub mod plugins;
 pub mod profile;
 pub mod project_actions;
@@ -78,6 +79,7 @@ pub mod source_control;
 pub mod spaces;
 pub mod terminals;
 pub mod titles;
+pub mod token_usage;
 pub mod tool_output;
 mod transcript_history;
 mod update_trial;
@@ -464,6 +466,8 @@ impl EngineCore {
         let harness_updates =
             harness_updates::HarnessUpdateCoordinator::new(data_dir, registry.clone());
         harness_updates.start();
+        // Public model prices, for Settings → Usage's estimates.
+        price_list::start(data_dir);
         sessions.set_titles(TitleGenerator::new(
             workspace.clone(),
             registry.clone(),
