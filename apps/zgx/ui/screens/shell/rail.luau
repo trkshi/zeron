@@ -18,6 +18,8 @@ local locale = require("@ds/locale")
 local PrivateText = require("@ds/private_text")
 local Tooltip = require("@ds/tooltip")
 local agents = require("@account/agents")
+local sessions = require("@account/sessions")
+local cloud = require("@account/cloud")
 local boundary = require("@app/screens/shell/boundary")
 local keys = require("@app/screens/shell/keys")
 local route = require("@app/screens/shell/route")
@@ -267,9 +269,46 @@ local function settings(): Node
 	}
 end
 
--- Usage: each agent's account in use on this device, with how much of its
--- plan's windows (a session's, a week's) it has used, as the agents report
--- them (account/agents). Clicked, Settings → Usage.
+-- Usage: each agent's account in use on the machine you're working on (the
+-- open chat's, or a new chat's as its composer is set), with how much of its plan's
+-- windows (a session's, a week's) it has used, as the agents report them
+-- (account/agents). Clicked, Settings → Usage.
+
+-- The accounts' key the ring reads (account/agents `on_device`): "" for
+-- this device, "cloud" for Cloud's, else the open chat's device, or on a
+-- new chat the one its composer is set to (screens/chat/composer's
+-- `chat_device`), as screens/chat/shared `account_key` has it: an account
+-- switched on another machine shows while you're working there.
+local chat_device = ui.state("chat_device", nil :: string?)
+local function ring_key(): string
+	local id = route.current:get().session
+	local device: string? = nil
+	if id then
+		for _, c in sessions.now:get().chats do
+			if c.id == id then
+				device = c.device
+				break
+			end
+		end
+	else
+		device = chat_device:get()
+	end
+	if device == nil or device == "" then
+		return ""
+	end
+	if device == "cloud" then
+		return "cloud"
+	end
+	for _, d in sessions.devices:get() or {} do
+		if d.here and d.id == device then
+			return ""
+		end
+	end
+	if cloud.on_device(device) or device == cloud.device() then
+		return "cloud"
+	end
+	return device
+end
 
 -- The agents Zeron drives, in the catalog's order: their names and marks.
 local catalog = ui.shared("chat.catalog", { state = "looking", harnesses = {}, models = {} } :: any)
@@ -278,7 +317,7 @@ type Live = { harness: any, account: any }
 
 -- One an agent: its account in use, while that reports windows.
 local function live_accounts(): { Live }
-	local on = agents.on_device:get()[""]
+	local on = agents.on_device:get()[ring_key()]
 	local out: { Live } = {}
 	if not on then
 		return out
@@ -335,7 +374,7 @@ end
 local function ring_label(): string
 	local shown = tightest(live_accounts())
 	if not shown then
-		local loading = agents.on_device:get()[""] == nil
+		local loading = agents.on_device:get()[ring_key()] == nil
 		return locale.s(if loading then "shell.rail.usage.loading" else "shell.rail.usage.none")
 	end
 	if most_used(shown.account) >= 1 then
@@ -488,7 +527,7 @@ end
 -- (asking the agents again); pressed, Settings → Providers, its accounts.
 local function usage_ring(): Node
 	ui.effect(function()
-		agents.watch_device("")
+		agents.watch_device(ring_key())
 	end)
 	local over = ui.use_state(false)
 	local clicked = ui.use_state(false)
@@ -530,7 +569,7 @@ local function usage_ring(): Node
 		on_hover = function(inside: boolean)
 			over:set(inside)
 			if inside then
-				agents.refresh_device("")
+				agents.refresh_device(ring_key())
 			else
 				clicked:set(false)
 			end
