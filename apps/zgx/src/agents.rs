@@ -564,6 +564,8 @@ pub(crate) fn mark(id: &str) -> Option<&'static str> {
         "hermes" => "hermes",
         "antigravity" => "antigravity",
         "muse" => "muse",
+        // DeepSeek Harness wears DeepSeek's own mark (the provider's).
+        "dsh" => "provider-deepseek",
         _ => return None,
     })
 }
