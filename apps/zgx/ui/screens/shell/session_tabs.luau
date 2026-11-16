@@ -473,11 +473,23 @@ end
 local tile_enter = { opacity = { 0, 1 }, scale = { 0.6, 1 }, duration = 220, ease = "outBack(1.6)" }
 local tile_exit = { opacity = 0, scale = 0.6, duration = 120, ease = "inQuad" }
 
+-- Whether a chat of the tab is at work: its front tile is then the working
+-- loader (`tile`), on every tab, the one showing too, as a browser's tab spins
+-- in its icon's place.
+local function tab_at_work(key: string): boolean
+	for _, pane in splits.panes(key) do
+		local c = chat_of(pane)
+		if c and c.status and AT_WORK[c.status] then
+			return true
+		end
+	end
+	return false
+end
+
 -- The tile for a pane's place in the stack: its chat's agent's mark, as
--- the sidebar's rows have it (ds/session_row `mark`), or while that chat is at
--- work the working loader in its place (the classic look's dots, else the
--- ring), on every tab, the one showing too. The focus moving swaps each
--- place's pane, the new one springing up there.
+-- the sidebar's rows have it (ds/session_row `mark`); the front one's gives
+-- way to the working loader while the tab works (`tile`). The focus moving
+-- swaps each place's pane, the new one springing up there.
 local function pane_tile(id: string, place: number): Node
 	return ui.presence(function(): string
 		return stack_of(id)[place] or ""
@@ -490,17 +502,14 @@ local function pane_tile(id: string, place: number): Node
 			h = TILE,
 			items = "center",
 			justify = "center",
-			ui.switch(function(): string
-				local c = chat_of(chat)
-				return if c and c.status and AT_WORK[c.status] then "working" else "mark"
-			end, {
-				working = ds.StatusIcon { kind = "working", size = 16 },
-				mark = SessionRow.mark(function(): any
-					return chat_of(chat) or { id = chat, title = "" }
-				end, function(): boolean
-					return true
-				end),
-			}),
+			opacity = function(): number
+				return if place == 1 and tab_at_work(id) then 0 else 1
+			end,
+			SessionRow.mark(function(): any
+				return chat_of(chat) or { id = chat, title = "" }
+			end, function(): boolean
+				return true
+			end),
 		}
 	end, { w = TILE, h = TILE, shrink = 0, enter = tile_enter, exit = tile_exit })
 end
@@ -554,6 +563,24 @@ local function tile(id: string): Node
 		end, place(at)))
 	end
 	table.insert(shown_places, place(1))
+	-- While the tab works, the loader over the front tile, upright: drawn here
+	-- and not in the tile, as a turned tile is a layer of its own, which the
+	-- window draws once and doesn't redraw for a loop inside it (the loader
+	-- stood still there).
+	table.insert(shown_places, ui.show(function(): boolean
+		return tab_at_work(id)
+	end, ui.row {
+		id = `session-tab-{id}-working`,
+		absolute = true,
+		top = 0,
+		left = 0,
+		w = TILE,
+		h = TILE,
+		items = "center",
+		justify = "center",
+		pointer_events = "none",
+		ds.StatusIcon { kind = "working", size = 16 },
+	}))
 	return ui.div(shown_places)
 end
 
