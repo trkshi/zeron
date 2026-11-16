@@ -657,6 +657,12 @@ local function under_art(): Node
 		w = M.W,
 		overflow = "hidden",
 		pointer_events = "none",
+		-- (Its own fade too, as the rail's fade has (backdrop.RailFade): a
+		-- picture's own fade-out (ds/wallpaper's) has been seen stuck shown
+		-- after the picture left the rail, until a relaunch; this one has not.)
+		opacity = ui.tween(ui.computed(function(): number
+			return if backdrop.under_rail() then 1 else 0
+		end), { duration = 180, ease = "out(3)" }),
 		backdrop.Art { kind = "hero", shown = backdrop.under_rail, beside = beside, window = window, animate = animate },
 		backdrop.Art { kind = "chat", shown = backdrop.under_rail, beside = beside, window = window, animate = animate },
 		backdrop.ChatScrim { shown = backdrop.under_rail },
