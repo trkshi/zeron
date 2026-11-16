@@ -283,6 +283,14 @@ return function(): Node
 			end
 		end
 	end
+	-- ⌘⇧⌫: the session open deleted, asked once more (Enter confirms).
+	runs["shell.delete"] = function()
+		local id = route.current:peek().session
+		local sidebar: any = boundary.load("@app/screens/shell/sidebar")
+		if id and sidebar and sidebar.ask_delete then
+			sidebar.ask_delete(id)
+		end
+	end
 	-- ⌘1–9: the sidebar's first nine sessions, as it shows them (Zeron's
 	-- jumps, shell.rs), its hints kept up through them (screens/shell/sidebar
 	-- `jump_hints`).

@@ -36,6 +36,8 @@ M.LIST = {
 	{ id = "shell.new_chat", title = "New chat", key = "cmd+n", group = "Sessions", menu = "File", reserved = true },
 	{ id = "shell.new_project", title = "New project", key = "cmd+shift+n", group = "Sessions", menu = "File", reserved = true },
 	{ id = "shell.archive", title = "Archive session", key = "cmd+shift+a", group = "Sessions", menu = "File", reserved = true },
+	-- (Asked once more; Enter deletes. ⌘⌫ alone is a text field's.)
+	{ id = "shell.delete", title = "Delete session", key = "cmd+shift+backspace", group = "Sessions", menu = "File", reserved = true },
 	{ id = "shell.pin", title = "Pin or unpin this session", key = "cmd+shift+p", group = "Sessions", menu = "File", reserved = true },
 	{ id = "shell.model_picker", title = "Choose model", key = "cmd+/", group = "Sessions", menu = "View", reserved = true },
 	{ id = "shell.toggle_sidebar", title = "Toggle sidebar", key = "cmd+b", group = "Panels", menu = "View", reserved = true },

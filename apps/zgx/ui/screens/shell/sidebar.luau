@@ -1049,6 +1049,23 @@ function M.archive(id: string)
 	sessions.archive(id)
 end
 
+-- Deleting a session, asked once more ("Delete session?"), once it knows
+-- what goes with it (its subagents and side chats), to say so. From its
+-- menu, or the delete shortcut on the session open (screens/shell/init).
+function M.ask_delete(id: string)
+	local function ask(subagents: number, sides: number)
+		delete_subagents:set(subagents)
+		delete_sides:set(sides)
+		deleting:set(id)
+		delete_open:set(true)
+	end
+	sessions.deleted_with(id):after(function(with: any)
+		ask(tonumber(with and with.subagents) or 0, tonumber(with and with.sides) or 0)
+	end, function()
+		ask(0, 0)
+	end)
+end
+
 -- A session's menu, as the gallery's (Zeron's sidebar chat menu): rename,
 -- pin, copy, move into one of your sections, archive (kept: Settings →
 -- Archived lists it), delete (for good, asked once more); then plugins'
@@ -1255,19 +1272,8 @@ local function menu(id: string): { any }?
 			icon = "trash-bin-minimalistic",
 			danger = true,
 			-- (Asked once more, as Zeron's: "Delete session?")
-			-- (Once it knows what goes with it, to say so.)
 			on_select = function()
-				local function ask(subagents: number, sides: number)
-					delete_subagents:set(subagents)
-					delete_sides:set(sides)
-					deleting:set(id)
-					delete_open:set(true)
-				end
-				sessions.deleted_with(id):after(function(with: any)
-					ask(tonumber(with and with.subagents) or 0, tonumber(with and with.sides) or 0)
-				end, function()
-					ask(0, 0)
-				end)
+				M.ask_delete(id)
 			end,
 		},
 	}
@@ -1472,7 +1478,8 @@ local function project_dialogs(): Node
 end
 
 -- Deleting a session, asked once more (Zeron's "Delete session?"): for
--- good, so its red Delete waits on Cancel.
+-- good, but its red Delete has the focus and takes Enter, so the delete
+-- shortcut then Enter deletes the session open.
 local function delete_dialog(): Node
 	local function says(): string
 		local id = deleting:get()
@@ -1494,6 +1501,7 @@ local function delete_dialog(): Node
 		open = delete_open,
 		title = ui.t("shell.sidebar.session.delete_title") :: any,
 		tone = "danger",
+		enter_confirms = true,
 		size = "sm",
 		confirm = {
 			label = ui.t("common.delete") :: any,

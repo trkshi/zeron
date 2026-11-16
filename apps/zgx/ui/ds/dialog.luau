@@ -57,6 +57,9 @@ export type DialogProps = {
 	aside: Action?,
 	-- A word to type before the confirm will go.
 	confirm_text: string?,
+	-- A danger's confirm taking Enter after all: its focus starts on the
+	-- confirm, not Cancel (a deliberate shortcut, then Enter).
+	enter_confirms: boolean?,
 	-- Whether a click outside closes it (not for one that must be answered).
 	dismissable: boolean?,
 	-- While true, nothing closes it — Cancel, Escape, a click outside — as
@@ -159,6 +162,7 @@ end
 local DialogBody = ui.component(function(args: { props: DialogProps, close: () -> (), phase: State<number> }): Node
 	local props, close, phase = args.props, args.close, args.phase
 	local danger = props.tone == "danger"
+	local enter_confirms = not danger or props.enter_confirms == true
 	local typed = ui.use_state("")
 	local function ready(): boolean
 		local confirm = props.confirm
@@ -205,7 +209,7 @@ local DialogBody = ui.component(function(args: { props: DialogProps, close: () -
 			return 4 * (1 - phase:get())
 		end,
 		on_key = function(e)
-			if e.key == "Enter" and not danger and props.confirm then
+			if e.key == "Enter" and enter_confirms and props.confirm then
 				go()
 				return true
 			end
@@ -291,8 +295,9 @@ local DialogBody = ui.component(function(args: { props: DialogProps, close: () -
 						return not ready()
 					end,
 					-- Nothing to type in: the way on has the focus, but for a
-					-- danger's, where that is Cancel, the first control.
-					on_mount = if has_field or danger
+					-- danger's, where that is Cancel, the first control. One
+					-- taking Enter has it whatever stands above.
+					on_mount = if not props.enter_confirms and (has_field or danger)
 						then nil
 						else function(el: Element)
 							ui.after(0, function()
