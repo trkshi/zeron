@@ -1145,6 +1145,11 @@
         "description": "否则面板会保持打开并显示主页。",
         "terms": "右侧 面板 标签页 关闭 空"
       },
+      "open_new_chat": {
+        "label": "启动时打开新对话",
+        "description": "从新对话开始，而不是上次离开的会话。",
+        "terms": "启动 打开 新对话 主页 恢复 上次 会话 launch startup home restore"
+      },
       "privacy": "隐私",
       "hide_emails": {
         "label": "隐藏电子邮件地址",

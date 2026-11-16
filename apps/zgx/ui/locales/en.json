@@ -1145,6 +1145,11 @@
         "description": "Otherwise it stays open on its home.",
         "terms": "right panel tabs close empty side"
       },
+      "open_new_chat": {
+        "label": "Open on a new chat",
+        "description": "Start on a new chat instead of the session you left.",
+        "terms": "launch startup start open home restore last session resume"
+      },
       "privacy": "Privacy",
       "hide_emails": {
         "label": "Hide email addresses",

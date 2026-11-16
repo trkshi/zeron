@@ -7,6 +7,7 @@
 --   prefs.send_with:get()           "enter" | "mod_enter" (⌘↩ sends, ↩ breaks a line)
 --   prefs.escape_stops:get()        Escape stops the running agent (no dialog or menu open)
 --   prefs.close_panel_with_last_tab:get()  closing the panel's last tab closes it too
+--   prefs.open_new_chat:get()       a launch opens on a new chat, not where it was left
 --   prefs.compact_transcript:get()  thinking and tool calls folded in a transcript
 --   prefs.open_links:get()          "zeron" | "external": a web link in a chat opens in
 --                                   the panel's browser tab, or the default browser
@@ -43,6 +44,10 @@ M.escape_stops = ui.persist("settings_escape_stops", false)
 -- Whether closing a panel's last tab closes the panel too (off: it stays
 -- open on its home). On by default: an empty panel is one nobody's using.
 M.close_panel_with_last_tab = ui.persist("settings_close_panel_with_last_tab", true)
+-- Whether a launch opens on a new chat rather than where it was left
+-- (screens/shell/route reads it once, as the launch starts). Off by
+-- default, as Zeron's.
+M.open_new_chat = ui.persist("settings_open_new_chat", false)
 M.compact_transcript = ui.persist("settings_compact_transcript", false)
 -- (Told to the host, which lays a reply being written out compact only while
 -- the transcript shows it so: src/chat.rs `compact_shown`.)

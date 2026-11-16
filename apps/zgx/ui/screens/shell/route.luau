@@ -54,6 +54,7 @@
 
 local sessions = require("@account/sessions")
 local look = require("@app/screens/shell/project_look")
+local prefs = require("@app/screens/settings/prefs")
 
 local M = {}
 
@@ -100,8 +101,13 @@ end
 local last = ui.persist("shell_last_route", nil :: string?)
 -- Where the launch started: where it was left (nil, never saved), read
 -- once a launch (a named state: a reload keeps the launch's), so the launch
--- can tell whether it has moved since (`M.launched`).
+-- can tell whether it has moved since (`M.launched`). With Settings →
+-- General "Open on a new chat" on, a new chat's, as though left there (not
+-- nil, which would open the latest session instead).
 local function saved(): string?
+	if prefs.open_new_chat:peek() then
+		return "/"
+	end
 	local p = last:peek()
 	if type(p) ~= "string" then
 		return nil
