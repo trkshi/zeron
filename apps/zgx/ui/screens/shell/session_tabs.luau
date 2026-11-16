@@ -3,13 +3,20 @@
 -- shows its panes' tiles stacked (three at most) with the pane focused last in front,
 -- and its title. A chat dragged onto one joins it. A click goes there, a
 -- drag reorders them, its × closes the tab, and a split with it (the sessions go on,
--- in the sidebar).
+-- in the sidebar). On a new chat, a tab of its own ("New chat") after them.
 --
---   session_tabs.Strip { left = fn, right = fn }
+-- The tabs stand on the page's card: the one showing is the card's own
+-- surface, risen into the top bar (a folder's tab: its top corners round, its
+-- feet flaring out into the card's top edge), drawn by a layer shader cut to
+-- its shape; the rest lie on the bar, quiet, a hairline between neighbours,
+-- a wash under the pointer.
+--
+--   session_tabs.Strip { window_x = fn, start = fn, right = fn }
 
 local ds = require("@ds")
 local ContextMenu = require("@ds/context_menu")
 local control = require("@ds/control")
+local locale = require("@ds/locale")
 local SessionRow = require("@ds/session_row")
 local motion = require("@ds/motion")
 local TabStrip = require("@ds/tab_strip")
@@ -19,9 +26,87 @@ local splits = require("@app/screens/shell/split")
 
 local M = {}
 
-local TAB_H, SLOT, LABEL_MAX, TILE = 28, 20, 160, 20
+-- A tab: its height, its corner's slot, a pane's tile; as wide as the room
+-- shares out, between its least and most, the gap between tabs.
+local TAB_H, SLOT, TILE = 36, 24, 20
+local TAB_MAX, TAB_MIN, TAB_GAP = 216, 144, 4
+local TITLE_SIZE = ui.raw(12, "Zeron's tab title, at any text size")
+-- The top bar, down to the page's card (screens/shell/page's TOP_BAR): a tab
+-- stands on the card's top edge, this far under the window's top.
+local BAR = 42
+local DROP = BAR - TAB_H
+-- How far the showing tab's feet flare out each side (the shader's `foot`),
+-- and the room kept for them at the strip's ends.
+local FOOT = 10
+local PAD = FOOT
+-- The new chat's tab's key.
+local DRAFT = "draft"
 local SLIDE = { duration = 150, ease = "out(3)" }
 local FADE, FADE_RATE = 36, 12
+
+-- The bar's own inks: a tab's words not showing, its wash under the pointer,
+-- the hairline between tabs.
+ui.theme.tokens {
+	zeron = {
+		strip = {
+			ink_light = "alpha({text.primary}, 0.72)",
+			ink_dark = "alpha({text.primary}, 0.7)",
+			hover_light = "#ffffff59",
+			hover_dark = "#ffffff14",
+			rule_light = "alpha({text.primary}, 0.18)",
+			rule_dark = "#ffffff24",
+		},
+	},
+}
+local function strip_token(name: string): string
+	local kind = ui.theme.kind()
+	local light = kind == "light" or kind == "high-contrast-light"
+	return `$zeron.strip.{name}_{if light then "light" else "dark"}`
+end
+
+-- The showing tab's shape (crates/ui shell/tabs.rs `folder_tab_backdrop`):
+-- `TAB_H` tall from `top`, its top corners round, its feet flaring out
+-- `FOOT` into the card's top edge. params: [0] its x and width (feet in),
+-- [1] the strip's visible span and the tabs' top, [2] the span's edge fades.
+-- The layer keeps only what's inside it.
+local TAB_KEEP = ui.layer_shader([[
+fn tab(p: vec2<f32>, x0: f32, w: f32, top: f32, scale: f32) -> f32 {
+	let foot = 10.0;
+	let corner = 10.0;
+	let h = 36.0;
+	var x = p.x - x0;
+	let y = p.y - top;
+	if (w <= 0.0 || x < 0.0 || x > w || y < -1.0 || y > h + 1.0) {
+		return 0.0;
+	}
+	if (x > w * 0.5) {
+		x = w - x;
+	}
+	if (x < foot) {
+		let d = length(vec2<f32>(x, y - (h - foot)));
+		return select(0.0, clamp((d - foot) * scale + 0.5, 0.0, 1.0), y > h - foot);
+	}
+	let cx = foot + corner;
+	if (x < cx && y < corner) {
+		let d = length(vec2<f32>(cx - x, corner - y));
+		return clamp((corner - d) * scale + 0.5, 0.0, 1.0);
+	}
+	return clamp((x - foot) * scale + 0.5, 0.0, 1.0) * clamp(y * scale + 0.5, 0.0, 1.0);
+}
+fn layer(input: LayerInput) -> vec4<f32> {
+	let a = input.params[0];
+	let b = input.params[1];
+	let c = input.params[2];
+	let h = tab(input.p, a.x, a.y, b.z, input.scale)
+		* clamp((input.p.x - b.x) / max(c.x, 0.5), 0.0, 1.0)
+		* clamp((b.y - input.p.x) / max(c.y, 0.5), 0.0, 1.0);
+	return vec4<f32>(input.color.rgb, input.color.a * h);
+}]])
+
+-- The title bar's line (where its controls centre), from the window's top.
+local function line(): number
+	return ds.TitleBar.middle()
+end
 -- A tab's stacked tiles, as a fanned hand of cards: at most this many, and for each
 -- place how far along it stands and how far it's turned. Alone, a tile stands square.
 local STACK = 3
@@ -101,6 +186,153 @@ end
 -- What a tab shows: of its chats, the one focused last.
 local function face(key: string): string
 	return stack_of(key)[1] or splits.panes(key)[1] or key
+end
+
+-- The new chat's tab: there while a new chat is open (not under a plugin's
+-- page or settings).
+local draft_shows = ui.computed(function(): boolean
+	local current = route.current:get().name
+	return route.chat:get().name == "home" and current ~= "plugin" and current ~= "settings"
+end)
+M.DRAFT = DRAFT
+M.draft_shows = draft_shows
+
+-- The tab showing: a session's (its split's), or the new chat's.
+local function selected_key(): string?
+	local current = route.current:get().name
+	if current == "plugin" or current == "settings" then
+		return nil
+	end
+	if route.session:get() then
+		return splits.current_key()
+	end
+	return if draft_shows:get() then DRAFT else nil
+end
+
+-- Every tab's width: the strip's room shared out, between their least and
+-- most (`Strip` keeps it).
+local tab_w = ui.state("shell_session_tab_w", TAB_MAX)
+
+-- The tab under the pointer (the hairlines beside it go).
+local hover_key = ui.state("shell_session_tab_hover", nil :: string?)
+local function hover(key: string, inside: boolean)
+	if inside then
+		hover_key:set(key)
+	elseif hover_key:peek() == key then
+		hover_key:set(nil)
+	end
+end
+
+-- The tab before this one, in the order the strip shows them (`order`).
+local function before(key: string, order: () -> { string }): string?
+	local list = order()
+	local at = if key == DRAFT then #list + 1 else table.find(list, key)
+	return if at and at > 1 then list[at - 1] else nil
+end
+
+-- The hairline in the gap before a tab, on the bar's line: gone beside the
+-- tab showing, or the one under the pointer, and first of all.
+local function rule(key: string, order: () -> { string }): Node
+	return ui.div {
+		absolute = true,
+		left = ui.raw(-TAB_GAP / 2 - 0.5, "in the gap before the tab"),
+		w = 1,
+		top = function(): number
+			return ui.raw(line() - 8 - DROP, "a 16-point rule, on the bar's line")
+		end,
+		h = 16,
+		pointer_events = "none",
+		bg = function(): string
+			return strip_token("rule")
+		end,
+		opacity = function(): number
+			local prev = before(key, order)
+			local sel, over = selected_key(), hover_key:get()
+			if not prev or sel == key or sel == prev or over == key or over == prev then
+				return 0
+			end
+			return 1
+		end,
+	}
+end
+
+-- A tab's own box: its height on the card's top edge, its insets, its words
+-- on the bar's line, their ink (the showing tab's the page's own), and
+-- under them a wash, a 30-point pill on the bar's line, fading in under the
+-- pointer (not on the showing tab: it's the card).
+local function tab_box(props: { [any]: any }, active: () -> boolean, washed: () -> boolean): { [any]: any }
+	props.w = function(): number
+		return tab_w:get()
+	end
+	props.h = TAB_H
+	props.shrink = 0
+	props.relative = true
+	props.pl = ui.raw(10, "Zeron's tab's start")
+	props.pr = ui.raw(4, "Zeron's tab's end")
+	-- (Its middle on the bar's line: the words there, whatever the platform's.)
+	props.pb = function(): number
+		return ui.raw(math.max(0, 2 * (DROP + TAB_H / 2 - line())), "on the bar's line")
+	end
+	props.gap = ui.raw(8, "Zeron's tab's gaps")
+	props.items = "center"
+	props.cursor = "pointer"
+	props.color = function(): string
+		return if active() then "$text.primary" else strip_token("ink")
+	end
+	table.insert(props, 1, ui.div {
+		absolute = true,
+		left = 0,
+		right = 0,
+		top = function(): number
+			return ui.raw(line() - 15 - DROP, "a 30-point pill, on the bar's line")
+		end,
+		h = 30,
+		rounded = "$radius.md",
+		pointer_events = "none",
+		bg = function(): string
+			return strip_token("hover")
+		end,
+		opacity = ui.tween(ui.computed(function(): number
+			return if washed() and not active() then 1 else 0
+		end), { duration = math.max(motion.ms(120), 1), ease = "out(3)" }),
+	})
+	return props
+end
+
+-- A tab's end: its × under the pointer and on the tab showing; else whether
+-- a chat of it awaits a person or is at work.
+local function corner(id: string, hovered: State<boolean>, active: () -> boolean, on_close: (() -> ())?): Node
+	return ui.row {
+		w = SLOT,
+		h = SLOT,
+		shrink = 0,
+		items = "center",
+		justify = "center",
+		ui.presence(function(): string
+			if on_close and (hovered:get() or active()) then
+				return "close"
+			end
+			return if id == DRAFT then "" else tab_state(id) or ""
+		end, function(which: string): Node
+			if which == "" then
+				return ui.div {}
+			end
+			if which ~= "close" then
+				return ui.div { id = `session-tab-{id}-state`, SessionRow.state(which :: any) }
+			end
+			return ds.IconButton {
+				label = "Close tab",
+				tooltip = false,
+				size = "sm",
+				tone = "quiet",
+				w = 20,
+				h = 20,
+				rounded = "$radius.sm",
+				on_click = on_close,
+				ds.Icon { name = "close", size = 12 },
+			}
+		end, { shrink = 0 }),
+	}
 end
 
 -- A chat a drag carries, for the tabs: not a tab of them being moved.
@@ -294,16 +526,16 @@ local function still_face(key: string): Node
 		grow = 1,
 		min_w = 0,
 		h_full = true,
-		pl = ui.raw(4, "as far in as the tile is from its top"),
-		pr = ui.raw(4, "the tab's inset"),
-		gap = "$zeron.space.tight",
+		pl = ui.raw(10, "Zeron's tab's start"),
+		pr = ui.raw(4, "Zeron's tab's end"),
+		gap = ui.raw(8, "Zeron's tab's gaps"),
 		items = "center",
 		ui.div(places),
-		ds.FadeText { title(key), max_w = LABEL_MAX, min_w = 0, grow = 1, text_size = "$font.size.sm", weight = "$font.weight.medium" },
+		ds.FadeText { title(key), min_w = 0, grow = 1, text_size = TITLE_SIZE },
 	}
 end
 
-local Tab = ui.component(function(props: { chat: string, strip: any }): Node
+local Tab = ui.component(function(props: { chat: string, strip: any, order: () -> { string } }): Node
 	local id = props.chat
 	local strip = props.strip
 	local hovered = ui.use_state(false)
@@ -317,8 +549,7 @@ local Tab = ui.component(function(props: { chat: string, strip: any }): Node
 		end
 	end)
 	local function active(): boolean
-		local s = route.session:get()
-		return s ~= nil and splits.current_key() == id
+		return selected_key() == id
 	end
 	return ContextMenu {
 		label = ui.t("panel.tab.actions"),
@@ -340,7 +571,7 @@ local Tab = ui.component(function(props: { chat: string, strip: any }): Node
 				end },
 			}
 		end,
-		ui.row {
+		ui.row(tab_box({
 			id = `session-tab-{id}`,
 			ref = own,
 			on_mount = function()
@@ -351,23 +582,9 @@ local Tab = ui.component(function(props: { chat: string, strip: any }): Node
 				return title(id)
 			end,
 			selected = active,
-			h = TAB_H,
-			shrink = 0,
-			pl = ui.raw(4, "as far in as the tile is from its top"),
-			pr = ui.raw(4, "the tab's inset"),
-			gap = "$zeron.space.tight",
-			items = "center",
-			rounded = "$radius.lg",
-			cursor = "pointer",
-			relative = true,
-			-- (Chosen, it stands on the strip's wash, which glides to it; the
-			-- others take the hover wash, `TabStrip.Wash`. Pressed, any darkens.)
-			active = { bg = "$pressed" },
-			color = function(): string
-				return if active() or hovered:get() then "$text.primary" else "$text.secondary"
-			end,
 			on_hover = function(inside: boolean)
 				hovered:set(inside)
+				hover(id, inside)
 			end,
 			on_click = function()
 				route.open_session(face(id))
@@ -447,53 +664,61 @@ local Tab = ui.component(function(props: { chat: string, strip: any }): Node
 				route.open_session(face(id))
 				return true
 			end,
-			TabStrip.Wash(function(): boolean
-				return (hovered:get() or held:get()) and not active()
-			end),
+			rule(id, props.order),
 			tile(id),
 			ds.FadeText {
 				function(): string
 					return title(id)
 				end,
-				max_w = LABEL_MAX,
+				grow = 1,
 				min_w = 0,
-				text_size = "$font.size.sm",
-				weight = "$font.weight.medium",
+				text_size = TITLE_SIZE,
 			},
-			ui.row {
-				w = SLOT,
-				h = SLOT,
-				shrink = 0,
-				items = "center",
-				justify = "center",
-				-- Its × under the pointer; else whether a chat of it awaits a person or
-				-- is at work.
-				ui.presence(function(): string
-					return if hovered:get() then "close" else tab_state(id) or ""
-				end, function(which: string): Node
-					if which == "" then
-						return ui.div {}
-					end
-					if which ~= "close" then
-						return ui.div { id = `session-tab-{id}-state`, SessionRow.state(which :: any) }
-					end
-					return ds.IconButton {
-						label = "Close tab",
-						tooltip = false,
-						size = "sm",
-						tone = "quiet",
-						w = SLOT,
-						h = SLOT,
-						rounded = "$radius.sm",
-						on_click = function()
-							close(id)
-						end,
-						ds.Icon { name = "close", size = 12 },
-					}
-				end, { shrink = 0 }),
-			},
-		},
+			corner(id, hovered, active, function()
+				close(id)
+			end),
+		}, active, function(): boolean
+			return hovered:get() or held:get()
+		end)),
 	}
+end)
+
+-- The new chat's tab, after the sessions': its pen and "New chat", showing
+-- while a new chat is open. (Nothing to close: it goes as a chat opens.)
+local DraftTab = ui.component(function(props: { order: () -> { string } }): Node
+	local hovered = ui.use_state(false)
+	local function active(): boolean
+		return selected_key() == DRAFT
+	end
+	local function word(): string
+		return locale.s("ds.sidebar.new_chat")
+	end
+	return ui.row(tab_box({
+		id = "session-tab-draft",
+		role = "tab",
+		label = word,
+		selected = active,
+		on_hover = function(inside: boolean)
+			hovered:set(inside)
+			hover(DRAFT, inside)
+		end,
+		on_click = function()
+			route.new_chat()
+		end,
+		rule(DRAFT, props.order),
+		ui.row {
+			w = TILE,
+			h = TILE,
+			shrink = 0,
+			items = "center",
+			justify = "center",
+			ds.Icon { name = "pen-new-square", size = 14 },
+		},
+		ds.FadeText { word, grow = 1, min_w = 0, text_size = TITLE_SIZE },
+		corner(DRAFT, hovered, active, nil),
+	}, active, function(): boolean
+		return hovered:get()
+	end))
 end)
 
 -- `window_x`: how far the page's room stands from the window's left, followed
@@ -532,79 +757,120 @@ function M.Strip(props: { window_x: () -> number, start: () -> number, right: ()
 			splits.dragging:set(away)
 		end,
 		h = TAB_H,
-		rounded = "$radius.lg",
+		rounded = "$radius.md",
 	}
+	-- The tabs as the strip shows them (a carried one sliding the rest aside).
+	local function order(): { string }
+		return strip.order:get()
+	end
 	local function bands(): { number }
 		local at = offset:get()
 		local past = (content.width or 0) - (view.width or 0) - at
 		return { math.clamp(at * FADE_RATE, 0, FADE), math.clamp(past * FADE_RATE, 0, FADE) }
 	end
+	-- How many tabs stand in the strip, the new chat's among them.
+	local function slots(): number
+		return #shown:get() + (if draft_shows:get() then 1 else 0)
+	end
+	-- Their width: the room shared out among them, between their least and
+	-- most. (Held while a tab's carried: the strip would shrink as its gap
+	-- closes.)
+	ui.effect(function()
+		local room = view.width or 0
+		local count = math.max(slots(), 1)
+		if room <= 0 or strip.busy() then
+			return
+		end
+		local w = math.clamp((room - PAD * 2 - TAB_GAP * (count - 1)) / count, TAB_MIN, TAB_MAX)
+		if math.abs(tab_w:peek() - w) > 0.5 then
+			tab_w:set(w)
+		end
+	end)
+	-- Where the tab at `at` stands in the tabs' row.
+	local function slot_left(at: number): number
+		return PAD + (at - 1) * (tab_w:get() + TAB_GAP)
+	end
+	-- Where the tab showing stands among them (the new chat's last), if it does.
+	local function showing_at(): number?
+		local key = selected_key()
+		if key == DRAFT then
+			return #order() + 1
+		end
+		return if key then table.find(order(), key) else nil
+	end
 	-- The tab showing, always clear of the overflow and its fade: as it's opened,
 	-- as tabs come and go, and as the strip's room changes (the panel opening).
 	-- (A person's own scrolling is left alone: this doesn't follow the offset.)
 	ui.effect(function()
-		local s = route.session:get()
-		local list = shown:get()
-		local total = content.width or 0
+		local at_slot = showing_at()
 		local room = view.width or 0
-		-- (Read so it runs again once a carried tab has landed.)
-		strip.order:get()
-		if not s or room <= 0 then
+		local w = tab_w:get()
+		if not at_slot or room <= 0 or strip.busy() then
 			return
 		end
-		-- (Not while a tab's carried or settling: it lands on its slot as the
-		-- strip stands, and the strip scrolls under it near an end.)
-		if strip.busy() then
-			return
+		local n = slots()
+		local total = PAD * 2 + n * w + math.max(n - 1, 0) * TAB_GAP
+		local left = slot_left(at_slot)
+		local right = left + w
+		local at = offset:peek()
+		local want = at
+		if w + 2 * FADE >= room then
+			want = left - (room - w) / 2
+		elseif left - FADE < at then
+			want = left - FADE
+		elseif right + FADE > at + room then
+			want = right + FADE - room
 		end
-		for _, id in list do
-			local r = tab_ref(id)
-			if not r or (r.width or 0) <= 0 then
-				return
-			end
-		end
-		local left = 0
-		-- (The tabs' own gap, the strip's hair.)
-		local gap = (ui.theme.get("zeron.space.hair") :: number?) or 2
-		for _, id in list do
-			local w = tab_refs[id].width
-			if splits.current_key() == id then
-				local right = left + w
-				local at = offset:peek()
-				local want = at
-				if w + 2 * FADE >= room then
-					want = left - (room - w) / 2
-				elseif left - FADE < at then
-					want = left - FADE
-				elseif right + FADE > at + room then
-					want = right + FADE - room
-				end
-				want = math.clamp(want, 0, math.max(0, total - room))
-				if math.abs(want - at) > 0.5 then
-					offset:set(want)
-				end
-				return
-			end
-			left += w + gap
+		want = math.clamp(want, 0, math.max(0, total - room))
+		if math.abs(want - at) > 0.5 then
+			offset:set(want)
 		end
 	end)
 	-- Where they start: past the sidebar's end, followed as it moves.
 	local start = props.start
-	-- From the window's left whatever the sidebar is doing, so they stay put as
-	-- it moves. (Only the tabs' own part takes the pointer: the sidebar's "…"
-	-- lies under the rest, past the margin.)
+	-- The tab showing, as the card's own surface risen into the bar: the
+	-- card's fill, kept only inside the tab's shape (`TAB_KEEP`), there as
+	-- the tab is (scrolled, it goes with the strip's edge fades). In the
+	-- window's own points: this stands at the window's top left.
+	local surface = ui.div {
+		id = "shell-tab-surface",
+		absolute = true,
+		left = 0,
+		right = 0,
+		top = 0,
+		h = BAR,
+		pointer_events = "none",
+		bg = "$zeron.inset.bg",
+		layer_shader = TAB_KEEP,
+		layer_params = function(): { any }
+			local here = showing_at()
+			local x, w = 0, 0
+			if here then
+				x = start() - offset:get() + slot_left(here) - FOOT
+				w = tab_w:get() + FOOT * 2
+			end
+			local fades = bands()
+			return {
+				{ x, w, 0, 0 },
+				{ start(), start() + (view.width or 0), DROP, 0 },
+				{ fades[1], fades[2], 0, 0 },
+			}
+		end,
+	}
+	-- From the window's left and top whatever the sidebar is doing, so they
+	-- stay put as it moves; standing on the page's card's top edge. (Only the
+	-- tabs' own part takes the pointer: the sidebar's "…" lies under the
+	-- rest, past the margin.)
 	return ui.row {
 		absolute = true,
 		left = function(): number
 			return -props.window_x()
 		end,
 		right = 0,
-		-- (On the bar's line, wherever the platform has it.)
-		top = function(): number
-			return ui.raw(ds.TitleBar.middle() - 17, "on the top bar's line")
-		end,
-		h = 34,
+		top = 0,
+		h = BAR + 1,
 		pointer_events = "none",
+		surface,
 		ui.row(strip.zone {
 			id = "session-tabs",
 			role = "tablist",
@@ -614,7 +880,8 @@ function M.Strip(props: { window_x: () -> number, start: () -> number, right: ()
 			min_w = 0,
 			h_full = true,
 			ml = start,
-			items = "center",
+			pt = ui.raw(DROP, "a tab stands on the card's top edge"),
+			items = "start",
 			window_drag = true,
 			pointer_events = "auto",
 			pr = function(): any
@@ -631,18 +898,34 @@ function M.Strip(props: { window_x: () -> number, start: () -> number, right: ()
 				ui.row {
 					ref = content,
 					relative = true,
-					gap = "$zeron.space.hair",
+					h = TAB_H,
+					px = ui.raw(PAD, "room for the showing tab's feet"),
 					items = "center",
-					strip.Highlight(),
-					ui.each(strip.order, function(id: string): Node
-						return Tab { chat = id, strip = strip }
-					end, {
-						key = function(id: string): string
-							return id
+					ui.row {
+						-- (An empty `ui.each` still takes room.)
+						w = function(): any
+							return if #shown:get() == 0 then 0 else nil
 						end,
-						direction = "row",
-						gap = "$zeron.space.hair",
-						animate = motion.tab_slide(),
+						shrink = 0,
+						ui.each(strip.order, function(id: string): Node
+							return Tab { chat = id, strip = strip, order = order }
+						end, {
+							key = function(id: string): string
+								return id
+							end,
+							direction = "row",
+							gap = ui.raw(TAB_GAP, "Zeron's gap between tabs"),
+							animate = motion.tab_slide(),
+						}),
+					},
+					ui.show(function(): boolean
+						return draft_shows:get()
+					end, ui.div {
+						ml = function(): any
+							return ui.raw(if #shown:get() > 0 then TAB_GAP else 0, "Zeron's gap between tabs")
+						end,
+						shrink = 0,
+						DraftTab { order = order },
 					}),
 				},
 			}),
