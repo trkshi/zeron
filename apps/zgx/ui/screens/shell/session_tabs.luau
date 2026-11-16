@@ -168,9 +168,19 @@ local function stack_of(key: string): { string }
 end
 
 -- What a tab's corner says: of its chats, any awaiting a person first, else any
--- at work or waiting on its background work (the sidebar's order of what's
--- most pressing).
-local TAB_STATES = { approval = true, input = true, working = true, waiting = true, connecting = true }
+-- at work or waiting on its background work, else one finished (done, failed
+-- or out of its limits) and not yet seen (the sidebar's order of what's most
+-- pressing). A finished state clears as its chat is opened (`sessions.seen`).
+local TAB_STATES = {
+	approval = true,
+	input = true,
+	failed = true,
+	limited = true,
+	working = true,
+	waiting = true,
+	connecting = true,
+	done = true,
+}
 local function tab_state(key: string): string?
 	local best: string? = nil
 	for _, id in splits.panes(key) do
