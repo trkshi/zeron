@@ -2468,9 +2468,6 @@
       "label": "应用",
       "with_key": "{label}（{key}）",
       "close_settings": "关闭设置",
-      "help": "帮助",
-      "help_shortcuts": "键盘快捷键",
-      "help_star": "在 GitHub 上为 Zeron 加星",
       "usage": {
         "loading": "正在加载用量…",
         "none": "没有报告套餐用量",

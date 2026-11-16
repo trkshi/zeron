@@ -2468,9 +2468,6 @@
       "label": "App",
       "with_key": "{label} ({key})",
       "close_settings": "Close settings",
-      "help": "Help",
-      "help_shortcuts": "Keyboard shortcuts",
-      "help_star": "Star Zeron on GitHub",
       "usage": {
         "loading": "Loading usage…",
         "none": "No plan usage reported",

@@ -2,8 +2,7 @@
 -- sidebar, always there whether the sidebar is open or folded (after
 -- gpui's app rail). New chat and Search, then each plugin's pages, at its
 -- top; at its foot, the usage ring (your agents' plan limits, its card each
--- account's windows), Help (a menu: the shortcuts, the repository), then
--- you (your profile) and Settings, which the
+-- account's windows), then you (your profile) and Settings, which the
 -- sidebar's foot row gave up for it (`view.app_rail`). (The composer keeps
 -- its context ring, a chat's own, not a plan's: screens/chat/composer.)
 --
@@ -16,7 +15,6 @@ local Avatar = require("@ds/avatar")
 local context_usage = require("@ds/context_usage")
 local HoverCard = require("@ds/hover_card")
 local locale = require("@ds/locale")
-local Menu = require("@ds/menu")
 local PrivateText = require("@ds/private_text")
 local Tooltip = require("@ds/tooltip")
 local agents = require("@account/agents")
@@ -267,64 +265,6 @@ local function settings(): Node
 		end,
 		ds.Icon { name = "settings", size = GLYPH },
 	}
-end
-
--- Help: a menu beside it (lit while it's open, its tooltip held back):
--- the keyboard shortcuts (Settings → Shortcuts), and the repository on
--- GitHub.
-local REPO = "https://github.com/zeronsh/zeron"
-local function help(): Node
-	local open = ui.use_state(false)
-	local function go(action: () -> ()): () -> ()
-		return function()
-			open:set(false)
-			action()
-		end
-	end
-	local function is_open(): boolean
-		return open:get()
-	end
-	local function word(): string
-		return locale.s("shell.rail.help")
-	end
-	return ui.popover(Menu.panel {
-		open = open,
-		anchor = RailButton {
-			key = "rail-help",
-			label = word,
-			tooltip = word,
-			quiet = is_open,
-			lit = is_open,
-			expanded = is_open,
-			on_click = function()
-				open:set(not open:peek())
-			end,
-			ds.Icon { name = "lucide-circle-help", size = GLYPH },
-		},
-		label = word,
-		placement = { side = "right", align = "end", offset = 6 },
-		w = "$zeron.menu.width",
-		build = function()
-			return Menu.Group {
-				Menu.Row {
-					id = "help-keybindings",
-					icon = "keyboard",
-					label = ui.t("shell.rail.help_shortcuts"),
-					on_click = go(function()
-						route.settings("shortcuts")
-					end),
-				},
-				Menu.Row {
-					id = "help-star",
-					icon = "star-bold",
-					label = ui.t("shell.rail.help_star"),
-					on_click = go(function()
-						ui.invoke("open_url", REPO)
-					end),
-				},
-			}
-		end,
-	})
 end
 
 -- Usage: each agent's account in use on this device, with how much of its
@@ -717,7 +657,6 @@ M.Rail = ui.component(function(): Node
 		pages(),
 		ui.div { grow = 1 },
 		usage_ring(),
-		help(),
 		account(),
 		settings(),
 	}
