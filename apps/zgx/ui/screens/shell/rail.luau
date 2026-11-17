@@ -303,20 +303,49 @@ local function key_of(device: string?): string
 	return device
 end
 
-local function ring_key(): string
-	local id = route.current:get().session
+-- The key where you are: the open chat's machine, or a new chat's; nil on
+-- a page with no chat of its own (Usage, Settings, a plugin's).
+local function place_key(): string?
+	local c = route.current:get()
+	if c.name == "plugin" or c.name == "settings" then
+		return nil
+	end
+	local id = c.session
 	local device: string? = nil
 	if id then
-		for _, c in sessions.now:get().chats do
-			if c.id == id then
-				device = c.device
+		for _, chat in sessions.now:get().chats do
+			if chat.id == id then
+				device = chat.device
 				break
 			end
 		end
 	else
+		-- A new chat's machine as its composer has it (screens/chat/composer
+		-- `run_device`): the device picked, else its project's.
 		device = chat_device:get()
+		if device == nil then
+			local p = route.project:get()
+			device = if p then p.device else nil
+		end
 	end
 	return key_of(device)
+end
+-- The last of them, which the ring keeps on such a page: opening Usage from
+-- a chat on another machine still shows that machine's account.
+local held_key = ui.state("shell_rail_usage_held_key", "")
+ui.effect(function()
+	local key = place_key()
+	if key ~= nil and held_key:peek() ~= key then
+		held_key:set(key)
+	end
+end)
+
+local function ring_key(): string
+	local key = place_key()
+	if key ~= nil then
+		return key
+	end
+	return held_key:get()
 end
 
 -- While a Claude Code chat works on the ring's machine, its usage as the
