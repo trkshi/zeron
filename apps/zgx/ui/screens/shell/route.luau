@@ -502,11 +502,19 @@ ui.effect(function()
 end)
 -- Where it is, saved as it moves (settings aside: it's over the chats),
 -- once the launch has settled (until then it is where it was left, or
--- somewhere it will settle from).
+-- somewhere it will settle from), or sooner where the person moved it
+-- themselves: the session it opened on, its tab closed before the chats
+-- came, and the window shut, opened on it again, in a tab again.
 ui.effect(function()
 	local r = here()
-	if not M.launched:get() or r.name == "settings" then
+	if r.name == "settings" then
 		return
+	end
+	if not M.launched:get() then
+		local from = start:get()
+		if r.path == (if from ~= "" then from else "/") then
+			return
+		end
 	end
 	if last:peek() ~= r.path then
 		last:set(r.path)
