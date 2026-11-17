@@ -189,7 +189,8 @@ end
 
 -- Each device's accounts for its composers, by device id ("": this one's),
 -- by agent (only an agent that signs in and reports usage): `{ id, email,
--- plan, active, can_switch, error?, windows = { { label, used } } }`.
+-- plan, active, can_switch, error?, windows = { { label, used, resets? } } }`
+-- (`resets`: when the window starts over, seconds since the epoch).
 M.on_device = ui.shared("agents.on_device", {} :: { [string]: { [string]: { any } } })
 
 -- Each per-provider agent's providers Zeron adds to, by provider: `{

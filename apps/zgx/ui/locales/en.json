@@ -2491,6 +2491,14 @@
         "title": "Usage",
         "used": "used",
         "limit_reached": "Limit reached",
+        "resets_in": "Resets in {when}",
+        "limit_resets_in": "Limit reached · resets in {when}",
+        "span": {
+          "days": "{d}d {h}h",
+          "hours": "{h}h {m}m",
+          "minutes": "{m}m",
+          "soon": "under a minute"
+        },
         "open_page": "Click the ring for your accounts",
         "window": {
           "session": "5h",

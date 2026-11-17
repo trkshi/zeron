@@ -2491,6 +2491,14 @@
         "title": "用量",
         "used": "已用",
         "limit_reached": "已达上限",
+        "resets_in": "{when}后重置",
+        "limit_resets_in": "已达上限 · {when}后重置",
+        "span": {
+          "days": "{d} 天 {h} 小时",
+          "hours": "{h} 小时 {m} 分钟",
+          "minutes": "{m} 分钟",
+          "soon": "不到一分钟"
+        },
         "open_page": "点击圆环查看你的账号",
         "window": {
           "session": "5 小时",

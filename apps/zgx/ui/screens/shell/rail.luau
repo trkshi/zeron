@@ -366,6 +366,28 @@ local function percent(used: number): string
 	return `{math.floor(math.clamp(used, 0, 1) * 100 + 0.5)}%`
 end
 
+-- The card's clock for its countdowns, a minute at a time (they say minutes
+-- at most). One timer for the module, sleeping between ticks.
+local clock = ui.state("shell_rail_usage_clock", os.time())
+ui.every(30000, function()
+	clock:set(os.time())
+end)
+
+-- How long until `at` (seconds since the epoch): "3d 4h", "2h 14m", "9m",
+-- "under a minute".
+local function until_words(at: number): string
+	local left = math.max(0, at - math.max(clock:get(), os.time()))
+	local d, h, m = left // 86400, (left % 86400) // 3600, (left % 3600) // 60
+	if d > 0 then
+		return locale.s("shell.rail.usage.span.days", { d = d, h = h })
+	elseif h > 0 then
+		return locale.s("shell.rail.usage.span.hours", { h = h, m = m })
+	elseif m > 0 then
+		return locale.s("shell.rail.usage.span.minutes", { m = m })
+	end
+	return locale.s("shell.rail.usage.span.soon")
+end
+
 local function mark_of(h: any, size: number): Node
 	return AgentMark.Mark { label = h.label, mark = h.mark, icon = h.icon, seed = h.id, size = size, bare = true }
 end
@@ -414,11 +436,21 @@ local function window_row(w: any, binding: boolean): Node
 				color = if hot then "$danger" else "$text.primary",
 			},
 		},
-		if hot and binding
+		-- Under the bar: when it starts over, counting down, and at its
+		-- limit (the binding one) that it's reached.
+		if w.resets or (hot and binding)
 			then ui.text {
-				ui.t("shell.rail.usage.limit_reached"),
+				function(): string
+					local at: number? = w.resets
+					if not at then
+						return locale.s("shell.rail.usage.limit_reached")
+					end
+					local key = if hot and binding then "limit_resets_in" else "resets_in"
+					return locale.s(`shell.rail.usage.{key}`, { when = until_words(at) })
+				end,
 				pl = ui.raw(70, "under the bar: the name's column and its gap"),
-				color = tone,
+				tabular = true,
+				color = if hot then tone else "$text.tertiary",
 			}
 			else nil,
 	}

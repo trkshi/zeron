@@ -1872,7 +1872,7 @@ fn mark_switched(accounts: &mut [Json], harness: &str, account: &str) {
 
 /// A device's accounts as the composer reads them, by agent: only an agent
 /// that signs in and reports its usage. `{ id, email, plan, active,
-/// can_switch, error?, windows = { { label, used } } }`.
+/// can_switch, error?, windows = { { label, used, resets? } } }`.
 fn device_accounts_value(accounts: &[Json]) -> Value {
     let mut by: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
     for account in accounts {
@@ -1888,10 +1888,16 @@ fn device_accounts_value(accounts: &[Json]) -> Value {
             .into_iter()
             .flatten()
             .map(|w| {
-                Value::record([
+                let mut window = vec![
                     ("label", Value::from(w["label"].as_str().unwrap_or_default())),
                     ("used", Value::from(w["usedFraction"].as_f64().unwrap_or(0.).clamp(0., 1.))),
-                ])
+                ];
+                // When it starts over (seconds since the epoch), for the
+                // rail's usage card to count down to.
+                if let Some(at) = w["resetsAt"].as_str().and_then(epoch_secs) {
+                    window.push(("resets", Value::from(at as f64)));
+                }
+                Value::record(window)
             })
             .collect();
         let mut fields = vec![
