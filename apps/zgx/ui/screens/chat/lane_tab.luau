@@ -111,6 +111,33 @@ local function chat_row(id: string?): any
 	return nil
 end
 
+-- A harness's mark (ds/mark's name), as the host's rows name it
+-- (src/agents.rs `mark`): a chat's live session says its harness instead
+-- ("dsh", "claude-code"), which isn't a mark's name.
+local MARKS: { [string]: string } = {
+	["claude-code"] = "claude",
+	codex = "openai",
+	dsh = "deepseek",
+	cursor = "cursor",
+	grok = "grok",
+	devin = "devin",
+	opencode = "opencode",
+	pi = "pi",
+	hermes = "hermes",
+	antigravity = "antigravity",
+	muse = "muse",
+}
+
+local function marked(s: any): any
+	local name = s.agent or s.harness
+	if type(name) ~= "string" or MARKS[name] == nil then
+		return s
+	end
+	local out = table.clone(s)
+	out.agent = MARKS[name]
+	return out
+end
+
 -- Whose agent a lane shows: a side chat's own, as its chat has it (its view's
 -- session once heard, else its row); a subagent's, and a side chat's before
 -- its first message, its parent chat's (a subagent runs inside its parent's
@@ -120,7 +147,7 @@ local function agent_of(tab: any): any
 	if tab.kind == "side_chat" then
 		local s = lanes.view(tab.id).session:get()
 		if s and s.id == chat and (s.agent or s.harness) then
-			return s
+			return marked(s)
 		end
 		local row = row_of(chat)
 		if row and (row.agent or row.harness) then
