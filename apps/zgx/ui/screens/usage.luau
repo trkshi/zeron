@@ -966,112 +966,201 @@ local function tone_of(used: number): string
 	return if used >= 0.95 then "danger" elseif used >= 0.8 then "warning" else "accent"
 end
 
--- An account's window: its name, its bar, its share, and when it starts
--- over.
-local function window_row(w: any): Node
-	local hot = w.used >= 1
+-- The accounts as they stand, by agent and by account (`id`: its email,
+-- else its id), each agent's pool average by window: read by the rows,
+-- each keyed, so a refresh moves their bars and figures in place rather
+-- than building them again (as the rail's card does).
+type Pool = { accounts: { string }, by_id: { [string]: any }, average: { string }, average_of: { [string]: number } }
+type Board = { order: { string }, pools: { [string]: Pool } }
+
+local function board_of(list: { Pooled }): Board
+	local order: { string } = {}
+	local pools: { [string]: Pool } = {}
+	for _, p in list do
+		table.insert(order, p.harness)
+		local ids: { string } = {}
+		local by_id: { [string]: any } = {}
+		for _, a in p.accounts do
+			local id = if a.email ~= "" then a.email else a.id
+			table.insert(ids, id)
+			by_id[id] = a
+		end
+		local average: { string } = {}
+		local average_of: { [string]: number } = {}
+		for _, w in pool_average(p.accounts) do
+			table.insert(average, w.label)
+			average_of[w.label] = w.used
+		end
+		pools[p.harness] = { accounts = ids, by_id = by_id, average = average, average_of = average_of }
+	end
+	return { order = order, pools = pools }
+end
+
+-- A window: its name, its bar, its share, and when it starts over, each
+-- read from `get` as it changes (nil: gone, drawn empty until its row goes).
+local function window_row(label: string, get: () -> any): Node
+	local function used(): number
+		local w = get()
+		return if w then math.clamp(w.used, 0, 1) else 0
+	end
+	local function hot(): boolean
+		return used() >= 1
+	end
 	return ui.row {
 		w_full = true,
 		items = "center",
 		gap = "$space.3",
 		ui.text {
-			window_name(w.label),
+			window_name(label),
 			w = 64,
 			shrink = 0,
 			truncate = true,
 			text_size = "$font.size.sm",
-			color = if hot then "$danger" else "$text.secondary",
+			color = function(): string
+				return if hot() then "$danger" else "$text.secondary"
+			end,
 		},
 		ds.ProgressBar {
-			value = function(): number
-				return math.clamp(w.used, 0, 1)
+			value = used,
+			tone = function(): any
+				return tone_of(used())
 			end,
-			tone = tone_of(w.used) :: any,
 			grow = 1,
 		},
 		ui.text {
-			percent(w.used),
+			function(): string
+				return percent(used())
+			end,
 			w = 44,
 			shrink = 0,
 			tabular = true,
 			align = "right",
 			text_size = "$font.size.sm",
-			color = if hot then "$danger" else "$text.primary",
+			color = function(): string
+				return if hot() then "$danger" else "$text.primary"
+			end,
 		},
 		ui.text {
 			function(): string
-				if not w.resets then
-					return if hot then locale.s("shell.rail.usage.limit_reached") else ""
+				local w = get()
+				local resets = if w then w.resets else nil
+				if not resets then
+					return if hot() and w and w.label then locale.s("shell.rail.usage.limit_reached") else ""
 				end
-				return locale.s(if hot then "shell.rail.usage.limit_resets_in" else "shell.rail.usage.resets_in", { when = until_words(w.resets) })
+				return locale.s(if hot() then "shell.rail.usage.limit_resets_in" else "shell.rail.usage.resets_in", { when = until_words(resets) })
 			end,
 			w = 200,
 			shrink = 0,
 			tabular = true,
 			truncate = true,
 			text_size = "$font.size.xs",
-			color = if hot then "$danger" else "$text.tertiary",
+			color = function(): string
+				return if hot() then "$danger" else "$text.tertiary"
+			end,
 		},
 	}
 end
 
-local function account_card(a: any): Node
-	local rows: { any } = {}
-	for _, w in a.windows or {} do
-		table.insert(rows, window_row(w))
+local function account_row(board: State<Board>, harness: string, id: string): Node
+	local function account(): any
+		local pool = board:get().pools[harness]
+		return if pool then pool.by_id[id] or {} else {}
+	end
+	local function window(label: string): () -> any
+		return function(): any
+			for _, w in account().windows or {} do
+				if w.label == label then
+					return w
+				end
+			end
+			return nil
+		end
 	end
 	return ui.column {
 		w_full = true,
 		gap = "$space.2",
-		py = "$space.2",
-		ui.row {
-			w_full = true,
-			items = "center",
-			gap = "$space.2",
-			PrivateText { a.email ~= "" and a.email or a.id, reveal = false, truncate = true, shrink = 1, min_w = 0, text_size = "$font.size.sm", color = "$text.primary" },
-			ui.show(function(): boolean
-				return (a.plan or "") ~= ""
-			end, ui.text { a.plan or "", shrink = 0, text_size = "$font.size.xs", color = "$text.secondary" }),
-			ui.show(function(): boolean
-				return a.active == true
-			end, ds.Badge { ui.t("usage.limits.active"), tone = "accent" :: any, size = "sm" :: any, dot = true }),
-			ui.div { grow = 1 },
-			ui.show(function(): boolean
-				return device:get() == "all"
-			end, quiet(table.concat(a.where or {}, ", "))),
-		},
+		-- (A hairline above every account but the first.)
 		ui.show(function(): boolean
-			return a.error ~= nil
-		end, ui.text { a.error or "", wrap = true, text_size = "$font.size.xs", color = "$warning" }),
-		ui.column { w_full = true, gap = "$space.2", table.unpack(rows) },
+			local pool = board:get().pools[harness]
+			return pool ~= nil and pool.accounts[1] ~= id
+		end, ui.div { w_full = true, h = 1, bg = "$border.subtle" }),
+		ui.column {
+			w_full = true,
+			gap = "$space.2",
+			py = "$space.2",
+			ui.row {
+				w_full = true,
+				items = "center",
+				gap = "$space.2",
+				PrivateText { id, reveal = false, truncate = true, shrink = 1, min_w = 0, text_size = "$font.size.sm", color = "$text.primary" },
+				ui.show(function(): boolean
+					return (account().plan or "") ~= ""
+				end, ui.text {
+					function(): string
+						return account().plan or ""
+					end,
+					shrink = 0,
+					text_size = "$font.size.xs",
+					color = "$text.secondary",
+				}),
+				ui.show(function(): boolean
+					return account().active == true
+				end, ds.Badge { ui.t("usage.limits.active"), tone = "accent" :: any, size = "sm" :: any, dot = true }),
+				ui.div { grow = 1 },
+				ui.show(function(): boolean
+					return device:get() == "all"
+				end, quiet(function(): string
+					return table.concat(account().where or {}, ", ")
+				end)),
+			},
+			ui.show(function(): boolean
+				return account().error ~= nil
+			end, ui.text {
+				function(): string
+					return account().error or ""
+				end,
+				wrap = true,
+				text_size = "$font.size.xs",
+				color = "$warning",
+			}),
+			ui.each(ui.computed(function(): { string }
+				local labels: { string } = {}
+				for _, w in account().windows or {} do
+					table.insert(labels, w.label)
+				end
+				return labels
+			end), function(label: string): Node
+				return window_row(label, window(label))
+			end, {
+				key = function(label: string): string
+					return label
+				end,
+				w_full = true,
+				gap = "$space.2",
+			}),
+		},
 	}
 end
 
-local function agent_pool(p: Pooled): Node
-	local average = pool_average(p.accounts)
-	local avg_rows: { any } = {}
-	for _, w in average do
-		table.insert(avg_rows, window_row({ label = w.label, used = w.used }))
+local function agent_pool(board: State<Board>, harness: string): Node
+	local function pool(): Pool
+		return board:get().pools[harness] or { accounts = {}, by_id = {}, average = {}, average_of = {} }
 	end
-	local cards: { any } = {}
-	for i, a in p.accounts do
-		if i > 1 then
-			table.insert(cards, ui.div { w_full = true, h = 1, bg = "$border.subtle" })
-		end
-		table.insert(cards, account_card(a))
-	end
-	local h = agent(p.harness)
+	local h = agent(harness)
 	return card {
 		ui.row {
 			w_full = true,
 			items = "center",
 			gap = "$space.2",
-			mark(p.harness, 18),
+			mark(harness, 18),
 			ui.text { h.label, literal = true, weight = "$font.weight.medium", text_size = "$font.size.md", color = "$text.primary" },
-			quiet(ui.t("usage.limits.accounts", { n = #p.accounts })),
+			quiet(function(): string
+				return ui.t("usage.limits.accounts", { n = #pool().accounts }):get()
+			end),
 		},
 		ui.show(function(): boolean
-			return #p.accounts > 1 and #average > 0
+			local p = pool()
+			return #p.accounts > 1 and #p.average > 0
 		end, ui.column {
 			w_full = true,
 			gap = "$space.2",
@@ -1084,9 +1173,32 @@ local function agent_pool(p: Pooled): Node
 				ui.text { ui.t("usage.limits.pool"), weight = "$font.weight.medium", text_size = "$font.size.sm", color = "$text.primary" },
 				quiet(ui.t("usage.limits.pool_about")),
 			},
-			table.unpack(avg_rows),
+			ui.each(ui.computed(function(): { string }
+				return pool().average
+			end), function(label: string): Node
+				return window_row(label, function(): any
+					local used = pool().average_of[label]
+					return if used then { label = label, used = used } else nil
+				end)
+			end, {
+				key = function(label: string): string
+					return label
+				end,
+				w_full = true,
+				gap = "$space.2",
+			}),
 		}),
-		ui.column { w_full = true, gap = 0, table.unpack(cards) },
+		ui.each(ui.computed(function(): { string }
+			return pool().accounts
+		end), function(id: string): Node
+			return account_row(board, harness, id)
+		end, {
+			key = function(id: string): string
+				return id
+			end,
+			w_full = true,
+			gap = 0,
+		}),
 	}
 end
 
@@ -1097,14 +1209,17 @@ local function limits_view(): Node
 			agents.watch_device(key)
 		end
 	end)
-	local pools = ui.computed(function(): { Pooled }
-		return pooled()
+	local board = ui.computed(function(): Board
+		return board_of(pooled())
+	end)
+	local order = ui.computed(function(): { string }
+		return board:get().order
 	end)
 	return ui.column {
 		w_full = true,
 		gap = "$space.4",
 		ui.show(function(): boolean
-			return #pools:get() == 0
+			return #order:get() == 0
 		end, card {
 			ds.EmptyState {
 				icon = "chart-square",
@@ -1120,26 +1235,15 @@ local function limits_view(): Node
 				end,
 			},
 		}),
-		-- (Built again as the accounts change: a few rows, read seldom.)
-		ui.presence(function(): string
-			local parts: { string } = {}
-			for _, p in pools:get() do
-				for _, a in p.accounts do
-					local ws: { string } = {}
-					for _, w in a.windows or {} do
-						table.insert(ws, `{w.label}:{w.used}:{w.resets or ""}`)
-					end
-					table.insert(parts, `{p.harness}/{a.id}/{a.active}/{a.error or ""}/{table.concat(a.where or {}, ",")}/{table.concat(ws, ";")}`)
-				end
-			end
-			return `{device:get()}|{table.concat(parts, "|")}`
-		end, function(_key: string): Node
-			local nodes: { any } = {}
-			for _, p in pools:peek() do
-				table.insert(nodes, agent_pool(p))
-			end
-			return ui.column { w_full = true, gap = "$space.4", table.unpack(nodes) }
-		end, { w_full = true }),
+		ui.each(order, function(harness: string): Node
+			return agent_pool(board, harness)
+		end, {
+			key = function(harness: string): string
+				return harness
+			end,
+			w_full = true,
+			gap = "$space.4",
+		}),
 	}
 end
 
