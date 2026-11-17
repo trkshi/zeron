@@ -45,6 +45,9 @@ local HOVER = { duration = 150, ease = "out(3)" }
 -- The usage ring: its radius and stroke round the button's middle, the
 -- agent's mark inside it, and its hover card's width.
 local RING_RADIUS, RING_STROKE, RING_GLYPH = 13, 2.5, 14
+-- With a 5-hour window and a weekly one: two rings, the 5 hours outside and
+-- the week inside (clear of the mark), each a little thinner.
+local OUTER_STROKE, INNER_RADIUS, INNER_STROKE = 2.25, 9.5, 2
 local CARD_W = 290
 
 -- A label with its shortcut, for a tooltip ("New chat (⌘N)").
@@ -377,6 +380,21 @@ local function most_used(account: any): number
 	return most
 end
 
+-- An account's 5-hour and weekly use (0 to 1), each nil when it has no
+-- such window: the ring draws both when there are both.
+local function split_windows(account: any): (number?, number?)
+	local session, week = nil, nil
+	for _, w in account.windows do
+		local label = string.lower(w.label or "")
+		if label == "session" then
+			session = math.clamp(w.used, 0, 1)
+		elseif label == "week" then
+			week = math.clamp(w.used, 0, 1)
+		end
+	end
+	return session, week
+end
+
 -- The account nearest its limit, which the ring shows.
 local function tightest(list: { Live }): Live?
 	local best: Live? = nil
@@ -699,7 +717,8 @@ local function hover_card(): Node
 end
 
 -- The ring: the account nearest its limit, how much of it is used round
--- its agent's mark (red, with a badge, at its limit). Hovered, its card
+-- its agent's mark (red, with a badge, at its limit); with a 5-hour window
+-- and a weekly one, two rings, the 5 hours outside and the week inside. Hovered, its card
 -- (asking the agents again); pressed, Settings → Providers, its accounts.
 local function usage_ring(): Node
 	ui.effect(function()
@@ -773,12 +792,24 @@ local function usage_ring(): Node
 			h = BUTTON,
 			pointer_events = "none",
 			draw = function(c, w, h)
+				-- A ring's groove, and its fill (red, full, at its limit).
+				local function ring(radius: number, stroke: number, f: number)
+					c:stroke(ui.path():arc(w / 2, h / 2, radius, 0, 360), "$border", stroke)
+					if f > 0 then
+						local ink = if f >= 1 then "$danger" else context_usage.usage_ink(f)
+						c:stroke(ui.path():arc(w / 2, h / 2, radius, -90, 360 * math.min(f, 1)), ink, stroke, { cap = "round" })
+					end
+				end
 				local s = shown()
-				local f = if hot() then 1 elseif s then most_used(s.account) else 0
-				c:stroke(ui.path():arc(w / 2, h / 2, RING_RADIUS, 0, 360), "$border", RING_STROKE)
-				if f > 0 then
-					local ink = if hot() then "$danger" else context_usage.usage_ink(f)
-					c:stroke(ui.path():arc(w / 2, h / 2, RING_RADIUS, -90, 360 * f), ink, RING_STROKE, { cap = "round" })
+				local session, week = nil, nil
+				if s then
+					session, week = split_windows(s.account)
+				end
+				if session and week then
+					ring(RING_RADIUS, OUTER_STROKE, session)
+					ring(INNER_RADIUS, INNER_STROKE, week)
+				else
+					ring(RING_RADIUS, RING_STROKE, if hot() then 1 elseif s then most_used(s.account) else 0)
 				end
 			end,
 		},
