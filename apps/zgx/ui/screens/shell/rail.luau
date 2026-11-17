@@ -280,19 +280,8 @@ end
 -- `chat_device`), as screens/chat/shared `account_key` has it: an account
 -- switched on another machine shows while you're working there.
 local chat_device = ui.state("chat_device", nil :: string?)
-local function ring_key(): string
-	local id = route.current:get().session
-	local device: string? = nil
-	if id then
-		for _, c in sessions.now:get().chats do
-			if c.id == id then
-				device = c.device
-				break
-			end
-		end
-	else
-		device = chat_device:get()
-	end
+-- The accounts' key for a chat's `device` (see `ring_key`).
+local function key_of(device: string?): string
 	if device == nil or device == "" then
 		return ""
 	end
@@ -309,6 +298,52 @@ local function ring_key(): string
 	end
 	return device
 end
+
+local function ring_key(): string
+	local id = route.current:get().session
+	local device: string? = nil
+	if id then
+		for _, c in sessions.now:get().chats do
+			if c.id == id then
+				device = c.device
+				break
+			end
+		end
+	else
+		device = chat_device:get()
+	end
+	return key_of(device)
+end
+
+-- While a Claude Code chat works on the ring's machine, its usage as the
+-- engine has it, every few seconds (asking no provider: each request the
+-- chat makes reports the plan's windows in its rate-limit headers, and the
+-- engine keeps them), and once more as the last of them stops.
+local PEEK_MS = 10000
+local function claude_at_work(key: string): number
+	local n = 0
+	for _, c in sessions.now:get().chats do
+		if c.harness == "claude-code" and c.status == "working" and key_of(c.device) == key then
+			n += 1
+		end
+	end
+	return n
+end
+ui.every(PEEK_MS, function()
+	local key = ring_key()
+	if claude_at_work(key) > 0 then
+		agents.peek_device(key)
+	end
+end)
+local was_at_work = 0
+ui.effect(function()
+	local key = ring_key()
+	local now = claude_at_work(key)
+	if now < was_at_work then
+		agents.peek_device(key)
+	end
+	was_at_work = now
+end)
 
 -- The agents Zeron drives, in the catalog's order: their names and marks.
 local catalog = ui.shared("chat.catalog", { state = "looking", harnesses = {}, models = {} } :: any)

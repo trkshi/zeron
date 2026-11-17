@@ -110,6 +110,42 @@ fn pinnable(harness: HarnessId) -> bool {
 }
 
 impl AgentAccounts {
+    /// A Claude Code run's plan windows (its `rate_limit_event`), on the
+    /// account it ran as: a pinned chat's (its credential the fingerprint of
+    /// that slot's token, as `pin_run` made it), else the live login (`""`,
+    /// or the pins' live marker). A token refreshed since the run started
+    /// matches no slot, and that report is dropped: the probe has it next.
+    pub(super) async fn record_claude_run_usage(
+        &self,
+        credential: &str,
+        windows: Vec<zeron_proto::AgentUsageWindow>,
+    ) {
+        if windows.is_empty() {
+            return;
+        }
+        let harness = HarnessId::ClaudeCode;
+        let account_key = if credential.is_empty() || credential == LIVE {
+            let cfg = super::read_json(&self.inner.config.claude_config_file);
+            cfg.as_ref().and_then(|cfg| {
+                let oauth = cfg.get("oauthAccount")?;
+                str_field(oauth, "accountUuid").or_else(|| str_field(oauth, "emailAddress"))
+            })
+        } else {
+            self.read_slots(harness).into_iter().find_map(|slot| {
+                let oauth = slot.credentials.get("claudeAiOauth")?;
+                let token = str_field(oauth, "accessToken")?;
+                (fingerprint("claude", &token) == credential).then_some(slot.account_key)
+            })
+        };
+        let Some(account_key) = account_key else { return };
+        let mut usage = lock(&self.inner.usage);
+        usage
+            .entry(super::usage_key(harness, &account_key))
+            .or_default()
+            .observe(windows, now_ms());
+        self.persist_usage(&usage);
+    }
+
     fn persist_pins(&self, state: &PinState) {
         let Ok(root) = self.inner.config.private_root() else { return };
         let Ok(bytes) = serde_json::to_vec_pretty(state) else { return };
@@ -299,6 +335,10 @@ impl crate::registry::RunEnvironment for PinRunEnvironment {
         windows: Vec<zeron_proto::AgentUsageWindow>,
         plan_label: Option<String>,
     ) {
+        if harness == HarnessId::ClaudeCode {
+            self.0.record_claude_run_usage(credential, windows).await;
+            return;
+        }
         MuseRunEnvironment(self.0.clone())
             .record_usage(harness, credential, windows, plan_label)
             .await;

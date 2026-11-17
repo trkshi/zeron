@@ -366,6 +366,10 @@ pub fn install(host: &ScriptHost) {
     host.action("agents.watch_device", move |key| a.watch_device(text(&key)));
     let a = agents.clone();
     host.action("agents.refresh_device", move |key| a.load_device(text(&key), true));
+    // What the engine has now, asking no provider: a run's own reports
+    // (Claude Code's rate-limit headers) land there as a turn goes.
+    let a = agents.clone();
+    host.action("agents.peek_device", move |key| a.load_device(text(&key), false));
     let a = agents.clone();
     host.async_action("agents.switch_on", move |args| {
         let a = a.clone();

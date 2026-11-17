@@ -251,6 +251,25 @@ pub(crate) struct RateLimitInfo {
     pub is_using_overage: bool,
     #[serde(rename = "overageInUse", default)]
     pub overage_in_use: bool,
+    /// The claimed window's share used (0..=1) and when it starts over
+    /// (epoch seconds), from the response's rate-limit headers.
+    #[serde(default)]
+    pub utilization: Option<f64>,
+    #[serde(rename = "resetsAt", default)]
+    pub resets_at: Option<i64>,
+    /// Every window the account has, by name (`five_hour`, `seven_day`):
+    /// newer CLIs send them all at once.
+    #[serde(rename = "unifiedWindows", default)]
+    pub unified_windows: std::collections::BTreeMap<String, UnifiedWindow>,
+}
+
+/// One plan window in a `rate_limit_event`'s `unifiedWindows`.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct UnifiedWindow {
+    #[serde(default)]
+    pub utilization: Option<f64>,
+    #[serde(rename = "resetsAt", default)]
+    pub resets_at: Option<i64>,
 }
 
 impl RateLimitInfo {

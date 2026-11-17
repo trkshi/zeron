@@ -5284,15 +5284,16 @@ async fn drive_run(
             plan_label,
         } = &event
         {
+            // (No credential: the agent's live login, as a Claude Code run
+            // not pinned to an account; "" says so.)
             let credential = lock(&inner.runs)
                 .get(&chat_id)
-                .and_then(|h| h.credential.clone());
-            if let Some(credential) = credential {
-                inner
-                    .registry
-                    .record_plan_usage(harness_id, &credential, windows.clone(), plan_label.clone())
-                    .await;
-            }
+                .and_then(|h| h.credential.clone())
+                .unwrap_or_default();
+            inner
+                .registry
+                .record_plan_usage(harness_id, &credential, windows.clone(), plan_label.clone())
+                .await;
             continue;
         }
         // Capacity/occupancy can settle after Done; updating it must not reopen a turn.

@@ -209,6 +209,13 @@ function M.refresh_device(key: string)
 	pcall(ui.invoke, "agents.refresh_device", key)
 end
 
+-- Their usage as the engine has it now, asking no provider: what its runs
+-- reported as they went (Claude Code's rate-limit headers), cheap to ask
+-- often.
+function M.peek_device(key: string)
+	pcall(ui.invoke, "agents.peek_device", key)
+end
+
 -- That account in use on the device: a promise, rejecting with why not.
 function M.switch_on(key: string, id: string, account: string): any
 	return ui.call("agents.switch_on", { device = key, id = id, account = account })

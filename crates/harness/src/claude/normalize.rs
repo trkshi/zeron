@@ -38,6 +38,32 @@ fn rate_window_label(kind: &str) -> &'static str {
     }
 }
 
+/// A `rate_limit_event`'s plan windows, named as Claude's `/api/oauth/usage`
+/// probe names them ("Session", "Week") so they land on the same meters:
+/// every window in `unifiedWindows`, else the one it claims at the top level.
+/// Windows past those two (Opus, Sonnet, overage) have no meter.
+fn plan_windows(info: &super::wire::RateLimitInfo) -> Vec<zeron_proto::AgentUsageWindow> {
+    let window = |utilization: Option<f64>, resets_at: Option<i64>, label: &str| {
+        utilization.map(|used| zeron_proto::AgentUsageWindow {
+            label: label.to_owned(),
+            used_fraction: used.clamp(0., 1.) as f32,
+            resets_at: resets_at.and_then(|at| chrono::DateTime::from_timestamp(at, 0)),
+        })
+    };
+    let mut out = Vec::new();
+    for (key, label) in [("five_hour", "Session"), ("seven_day", "Week")] {
+        let found = match info.unified_windows.get(key) {
+            Some(w) => window(w.utilization, w.resets_at, label),
+            None if info.unified_windows.is_empty() && info.rate_limit_type.as_deref() == Some(key) => {
+                window(info.utilization, info.resets_at, label)
+            }
+            None => None,
+        };
+        out.extend(found);
+    }
+    out
+}
+
 /// Fallback wording for a `result` error whose `errors` array is empty, so the
 /// turn never ends with a blank (and therefore invisible) error.
 fn result_error_text(subtype: &str) -> &'static str {
@@ -1455,18 +1481,31 @@ impl Normalizer {
             // A claude.ai plan window was hit. A hard `rejected` blocks the
             // turn — make it visible; allowed/allowed_warning stay quiet, and
             // so does a reject the account's overage carries past.
+            //
+            // Either way, its windows are the account's usage as of this
+            // request: the engine records them on the account (the Providers
+            // meters, the rail's ring) with no probe of its own.
             Frame::RateLimit(f) => {
+                let mut events = Vec::new();
+                let windows = plan_windows(&f.rate_limit_info);
+                if !windows.is_empty() {
+                    events.push(AgentEvent::PlanUsage {
+                        windows,
+                        plan_label: None,
+                    });
+                }
                 if !f.rate_limit_info.blocks() {
-                    return Vec::new();
+                    return events;
                 }
                 let window =
                     rate_window_label(f.rate_limit_info.rate_limit_type.as_deref().unwrap_or(""));
                 self.turn_error_shown = true;
-                vec![AgentEvent::Error {
+                events.push(AgentEvent::Error {
                     message: format!(
                         "Claude {window} limit reached — the turn was blocked. Try again after it resets."
                     ),
-                }]
+                });
+                events
             }
 
             Frame::Result(f) => {
@@ -1851,6 +1890,40 @@ mod tests {
             );
             assert!(normalize_one(&raw).is_empty(), "{overage}");
         }
+    }
+
+    #[test]
+    fn a_rate_limit_event_reports_the_plan_windows() {
+        // As Claude Code 2.1 sends it on an allowed turn (an Enterprise login:
+        // a 5-hour window alone).
+        let events = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794908400,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.03,"resetsAt":1794908400,"status":"allowed"}}}}"#,
+        );
+        let [AgentEvent::PlanUsage { windows, plan_label: None }] = events.as_slice() else {
+            panic!("plan usage alone: {events:?}");
+        };
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].label, "Session");
+        assert!((windows[0].used_fraction - 0.03).abs() < 1e-6);
+        assert_eq!(windows[0].resets_at.map(|t| t.timestamp()), Some(1794908400));
+
+        // Both windows; and an older CLI's top-level claim alone.
+        let events = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":1},"seven_day":{"utilization":0.25,"resetsAt":2}}}}"#,
+        );
+        let [AgentEvent::PlanUsage { windows, .. }] = events.as_slice() else { panic!("{events:?}") };
+        assert_eq!(windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["Session", "Week"]);
+        let events = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"seven_day","utilization":0.9,"resetsAt":3}}"#,
+        );
+        let [AgentEvent::PlanUsage { windows, .. }] = events.as_slice() else { panic!("{events:?}") };
+        assert_eq!(windows[0].label, "Week");
+
+        // Blocked with windows: the usage, then the error.
+        let events = normalize_one(
+            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour","overageStatus":"rejected","unifiedWindows":{"five_hour":{"utilization":1.0,"resetsAt":4}}}}"#,
+        );
+        assert!(matches!(events.as_slice(), [AgentEvent::PlanUsage { .. }, AgentEvent::Error { .. }]));
     }
 
     fn result_done(raw: &str) -> AgentEvent {

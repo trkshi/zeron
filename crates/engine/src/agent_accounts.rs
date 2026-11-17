@@ -689,6 +689,30 @@ impl UsageEntry {
         }
     }
 
+    /// Windows a run reported (Claude Code's `rate_limit_event`, from the
+    /// headers of a request it just made): each replaces the one of its name,
+    /// the others stay as the last probe left them (a 5-hour report keeps the
+    /// weekly meter). Fresh usage, so it counts as a probe just made: no
+    /// probe of the endpoint until `FORCED_MIN_INTERVAL` has passed again.
+    fn observe(&mut self, windows: Vec<AgentUsageWindow>, now: i64) {
+        let usage = self.usage.get_or_insert_with(|| UsageSnapshot {
+            windows: Vec::new(),
+            plan_label: None,
+            codex_reset_credits: None,
+        });
+        for window in windows {
+            match usage.windows.iter_mut().find(|w| w.label == window.label) {
+                Some(kept) => *kept = window,
+                None => usage.windows.push(window),
+            }
+        }
+        self.checked_at = now;
+        self.fetched_at = Some(now);
+        self.error = None;
+        self.retry_at = None;
+        self.credentials = None;
+    }
+
     fn record(&mut self, result: Result<UsageSnapshot, ProbeError>, credentials: String, now: i64) {
         self.checked_at = now;
         match result {
