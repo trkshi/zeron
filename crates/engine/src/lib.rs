@@ -436,6 +436,9 @@ impl EngineCore {
         registry.set_account_environment(Arc::new(agent_accounts::PinRunEnvironment(
             agent_accounts.clone(),
         )));
+        // Accounts set to keep their 5-hour window running (off unless
+        // turned on): the engine pings each as its window runs out.
+        agent_accounts.start_keep_window();
         // A chat's first run asks the plugins that pin (`run.preparing`).
         {
             let agents = plugins.agents().clone();

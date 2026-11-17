@@ -13,7 +13,7 @@
 //!                link? } }
 //!                (an agent from the ACP registry, as it says it is),
 //!                accounts = { { id, email, plan, session, week, active,
-//!                               switchable, provider? } },
+//!                               switchable, provider?, keep_window } },
 //!                groups?, login_for? } } }
 //! An agent that keeps a login per model provider (Pi, OpenCode, Hermes)
 //! also carries `groups`, its accounts by provider (`provider_groups`):
@@ -57,6 +57,9 @@
 //!   agents.set_enabled({ id, enabled })
 //!   agents.switch({ id, account })   that account in use from now on
 //!   agents.remove({ id, account })   that account forgotten
+//!   agents.keep_window({ id, account, enabled })  whether the engine starts
+//!                                  that Claude Code or Codex account's 5-hour
+//!                                  window itself; rejects with its words
 //!   agents.install(id)             the agent installed (minutes); failed
 //!   agents.cancel_install(id) (an action)
 //!   agents.use_reset({ account, credit })  spends one of a Codex account's
@@ -498,6 +501,13 @@ pub fn install(host: &ScriptHost) {
         let a = a.clone();
         let (id, account) = harness_and_account(&args);
         async move { a.account_call("ActivateAgentAccount", id, account).await.map_err(String::from) }
+    });
+    let a = agents.clone();
+    host.async_action("agents.keep_window", move |args| {
+        let a = a.clone();
+        let (id, account) = harness_and_account(&args);
+        let enabled = matches!(args.field("enabled"), Some(Value::Bool(true)));
+        async move { a.keep_window(id, account, enabled).await }
     });
     let a = agents.clone();
     host.async_action("agents.remove", move |args| {
@@ -1525,6 +1535,19 @@ impl Agents {
         }
     }
 
+    /// `SetAgentKeepWindow`, on the device shown.
+    async fn keep_window(&self, id: String, account: String, enabled: bool) -> Result<Value, String> {
+        let params = self.addressed(json!({ "harness": id, "accountId": account, "enabled": enabled }));
+        match engine::get().call("SetAgentKeepWindow", params).await {
+            Ok(snapshot) => {
+                self.take_accounts(&snapshot);
+                Ok(Value::Nil)
+            }
+            Err(error) if engine::outcome(&error) == "offline" => Err("offline".into()),
+            Err(error) => Err(error),
+        }
+    }
+
     /// A switch or a removal on the device shown, rejecting with why not in
     /// the engine's words (`offline` when it can't be reached), for the
     /// page to say: a refusal is never silent.
@@ -1787,6 +1810,7 @@ fn account_value(account: &Json, reset: Option<&Reset>) -> Value {
         ("active", Value::Bool(account["active"].as_bool().unwrap_or(false))),
         ("switchable", Value::Bool(can_switch(account))),
         ("provider", account["provider"].as_str().map_or(Value::Nil, Value::from)),
+        ("keep_window", Value::Bool(account["keepWindow"].as_bool().unwrap_or(false))),
         // An API key: no plan, so no windows to show; named by someone, or
         // going by its last four.
         ("key", Value::Bool(account["authKind"].as_str() == Some("api-key"))),

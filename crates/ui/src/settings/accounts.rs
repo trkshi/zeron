@@ -2547,6 +2547,7 @@ mod tests {
             switchable: true,
             saved_at: None,
             provider: provider.map(str::to_string),
+            keep_window: false,
             codex_reset_credits: None,
         };
         let mut snapshot = AgentAccountsSnapshot {
@@ -2701,6 +2702,7 @@ mod tests {
             switchable,
             saved_at: None,
             provider: Some("openai".into()),
+            keep_window: false,
             codex_reset_credits: None,
         };
         window
@@ -2713,6 +2715,7 @@ mod tests {
                         AgentAccount {
                             usage_windows: vec![],
                             provider: Some("github-copilot".into()),
+                            keep_window: false,
                             ..row("c", "GitHub account", true, false)
                         },
                     ],
@@ -2776,6 +2779,7 @@ mod tests {
                         switchable: true,
                         saved_at: None,
                         provider: None,
+                        keep_window: false,
                         codex_reset_credits: None,
                     }],
                     warnings: vec![],
@@ -2860,6 +2864,7 @@ mod tests {
             switchable: true,
             saved_at: None,
             provider: None,
+            keep_window: false,
         };
         let snapshot = AgentAccountsSnapshot {
             accounts: vec![

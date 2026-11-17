@@ -902,6 +902,7 @@
       "switch": "Switch to this account",
       "use_banked": "Use a banked reset…",
       "remove": "Remove account",
+      "keep_window": "Keep 5-hour window running",
       "reset_just_now": "{plan} · Limits reset just now",
       "limit_reached_at": "{plan} · Limit reached, resets at {at}",
       "limit_reached_plan": "{plan} · Limit reached, {words}",
@@ -1751,6 +1752,7 @@
         "remove_row_description": "Chats that used it stay."
       },
       "couldnt_switch": "Couldn't switch accounts",
+      "couldnt_keep_window": "Couldn't change the 5-hour window setting",
       "cloud": "Cloud",
       "cloud_keys": {
         "title": "API keys",

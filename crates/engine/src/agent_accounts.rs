@@ -113,6 +113,7 @@ pub struct RelayedCallback {
 }
 
 mod api_keys;
+mod keep_window;
 mod muse;
 mod pins;
 mod oauth;
@@ -846,6 +847,11 @@ struct Inner {
     /// Asked for a chat's account at its first run (a plugin's
     /// `run.preparing`).
     pin_hook: Mutex<Option<PinHook>>,
+    /// The accounts whose 5-hour window the engine starts itself; mirrored
+    /// to disk (see [`keep_window`]).
+    keep: Mutex<keep_window::KeepState>,
+    /// Wakes the keep-window loop (an account just turned on).
+    keep_wake: tokio::sync::Notify,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -920,6 +926,7 @@ impl AgentAccounts {
             }
         }
         let pins = pins::PinState::load(&config.root_dir().join(pins::PINS_FILE));
+        let keep = keep_window::KeepState::load(&config.root_dir().join(keep_window::KEEP_FILE));
         let http = reqwest::Client::builder()
             .timeout(HTTP_TIMEOUT)
             .build()
@@ -948,6 +955,8 @@ impl AgentAccounts {
                 snapshots: tokio::sync::watch::channel(None).0,
                 pins: Mutex::new(pins),
                 pin_hook: Mutex::new(None),
+                keep: Mutex::new(keep),
+                keep_wake: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -1195,6 +1204,7 @@ impl AgentAccounts {
                     switchable: harness != HarnessId::Hermes,
                     saved_at: (harness != HarnessId::Hermes).then_some(slot.saved_at),
                     provider: provider_group(harness, slot.store_key.as_deref()),
+                    keep_window: self.keeps_window(harness, &slot.id),
                 });
             }
             // A live login whose credentials we couldn't read has no slot — still
@@ -1219,6 +1229,7 @@ impl AgentAccounts {
                     switchable: false,
                     saved_at: None,
                     provider: provider_group(harness, u.store_key.as_deref()),
+                    keep_window: false,
                 });
             }
         }
@@ -3919,6 +3930,7 @@ impl AntigravityLogin {
             switchable: false,
             saved_at: None,
             provider: None,
+            keep_window: false,
         }
     }
 }

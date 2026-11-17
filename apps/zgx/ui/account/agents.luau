@@ -221,6 +221,12 @@ function M.switch_on(key: string, id: string, account: string): any
 	return ui.call("agents.switch_on", { device = key, id = id, account = account })
 end
 
+-- Whether the engine starts that Claude Code or Codex account's 5-hour
+-- window itself (on the device shown); rejects with the engine's words.
+function M.keep_window(id: string, account: string, on: boolean): any
+	return ui.call("agents.keep_window", { id = id, account = account, enabled = on })
+end
+
 function M.remove(id: string, account: string)
 	ui.call("agents.remove", { id = id, account = account }):after(function() end, quietly())
 end

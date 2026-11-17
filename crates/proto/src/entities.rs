@@ -1686,6 +1686,11 @@ pub struct AgentAccount {
     /// most one of them is in use. `None` for single-login agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Claude Code and Codex: the engine starts this account's 5-hour window
+    /// itself, with a one-line ping as soon as the last one has run out
+    /// (`SetAgentKeepWindow`; off unless turned on).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_window: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -426,6 +426,24 @@ local function card(row: State<agents.Agent>): Node
 				agents.remove(id, acc.id)
 			end
 		end,
+		-- (The engine pings it as its window runs out: on that device.)
+		on_keep_window = if cloud_card
+			then nil
+			else function(acc, on: boolean)
+				if not acc.id then
+					return
+				end
+				agents.keep_window(id, acc.id, on):after(function() end, function(err: any)
+					local message = if type(err) == "table" then err.message else nil
+					toast.show {
+						title = ui.t("settings.providers.couldnt_keep_window"):get(),
+						body = if message == "offline"
+							then ui.t("settings.providers.cant_reach", { device = device_name() }):get()
+							else message,
+						tone = "danger",
+					}
+				end)
+			end,
 		-- A Codex account's banked resets: the dialog asks which; how it
 		-- went lands on the account's row.
 		on_reset = function(acc)

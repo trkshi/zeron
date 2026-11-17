@@ -348,6 +348,10 @@ pub mod methods {
     /// travels to the device that holds the key like any account action).
     /// An empty name restores its default ("OpenRouter ···a1b2").
     pub const RENAME_AGENT_ACCOUNT: &str = "RenameAgentAccount";
+    /// `{harness, accountId, enabled}`: whether the engine starts that
+    /// Claude Code or Codex account's 5-hour window with a one-line ping as
+    /// soon as the last one runs out. Answers the snapshot.
+    pub const SET_AGENT_KEEP_WINDOW: &str = "SetAgentKeepWindow";
     pub const START_AGENT_LOGIN: &str = "StartAgentLogin";
     /// `{loginId, requesterDeviceId, path}`: replay a sign-in's browser
     /// callback the requesting device caught on its own loopback (a phone

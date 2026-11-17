@@ -78,6 +78,9 @@ export type Account = {
 	-- for a face (`provider`, the agent's id for it).
 	key: boolean?,
 	provider: string?,
+	-- (Claude Code and Codex:) whether the engine starts its 5-hour window
+	-- itself as the last one runs out.
+	keep_window: boolean?,
 }
 
 -- One model provider's accounts of an agent that keeps a login per
@@ -244,6 +247,9 @@ export type CardProps = {
 	on_reset: ((a: Account) -> ())?,
 	on_dismiss_reset: ((a: Account) -> ())?,
 	on_remove: ((a: Account) -> ())?,
+	-- Keeping a Claude Code or Codex account's 5-hour window running, turned
+	-- on or off (its menu's checked row). Without, the row isn't offered.
+	on_keep_window: ((a: Account, on: boolean) -> ())?,
 	-- An agent that signs in on its own and keeps no accounts Zeron can
 	-- list (one from the ACP registry): its foot is a sign-in, not "Connect
 	-- an account".
@@ -392,6 +398,24 @@ local Actions = ui.component(function(p: { card: CardProps, account: State<Accou
 						open:set(false)
 						if c.on_reset then
 							c.on_reset(account:peek())
+						end
+					end,
+				}),
+				-- (A login with a 5-hour window, not an API key.)
+				ui.show(function(): boolean
+					local id = c.provider.id
+					return c.on_keep_window ~= nil and (id == "claude-code" or id == "codex") and account:get().key ~= true
+				end, Menu.Row {
+					icon = "clock-circle",
+					label = locale.s("ds.provider_card.keep_window"),
+					checked = function(): boolean
+						return account:get().keep_window == true
+					end,
+					on_click = function()
+						open:set(false)
+						if c.on_keep_window then
+							local a = account:peek()
+							c.on_keep_window(a, a.keep_window ~= true)
 						end
 					end,
 				}),

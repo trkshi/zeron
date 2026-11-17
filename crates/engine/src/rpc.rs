@@ -561,6 +561,14 @@ struct RenameAgentAccountParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SetAgentKeepWindowParams {
+    harness: HarnessId,
+    account_id: String,
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ConsumeCodexResetCreditParams {
     account_id: String,
     credit_id: String,
@@ -2583,6 +2591,7 @@ fn forwardable(method: &str) -> bool {
             | methods::ACTIVATE_AGENT_ACCOUNT
             | methods::FORGET_AGENT_ACCOUNT
             | methods::RENAME_AGENT_ACCOUNT
+            | methods::SET_AGENT_KEEP_WINDOW
             | methods::START_AGENT_LOGIN
             | methods::COMPLETE_AGENT_LOGIN
             | methods::POLL_AGENT_LOGIN
@@ -5616,6 +5625,15 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&snapshot)
             }
+            methods::SET_AGENT_KEEP_WINDOW => {
+                let p: SetAgentKeepWindowParams = parse_params(params)?;
+                let snapshot = self
+                    .agent_accounts
+                    .set_keep_window(p.harness, &p.account_id, p.enabled)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
             methods::CONSUME_CODEX_RESET_CREDIT => {
                 let p: ConsumeCodexResetCreditParams = parse_params(params)?;
                 let outcome = self
@@ -6565,6 +6583,7 @@ mod tests {
         // A key's name is no secret: renamed wherever the key lives.
         assert!(forwardable(methods::RENAME_AGENT_ACCOUNT));
         assert!(!zeron_rpc::local_only(methods::RENAME_AGENT_ACCOUNT));
+        assert!(forwardable(methods::SET_AGENT_KEEP_WINDOW));
         assert!(forwardable(methods::QUEUE_COMMAND));
         for method in [methods::GET_DSH_API_KEY, methods::SAVE_DSH_API_KEY] {
             assert!(forwardable(method));

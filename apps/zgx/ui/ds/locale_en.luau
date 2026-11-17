@@ -715,6 +715,7 @@ return {
 	["ds.provider_card.switch"] = "Switch to this account",
 	["ds.provider_card.use_banked"] = "Use a banked reset…",
 	["ds.provider_card.remove"] = "Remove account",
+	["ds.provider_card.keep_window"] = "Keep 5-hour window running",
 	["ds.provider_card.reset_just_now"] = "{plan} · Limits reset just now",
 	["ds.provider_card.limit_reached_at"] = "{plan} · Limit reached, resets at {at}",
 	["ds.provider_card.limit_reached_plan"] = "{plan} · Limit reached, {words}",

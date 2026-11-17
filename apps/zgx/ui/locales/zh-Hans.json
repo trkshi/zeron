@@ -902,6 +902,7 @@
       "switch": "切换到此账户",
       "use_banked": "使用已储存的重置次数…",
       "remove": "移除账户",
+      "keep_window": "保持 5 小时窗口运行",
       "reset_just_now": "{plan} · 限额刚刚重置",
       "limit_reached_at": "{plan} · 已达限额，{at}重置",
       "limit_reached_plan": "{plan} · 已达限额，{words}",
@@ -1751,6 +1752,7 @@
         "remove_row_description": "使用过它的对话会保留。"
       },
       "couldnt_switch": "无法切换账户",
+      "couldnt_keep_window": "无法更改 5 小时窗口设置",
       "cloud": "云端",
       "cloud_keys": {
         "title": "API 密钥",

@@ -296,6 +296,7 @@ fn to_agent_account(
         switchable: !reconnect,
         saved_at: Some(account.updated_at),
         provider: None,
+        keep_window: false,
     }
 }
 
