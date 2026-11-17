@@ -689,6 +689,7 @@ return {
 	["ds.model_picker.fast_mode"] = "Fast mode",
 	["ds.model_picker.default"] = "Default",
 	["ds.model_picker.reasoning"] = "REASONING",
+	["ds.model_picker.effort"] = "Reasoning",
 	["ds.model_picker.account"] = "Account",
 	["ds.model_picker.account_of"] = "{name} account",
 	["ds.model_picker.no_account"] = "None",

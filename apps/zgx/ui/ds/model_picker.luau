@@ -27,6 +27,7 @@ local Tooltip = require("@self/tooltip")
 local PrivateText = require("@self/private_text")
 local context_usage = require("@self/context_usage")
 local locale = require("@self/locale")
+local look = require("@self/look")
 
 -- An agent: a tab of its own.
 -- (`icon`: an agent from the ACP registry's one-ink SVG, in its mark's
@@ -766,6 +767,68 @@ return ui.component(function(props: Props): Node
 		local m = current()
 		return m ~= nil and m.fast == true
 	end
+	-- Settings → Appearance's effort control: the slider, or a row opening
+	-- the levels beside the panel.
+	local function as_dropdown(): boolean
+		return look.effort_control:get() == "dropdown"
+	end
+	local function has_levels(): boolean
+		return #levels() > 0
+	end
+	local function level_label(): string
+		local e = shown_level:get()
+		for _, l in levels() do
+			if l.value == e then
+				return l.label
+			end
+		end
+		return ""
+	end
+	-- The reasoning as a row (the effort control set to a dropdown): its
+	-- name, the level chosen (quiet) and a chevron, opening the model's
+	-- levels beside the panel as the account row does, its own level tagged.
+	local function effort_row(): Node
+		local label = locale.t("ds.model_picker.effort")
+		return Dropdown {
+			value = shown_level,
+			items = function(): { Dropdown.Item }
+				local m = current()
+				local own = if m then own_effort(m) else nil
+				local out: { Dropdown.Item } = {}
+				for _, l in levels() do
+					table.insert(out, { value = l.value, label = l.label, tag = if l.value == own then locale.s("ds.model_picker.default") else nil })
+				end
+				return out
+			end,
+			label = label,
+			search = false,
+			width = CHOICES_W,
+			placement = { side = "right", align = "start", offset = 7 },
+			on_choose = function(v: string)
+				props.effort:set(v)
+			end,
+			trigger = function(menu: Dropdown.Menu): Node
+				local row: ContainerProps = {
+					id = "model-picker-effort",
+					label = label,
+					bg = function()
+						return if menu.open:get() then "$hover" else "#00000000"
+					end,
+					on_click = menu.toggle,
+					ui.text { label, text_size = "$font.size.md", color = "$text.primary", grow = 1 },
+					FadeText {
+						level_label,
+						text_size = "$font.size.md",
+						color = "$text.tertiary",
+						max_w = 120,
+					},
+					Menu.chevron(),
+				}
+				Menu.look(row)
+				return ui.row(row)
+			end,
+		}
+	end
 	local accessory = bolt()
 	type Owned = { model: Model, option: Option }
 	local owned = ui.computed(function(): { Owned }
@@ -787,9 +850,12 @@ return ui.component(function(props: Props): Node
 			w_full = true,
 			gap = "$zeron.list.gap",
 		}),
+		ui.show(function(): boolean
+			return has_levels() and as_dropdown()
+		end, effort_row()),
 		ui.show(
 			function(): boolean
-				return #levels() > 0
+				return has_levels() and not as_dropdown()
 			end,
 			ui.div {
 				w_full = true,
@@ -814,7 +880,9 @@ return ui.component(function(props: Props): Node
 			foot,
 			ui.show(function(): boolean
 				local m = current()
-				return m ~= nil and m.fast == true and (m.efforts == nil or #m.efforts == 0)
+				-- (With the effort a dropdown, the bolt it would sit beside is
+				-- gone: the switch row instead.)
+				return m ~= nil and m.fast == true and (m.efforts == nil or #m.efforts == 0 or as_dropdown())
 			end, switch_row)
 		)
 	end

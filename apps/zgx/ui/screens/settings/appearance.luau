@@ -32,6 +32,7 @@ search.index(M.ID, ui.t("settings.appearance.title"), ui.t("settings.appearance.
 	{ key = "reduce_motion", title = ui.t("settings.appearance.reduce_motion.label"), section = ui.t("settings.appearance.motion"), terms = ui.t("settings.appearance.reduce_motion.terms") },
 	{ key = "animate_new_chat", title = ui.t("settings.appearance.animate_new_chat.label"), section = ui.t("settings.appearance.motion"), terms = ui.t("settings.appearance.animate_new_chat.terms") },
 	{ key = "context_usage", title = ui.t("settings.appearance.context_usage.label"), terms = ui.t("settings.appearance.context_usage.terms") },
+	{ key = "effort_control", title = ui.t("settings.appearance.effort_control.label"), terms = ui.t("settings.appearance.effort_control.terms") },
 	{ key = "glass", title = ui.t("settings.appearance.glass.label"), terms = ui.t("settings.appearance.glass.terms") },
 	{ key = "inset", title = ui.t("settings.appearance.inset.label"), terms = ui.t("settings.appearance.inset.terms") },
 	{ key = "classic_sidebar", title = ui.t("settings.appearance.classic_sidebar.label"), terms = ui.t("settings.appearance.classic_sidebar.terms") },
@@ -474,6 +475,19 @@ function M.view(): Node
 						options = {
 							{ value = "ring", label = ui.t("settings.appearance.context_usage.ring") },
 							{ value = "detail", label = ui.t("settings.appearance.context_usage.detail") },
+						} :: any,
+					},
+				}),
+				-- How the model picker sets the reasoning (ds.look `effort_control`).
+				row("effort_control", {
+					label = ui.t("settings.appearance.effort_control.label"),
+					description = ui.t("settings.appearance.effort_control.description"),
+					control = ds.Segmented {
+						value = ds.look.effort_control,
+						label = ui.t("settings.appearance.effort_control.label"),
+						options = {
+							{ value = "slider", label = ui.t("settings.appearance.effort_control.slider") },
+							{ value = "dropdown", label = ui.t("settings.appearance.effort_control.dropdown") },
 						} :: any,
 					},
 				}),

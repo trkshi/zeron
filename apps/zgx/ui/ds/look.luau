@@ -198,6 +198,12 @@ M.inset_card = ui.persist("inset_card", true)
 -- every session of a group listed, headers counting only while folded.
 -- Off by default; kept across launches.
 M.classic_sidebar = ui.persist("classic_sidebar", false)
+
+-- "Effort control" (Settings → Appearance): how the model picker sets a
+-- model's reasoning. "slider" (the default), the EffortSlider under its
+-- rows; "dropdown", a row like the account's, opening the levels beside the
+-- panel (Fast mode then gets its switch row). Kept across launches.
+M.effort_control = ui.persist("effort_control", "slider")
 -- A classic row's title at rest: v2's text at 0.8.
 ui.theme.tokens {
 	zeron = {

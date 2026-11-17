@@ -872,6 +872,7 @@
       "fast_mode": "Fast mode",
       "default": "Default",
       "reasoning": "REASONING",
+      "effort": "Reasoning",
       "account": "Account",
       "account_of": "{name} account",
       "no_account": "None",
@@ -1261,6 +1262,13 @@
         "description": "How a chat shows how full its context window is, beside the model in the message box.",
         "ring": "Ring",
         "detail": "Detail"
+      },
+      "effort_control": {
+        "label": "Effort control",
+        "terms": "effort reasoning thinking level slider dropdown model picker",
+        "description": "How the model picker sets a model's reasoning: a slider, or a row that opens the levels like the account row.",
+        "slider": "Slider",
+        "dropdown": "Dropdown"
       },
       "accented": {
         "label": "Accent color throughout",

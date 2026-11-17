@@ -872,6 +872,7 @@
       "fast_mode": "快速模式",
       "default": "默认",
       "reasoning": "推理强度",
+      "effort": "推理强度",
       "account": "账号",
       "account_of": "{name} 账户",
       "no_account": "无",
@@ -1261,6 +1262,13 @@
         "description": "对话在输入框中模型旁显示上下文窗口用量的方式。",
         "ring": "圆环",
         "detail": "详细"
+      },
+      "effort_control": {
+        "label": "推理强度控件",
+        "terms": "推理 强度 思考 滑块 下拉 模型 选择器 effort reasoning slider dropdown",
+        "description": "模型选择器设置推理强度的方式：滑块，或像账户行一样展开各档位的一行。",
+        "slider": "滑块",
+        "dropdown": "下拉菜单"
       },
       "accented": {
         "label": "全局强调色",
