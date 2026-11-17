@@ -348,6 +348,8 @@ local function Session(id: Id?): Node
 			}
 		end, { w_full = true, grow = 1, min_h = 0 }),
 		lanes.Overlay(),
+		-- (On a wide window, the lanes in the margin beside the conversation.)
+		lanes.Margin(),
 	}
 end
 

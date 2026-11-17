@@ -21,6 +21,7 @@
 
 local Icon = require("@self/icon")
 local material = require("@self/material")
+local motion = require("@self/motion")
 local IconButton = require("@self/icon_button").IconButton
 local Mark = require("@self/mark")
 local control = require("@self/control")
@@ -35,6 +36,10 @@ export type Props = {
 	subagents: () -> { Sub },
 	on_new: () -> (),
 	on_fork: () -> (),
+	-- How many side chats finished and weren't looked at yet, and marking
+	-- them all read (the check before "+", while there are any).
+	unread: (() -> number)?,
+	on_mark_read: (() -> ())?,
 	on_open_side: (child: Child) -> (),
 	on_open_subagent: (sub: Sub) -> (),
 	w: number?,
@@ -154,7 +159,64 @@ local function heading(words: Message, trail: Node?): Node
 	}
 end
 
+-- Side chats folded to their heading, kept across chats and launches.
+local side_folded = ui.persist("ds_session_lanes_side_folded", false)
+
+-- The side chats' heading: a button that folds them (a chevron turning, and
+-- folded, how many there are), with `trail` (its actions) at its end.
+local function folding_heading(words: Message, count: () -> number, trail: Node?): Node
+	return ui.row {
+		w_full = true,
+		h = 28,
+		items = "center",
+		ui.button {
+			id = "session-lanes-side-fold",
+			label = words,
+			expanded = function(): boolean
+				return not side_folded:get()
+			end,
+			grow = 1,
+			min_w = 0,
+			h_full = true,
+			px = "$space.2",
+			gap = "$space.1",
+			items = "center",
+			rounded = row_radius(),
+			bg = "#00000000",
+			hover = { bg = "$hover" },
+			on_click = function()
+				side_folded:set(not side_folded:peek())
+			end,
+			ui.text { words, text_size = "$font.size.xs", weight = "$font.weight.medium", color = "$text.tertiary" },
+			ui.show(function(): boolean
+				return side_folded:get() and count() > 0
+			end, ui.text {
+				function(): string
+					return tostring(count())
+				end,
+				tabular = true,
+				text_size = "$font.size.xs",
+				color = "$text.tertiary",
+			}),
+			ui.div {
+				color = "$text.tertiary",
+				rotate = ui.spring(ui.computed(function(): boolean
+					return not side_folded:get()
+				end), { from = 0, to = 90, stiffness = 380, damping = 30 }),
+				Icon { name = "alt-arrow-right", size = 12 },
+			},
+		},
+		trail,
+	}
+end
+
+-- The side chats' fold: their height and their ink easing together.
+local FOLD_MS, FADE_MS = 220, 160
+-- (Before the list is measured: no limit, so it stands as laid out.)
+local UNMEASURED = 4000
+
 return ui.component(function(props: Props): Node
+	local side_h = ui.use_state(0)
 	local side_shown = ui.use_state(FIRST)
 	local subs_shown = ui.use_state(FIRST)
 	local finished_open = ui.use_state(false)
@@ -200,9 +262,11 @@ return ui.component(function(props: Props): Node
 		end
 		return out
 	end)
+	-- (Laid out folded too: the fold slides them shut, as the side chats'.)
 	local finished = ui.computed(function(): { Sub }
-		return if finished_open:get() then split:get().finished else {}
+		return split:get().finished
 	end)
+	local finished_h = ui.use_state(0)
 
 	local function side_row(_c: Child, _i: number, now: State<any>): Node
 		return lane {
@@ -296,28 +360,75 @@ return ui.component(function(props: Props): Node
 		border = 1,
 		border_color = "$zeron.settings.edge",
 		bg = material.pick("$zeron.menu.tint", "$zeron.settings.card"),
-		heading(
+		folding_heading(
 			locale.t("ds.session_lanes.side_chats"),
+			function(): number
+				return #props.side()
+			end,
 			ui.show(function(): boolean
-				return #props.side() > 0
+				return #props.side() > 0 or side_folded:get()
 			end, ui.row {
 				gap = "$zeron.space.hair",
+				ui.show(function(): boolean
+					return props.on_mark_read ~= nil and props.unread ~= nil and props.unread() > 0
+				end, IconButton {
+					icon = "check-circle",
+					label = locale.t("ds.session_lanes.mark_read"),
+					tooltip = locale.s("ds.session_lanes.mark_read"),
+					size = "sm",
+					tone = "quiet",
+					on_click = function()
+						if props.on_mark_read then
+							props.on_mark_read()
+						end
+					end,
+				}),
 				IconButton { icon = "plus", label = locale.t("ds.session_lanes.new_side"), tooltip = locale.s("ds.session_lanes.new_side"), size = "sm", tone = "quiet", on_click = props.on_new },
 				IconButton { icon = "git-branch", label = locale.t("ds.session_lanes.fork"), tooltip = locale.s("ds.session_lanes.fork"), size = "sm", tone = "quiet", on_click = props.on_fork },
 			})
 		),
-		ui.show(function(): boolean
-			return #props.side() == 0
-		end, ui.column {
+		-- Folded, the heading alone: the list slides shut under it (its
+		-- most height easing to nothing, from what it measured) and fades.
+		ui.column {
 			w_full = true,
+			shrink = 0,
+			overflow = "hidden",
+			max_h = ui.tween(ui.computed(function(): number
+				if side_folded:get() then
+					return 0
+				end
+				local h = side_h:get()
+				return if h > 0 then h else UNMEASURED
+			end), { duration = motion.ms(FOLD_MS), ease = "out(3)" }),
+			opacity = ui.tween(ui.computed(function(): number
+				return if side_folded:get() then 0 else 1
+			end), { duration = motion.ms(FADE_MS), ease = "out(3)" }),
+			pointer_events = function(): string
+				return if side_folded:get() then "none" else "auto"
+			end,
+			ui.column {
+			w_full = true,
+			shrink = 0,
 			gap = "$zeron.list.gap",
-			action("plus", locale.t("ds.session_lanes.new_side"), props.on_new),
-			action("git-branch", locale.t("ds.session_lanes.fork"), props.on_fork),
-		}),
-		ui.column { w_full = true, gap = "$zeron.list.gap", ui.each(side, side_row, { key = by_id, w_full = true }) },
-		show_more(side_shown, function(): number
-			return #props.side()
-		end),
+			on_resize = function(size: { w: number, h: number })
+				if size.h ~= side_h:peek() then
+					side_h:set(size.h)
+				end
+			end,
+			ui.show(function(): boolean
+				return #props.side() == 0
+			end, ui.column {
+				w_full = true,
+				gap = "$zeron.list.gap",
+				action("plus", locale.t("ds.session_lanes.new_side"), props.on_new),
+				action("git-branch", locale.t("ds.session_lanes.fork"), props.on_fork),
+			}),
+			ui.column { w_full = true, gap = "$zeron.list.gap", ui.each(side, side_row, { key = by_id, w_full = true }) },
+			show_more(side_shown, function(): number
+				return #props.side()
+			end),
+			},
+		},
 		ui.show(function(): boolean
 			local s = split:get()
 			return #s.active + #s.finished > 0
@@ -364,7 +475,37 @@ return ui.component(function(props: Props): Node
 					color = "$text.secondary",
 				},
 			}),
-			ui.column { w_full = true, gap = "$zeron.list.gap", ui.each(finished, sub_row, { key = by_ref, w_full = true }) },
+			-- The finished, sliding open and shut under their row as the
+			-- side chats do (their most height easing, their ink fading).
+			ui.column {
+				w_full = true,
+				shrink = 0,
+				overflow = "hidden",
+				max_h = ui.tween(ui.computed(function(): number
+					if not finished_open:get() then
+						return 0
+					end
+					local h = finished_h:get()
+					return if h > 0 then h else UNMEASURED
+				end), { duration = motion.ms(FOLD_MS), ease = "out(3)" }),
+				opacity = ui.tween(ui.computed(function(): number
+					return if finished_open:get() then 1 else 0
+				end), { duration = motion.ms(FADE_MS), ease = "out(3)" }),
+				pointer_events = function(): string
+					return if finished_open:get() then "auto" else "none"
+				end,
+				ui.column {
+					w_full = true,
+					shrink = 0,
+					gap = "$zeron.list.gap",
+					on_resize = function(size: { w: number, h: number })
+						if size.h ~= finished_h:peek() then
+							finished_h:set(size.h)
+						end
+					end,
+					ui.each(finished, sub_row, { key = by_ref, w_full = true }),
+				},
+			},
 		}),
 	}
 end)

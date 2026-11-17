@@ -15,6 +15,9 @@
 --   lanes.badge()    the open session's count for the button's badge: its
 --                    running subagents and its working side chats (tracked)
 --   lanes.Overlay()  the card, at the session page's top right, while shown
+--   lanes.Margin()   the card in the margin right of the conversation, at
+--                    the page's foot: there with no click while the chat has
+--                    side chats or subagents and the margin has room for it
 --
 -- What a lane is, and how one opens:
 --   lanes.side(id)        a session's side chats (sessions.children), newest first
@@ -37,6 +40,7 @@ local SessionLanes = require("@ds/session_lanes")
 local sessions = require("@account/sessions")
 local route = require("@app/screens/shell/route")
 local store = require("@app/screens/chat/store")
+local prefs = require("@app/screens/settings/prefs")
 
 local M = {}
 
@@ -374,13 +378,14 @@ function M.retry_fork(id: string)
 	end
 end
 
--- The card, for the open session.
-function M.Card(): Node
+-- The card, for the open session (`w`: its width, 280 unless given).
+function M.Card(w: number?): Node
 	local function session(): string?
 		local s = route.session:get()
 		return if s then s.id else nil
 	end
 	return SessionLanes {
+		w = w,
 		session = session,
 		side = function(): { any }
 			return M.side(session())
@@ -396,6 +401,23 @@ function M.Card(): Node
 		on_fork = function()
 			M.fork(session())
 		end,
+		-- Its side chats that finished unseen ("done"), all marked read.
+		unread = function(): number
+			local n = 0
+			for _, c in M.side(session()) do
+				if c.status == "done" then
+					n += 1
+				end
+			end
+			return n
+		end,
+		on_mark_read = function()
+			for _, c in M.side(session()) do
+				if c.status == "done" then
+					sessions.seen(c.id)
+				end
+			end
+		end,
 		on_open_side = function(child: any)
 			local s = session()
 			if s then
@@ -408,6 +430,62 @@ function M.Card(): Node
 				M.open_subagent(s, sub)
 			end
 		end,
+	}
+end
+
+-- The margin card: its width, and its inset from the page's edge and foot.
+local MARGIN_W = 300
+local MARGIN_INSET = 16
+-- The conversation's text column beside the page's own width: Settings'
+-- "Conversation width" and the transcript's 48 each side (screens/chat/session).
+local COLUMN_SIDE = 48
+local page_w = ui.state("chat_lanes_margin_page_w", 0)
+
+-- Whether the open chat has a lane: a side chat, or a subagent in its
+-- transcript (the open chat's: its transcript is the session shown).
+local function has_lanes(): boolean
+	local s = route.session:get()
+	if not s then
+		return false
+	end
+	if #M.side(s.id) > 0 then
+		return true
+	end
+	local shown = store.session:get()
+	return shown ~= nil and shown.id == s.id and #M.subagents() > 0
+end
+
+-- The card in the margin right of the conversation, at the page's foot,
+-- while the chat has lanes and the margin is wide enough to hold it (the
+-- window wide, its panel shut); else they're in the composer's Running tray
+-- and the panel, as before. Not while the top-right card shows.
+function M.Margin(): Node
+	return ui.column {
+		absolute = true,
+		left = 0,
+		right = 0,
+		top = 0,
+		bottom = 0,
+		pointer_events = "none",
+		on_resize = function(size: { w: number, h: number })
+			if size.w ~= page_w:peek() then
+				page_w:set(size.w)
+			end
+		end,
+		ui.show(function(): boolean
+			if M.shown() then
+				return false
+			end
+			local column = prefs.conversation_width:get() + COLUMN_SIDE * 2
+			local margin = (page_w:get() - column) / 2
+			return margin >= MARGIN_W + MARGIN_INSET * 2 and has_lanes()
+		end, ui.column {
+			absolute = true,
+			right = ui.raw(MARGIN_INSET, "the margin card's inset from the page's edge"),
+			bottom = ui.raw(MARGIN_INSET, "the margin card's inset from the page's foot"),
+			pointer_events = "auto",
+			M.Card(MARGIN_W),
+		}),
 	}
 end
 

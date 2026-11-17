@@ -100,6 +100,7 @@ return {
 	["ds.session_lanes.side_chats"] = "Side chats",
 	["ds.session_lanes.new_side"] = "New side chat",
 	["ds.session_lanes.fork"] = "Fork chat",
+	["ds.session_lanes.mark_read"] = "Mark finished as read",
 	["ds.session_lanes.subagents"] = "Subagents",
 	["ds.session_lanes.collapse_finished"] = "Collapse {n} finished subagents",
 	["ds.session_lanes.expand_finished"] = "Expand {n} finished subagents",

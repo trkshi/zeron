@@ -118,7 +118,8 @@
       "subagents": "子智能体",
       "collapse_finished": "收起 {n} 个已完成的子智能体",
       "expand_finished": "展开 {n} 个已完成的子智能体",
-      "finished": "{n} 个已完成"
+      "finished": "{n} 个已完成",
+      "mark_read": "将已完成标记为已读"
     },
     "session_card": {
       "ago": "{when}前",

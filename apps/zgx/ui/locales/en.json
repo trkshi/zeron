@@ -118,7 +118,8 @@
       "subagents": "Subagents",
       "collapse_finished": "Collapse {n} finished subagents",
       "expand_finished": "Expand {n} finished subagents",
-      "finished": "{n} finished"
+      "finished": "{n} finished",
+      "mark_read": "Mark finished as read"
     },
     "session_card": {
       "ago": "{when} ago",
