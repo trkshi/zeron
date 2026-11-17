@@ -2509,7 +2509,7 @@
           "minutes": "{m} 分钟",
           "soon": "不到一分钟"
         },
-        "open_page": "点击圆环查看你的账号",
+        "open_page": "点击圆环打开用量页面",
         "window": {
           "session": "5 小时",
           "week": "每周",
@@ -2663,7 +2663,8 @@
         "settings": "设置",
         "update_watch": "更新监视器",
         "search": "搜索",
-        "new_project": "新建项目"
+        "new_project": "新建项目",
+        "usage_page": "用量页面"
       }
     },
     "title_bar": {
@@ -2750,7 +2751,8 @@
       "reload_interface": "重新加载界面",
       "commands": "命令",
       "run": "运行",
-      "default_interface": "使用 Zeron v3"
+      "default_interface": "使用 Zeron v3",
+      "usage": "用量"
     },
     "add_project": {
       "something_went_wrong": "出错了",
@@ -4056,6 +4058,43 @@
       "skipped": "部分主题未能导入：{names}",
       "imported_toast": "{count, plural, one {已导入主题} other {已导入 # 个主题}}",
       "imported_body": "它在“你的”中。"
+    }
+  },
+  "usage": {
+    "title": "用量",
+    "description": "各设备上编程智能体的用量，读取自它们自己的会话日志。费用按公开 API 价格估算，并非你的订阅账单。",
+    "saved": "缓存节省 {amount}",
+    "tab": {
+      "cost": "费用",
+      "tokens": "令牌",
+      "limits": "限额"
+    },
+    "device": {
+      "all": "所有设备",
+      "here": "本设备"
+    },
+    "devices": {
+      "title": "按设备",
+      "offline": "离线",
+      "failed": "无法读取"
+    },
+    "kinds": {
+      "title": "按类型的令牌"
+    },
+    "models": {
+      "title": "模型",
+      "back": "所有模型",
+      "share": "占总量 {share}",
+      "per_million": "每 100 万令牌"
+    },
+    "limits": {
+      "description": "每个已登录账号的套餐时间窗口。复制到多台设备的同一登录只显示一次。",
+      "active": "使用中",
+      "accounts": "{n} 个账号",
+      "pool": "账号池平均",
+      "pool_about": "未加权：不同套餐的额度不同",
+      "loading": "正在加载账号…",
+      "none": "没有已登录账号报告套餐限额"
     }
   }
 }

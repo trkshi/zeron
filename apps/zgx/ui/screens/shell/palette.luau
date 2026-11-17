@@ -504,6 +504,18 @@ local function root(): { Item }
 			host.invoke("app.reload_interface")
 		end,
 	})
+	-- The Usage page (screens/usage), on its Cost.
+	table.insert(out, {
+		id = "g-usage",
+		label = locale.s("shell.palette.usage"),
+		section = locale.s("shell.palette.go_to"),
+		icon = "chart-square",
+		keywords = "usage cost tokens spend limits quota dashboard",
+		verb = locale.s("shell.palette.open"),
+		run = function()
+			require("@app/screens/usage").open("cost")
+		end,
+	})
 	-- Where settings go: each of its pages.
 	for _, id in settings.pages:get() do
 		local page = settings.page(id)

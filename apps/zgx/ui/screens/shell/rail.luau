@@ -26,6 +26,7 @@ local route = require("@app/screens/shell/route")
 local view = require("@app/screens/shell/view")
 local backdrop = require("@app/screens/shell/backdrop")
 local prefs = require("@app/screens/settings/prefs")
+local usage_page = require("@app/screens/usage")
 
 local M = {}
 
@@ -275,7 +276,7 @@ end
 -- Usage: each agent's account in use on the machine you're working on (the
 -- open chat's, or a new chat's as its composer is set), with how much of its plan's
 -- windows (a session's, a week's) it has used, as the agents report them
--- (account/agents). Clicked, Settings → Usage.
+-- (account/agents). Clicked, the Usage page on its Limits (screens/usage).
 
 -- The accounts' key the ring reads (account/agents `on_device`): "" for
 -- this device, "cloud" for Cloud's, else the open chat's device, or on a
@@ -719,7 +720,7 @@ end
 -- The ring: the account nearest its limit, how much of it is used round
 -- its agent's mark (red, with a badge, at its limit); with a 5-hour window
 -- and a weekly one, two rings, the 5 hours outside and the week inside. Hovered, its card
--- (asking the agents again); pressed, Settings → Providers, its accounts.
+-- (asking the agents again); pressed, the Usage page's Limits.
 local function usage_ring(): Node
 	ui.effect(function()
 		agents.watch_device(ring_key())
@@ -734,8 +735,8 @@ local function usage_ring(): Node
 		return s ~= nil and most_used(s.account) >= 1
 	end
 	local function lit(): boolean
-		local c = route.current:get()
-		return c.name == "settings" and (c :: any).page == "providers"
+		local c = route.current:get() :: any
+		return c.name == "plugin" and c.plugin == usage_page.PLUGIN and c.page == usage_page.PAGE
 	end
 	local bright = ui.computed(function(): number
 		return if over:get() or lit() then 1 else 0
@@ -771,7 +772,7 @@ local function usage_ring(): Node
 		end,
 		on_click = function()
 			clicked:set(true)
-			route.settings("usage")
+			usage_page.open("limits")
 		end,
 		ui.div {
 			absolute = true,

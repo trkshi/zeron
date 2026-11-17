@@ -659,6 +659,13 @@ return function(props: Props): Node
 	-- off, a quiet word. What's around it gives the page.
 	local function plugin_page(key: string): Node
 		local plugin, page = string.match(key, "^([^/]*)/(.*)$")
+		-- (Zeron's own Usage page rides on a plugin page's route: the rail's
+		-- usage ring opens it.)
+		if plugin == "zeron" and page == "usage" then
+			return boundary.screen(boundary.named("shell.boundary.screen.usage_page"), "@app/screens/usage", function(usage): Node
+				return usage.view()
+			end)
+		end
 		local listed: any = nil
 		for _, p in (ui.shared("plugins.pages", {} :: { any }):peek() or {}) :: { any } do
 			if p.plugin == plugin and p.id == page then

@@ -2509,7 +2509,7 @@
           "minutes": "{m}m",
           "soon": "under a minute"
         },
-        "open_page": "Click the ring for your accounts",
+        "open_page": "Click the ring for the usage page",
         "window": {
           "session": "5h",
           "week": "Weekly",
@@ -2663,7 +2663,8 @@
         "settings": "Settings",
         "update_watch": "The update watch",
         "search": "Search",
-        "new_project": "New project"
+        "new_project": "New project",
+        "usage_page": "The usage page"
       }
     },
     "title_bar": {
@@ -2750,7 +2751,8 @@
       "reload_interface": "Reload interface",
       "commands": "Commands",
       "run": "Run",
-      "default_interface": "Use Zeron v3"
+      "default_interface": "Use Zeron v3",
+      "usage": "Usage"
     },
     "add_project": {
       "something_went_wrong": "Something went wrong",
@@ -4056,6 +4058,43 @@
       "skipped": "Some of its themes didn't import: {names}",
       "imported_toast": "{count, plural, one {Theme imported} other {# themes imported}}",
       "imported_body": "It's under Yours."
+    }
+  },
+  "usage": {
+    "title": "Usage",
+    "description": "What your coding agents used, read from their own session logs on each device. Costs are estimates at public API prices, not your plan's bill.",
+    "saved": "{amount} saved by caching",
+    "tab": {
+      "cost": "Cost",
+      "tokens": "Tokens",
+      "limits": "Limits"
+    },
+    "device": {
+      "all": "All devices",
+      "here": "This device"
+    },
+    "devices": {
+      "title": "By device",
+      "offline": "Offline",
+      "failed": "Couldn't read"
+    },
+    "kinds": {
+      "title": "Tokens by kind"
+    },
+    "models": {
+      "title": "Models",
+      "back": "All models",
+      "share": "{share} of the total",
+      "per_million": "Per 1M tokens"
+    },
+    "limits": {
+      "description": "Each signed-in account's plan windows. A login copied to several devices shows once.",
+      "active": "In use",
+      "accounts": "{n, plural, one {# account} other {# accounts}}",
+      "pool": "Pool average",
+      "pool_about": "Unweighted: plans differ in what they allow",
+      "loading": "Loading accounts…",
+      "none": "No signed-in account reports plan limits"
     }
   }
 }
