@@ -2463,6 +2463,8 @@ fn forward_deadline(method: &str) -> std::time::Duration {
         methods::CREATE_WORKTREE => Duration::from_secs(120),
         // Allow the adapter discovery budget plus relay and shutdown overhead.
         methods::LIST_MODELS | methods::LIST_COMMANDS => Duration::from_secs(100),
+        // A first read of months of agent logs, before the engine's memo has them.
+        methods::GET_TOKEN_USAGE => Duration::from_secs(90),
         _ => Duration::from_secs(30),
     }
 }
@@ -2596,6 +2598,8 @@ fn forwardable(method: &str) -> bool {
             | methods::COMPLETE_AGENT_LOGIN
             | methods::POLL_AGENT_LOGIN
             | methods::CANCEL_AGENT_LOGIN
+            // Token usage is read from that device's own agent logs.
+            | methods::GET_TOKEN_USAGE
             | methods::RELAY_AGENT_LOGIN_CALLBACK
             | methods::CONSUME_CODEX_RESET_CREDIT
             // Uploads/attachments target the chat's host device (the agent reads
@@ -6584,6 +6588,7 @@ mod tests {
         assert!(forwardable(methods::RENAME_AGENT_ACCOUNT));
         assert!(!zeron_rpc::local_only(methods::RENAME_AGENT_ACCOUNT));
         assert!(forwardable(methods::SET_AGENT_KEEP_WINDOW));
+        assert!(forwardable(methods::GET_TOKEN_USAGE));
         assert!(forwardable(methods::QUEUE_COMMAND));
         for method in [methods::GET_DSH_API_KEY, methods::SAVE_DSH_API_KEY] {
             assert!(forwardable(method));
