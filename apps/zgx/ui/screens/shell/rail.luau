@@ -444,90 +444,215 @@ local function ring_label(): string
 	return locale.s("shell.rail.usage.line", { name = shown.harness.label, windows = table.concat(parts, ", ") })
 end
 
+-- The card's accounts as they stand, by key (`{agent}:{account}`), and the
+-- window that binds (the tightest account's fullest): read by its rows, so a
+-- refresh moves their bars and figures in place rather than drawing them
+-- again.
+type Board = { order: { string }, by_key: { [string]: Live }, binding: { key: string, label: string }? }
+
+local function live_key(live: Live): string
+	return `{live.harness.id}:{live.account.id}`
+end
+
+local function window_of(live: Live?, label: string): any
+	if not live then
+		return nil
+	end
+	for _, w in live.account.windows do
+		if w.label == label then
+			return w
+		end
+	end
+	return nil
+end
+
 -- A window of an account: its name, a bar of how much is used (amber from
 -- 80%, red from 95%), and the share; the binding one at its limit says so.
-local function window_row(w: any, binding: boolean): Node
-	local hot = w.used >= 1
-	local tone = if hot then "$danger" else "$text.secondary"
+-- Each part follows the window as the card's data changes.
+local function window_row(board: State<Board>, key: string, label: string): Node
+	local function used(): number
+		local w = window_of(board:get().by_key[key], label)
+		return if w then math.clamp(w.used, 0, 1) else 0
+	end
+	local function hot(): boolean
+		local w = window_of(board:get().by_key[key], label)
+		return w ~= nil and w.used >= 1
+	end
+	local function binding(): boolean
+		local b = board:get().binding
+		return b ~= nil and b.key == key and b.label == label
+	end
+	local function resets(): number?
+		local w = window_of(board:get().by_key[key], label)
+		return if w then w.resets else nil
+	end
 	return ui.column {
 		gap = ui.raw(2, "a window's bar and the line under it, as gpui's card"),
 		ui.row {
 			items = "center",
 			gap = "$space.2",
-			ui.text { window_name(w.label), w = ui.raw(62, "gpui's window column"), shrink = 0, truncate = true, color = tone },
-			ds.ProgressBar {
-				value = function(): number
-					return math.clamp(w.used, 0, 1)
+			ui.text {
+				window_name(label),
+				w = ui.raw(62, "gpui's window column"),
+				shrink = 0,
+				truncate = true,
+				color = function(): string
+					return if hot() then "$danger" else "$text.secondary"
 				end,
-				tone = if w.used >= 0.95 then "danger" elseif w.used >= 0.8 then "warning" else "accent",
+			},
+			ds.ProgressBar {
+				value = used,
+				tone = function(): any
+					local u = used()
+					return if u >= 0.95 then "danger" elseif u >= 0.8 then "warning" else "accent"
+				end,
 				grow = 1,
 			},
 			ui.text {
-				percent(w.used),
+				function(): string
+					return percent(used())
+				end,
 				w = ui.raw(44, "gpui's percent column"),
 				shrink = 0,
 				tabular = true,
 				align = "right",
-				color = if hot then "$danger" else "$text.primary",
+				color = function(): string
+					return if hot() then "$danger" else "$text.primary"
+				end,
 			},
 		},
 		-- Under the bar: when it starts over, counting down, and at its
 		-- limit (the binding one) that it's reached.
-		if w.resets or (hot and binding)
-			then ui.text {
-				function(): string
-					local at: number? = w.resets
-					if not at then
-						return locale.s("shell.rail.usage.limit_reached")
-					end
-					local key = if hot and binding then "limit_resets_in" else "resets_in"
-					return locale.s(`shell.rail.usage.{key}`, { when = until_words(at) })
-				end,
-				pl = ui.raw(70, "under the bar: the name's column and its gap"),
-				tabular = true,
-				color = if hot then tone else "$text.tertiary",
-			}
-			else nil,
+		ui.show(function(): boolean
+			return resets() ~= nil or (hot() and binding())
+		end, ui.text {
+			function(): string
+				local at = resets()
+				if not at then
+					return locale.s("shell.rail.usage.limit_reached")
+				end
+				local word = if hot() and binding() then "limit_resets_in" else "resets_in"
+				return locale.s(`shell.rail.usage.{word}`, { when = until_words(at) })
+			end,
+			pl = ui.raw(70, "under the bar: the name's column and its gap"),
+			tabular = true,
+			color = function(): string
+				return if hot() then "$danger" else "$text.tertiary"
+			end,
+		}),
 	}
 end
 
 -- An agent's account: its mark, name and plan, its email (hidden while
--- addresses are), what went wrong asking, then each window.
-local function account_section(live: Live, binding: any): Node
-	local a = live.account
-	local rows: { any } = {
+-- addresses are), what went wrong asking, then each window, all read from
+-- the card's data as it changes.
+local function account_section(board: State<Board>, key: string): Node
+	local function live(): Live?
+		return board:get().by_key[key]
+	end
+	local function account(): any
+		local l = live()
+		return if l then l.account else {}
+	end
+	-- (The agent of a key never changes: its mark and name are fixed.)
+	local first = board:peek().by_key[key]
+	local harness = if first then first.harness else { id = "", label = "" }
+	return ui.column {
 		gap = "$space.2",
 		ui.row {
 			items = "center",
 			gap = "$zeron.space.tight",
-			mark_of(live.harness, 13),
-			ui.text { live.harness.label, shrink = 0, weight = "$font.weight.medium", text_size = "$font.size.sm" },
-			if a.plan and a.plan ~= "" then ui.text { a.plan, shrink = 0, color = "$text.secondary" } else nil,
+			mark_of(harness, 13),
+			ui.text { harness.label, shrink = 0, weight = "$font.weight.medium", text_size = "$font.size.sm" },
+			ui.show(function(): boolean
+				local plan = account().plan
+				return plan ~= nil and plan ~= ""
+			end, ui.text {
+				function(): string
+					return account().plan or ""
+				end,
+				shrink = 0,
+				color = "$text.secondary",
+			}),
 			ui.div { grow = 1 },
-			PrivateText { a.email or "", reveal = false, truncate = true, shrink = 1, min_w = 0, color = "$text.secondary", text_size = "$font.size.xs" },
+			PrivateText {
+				function(): string
+					return account().email or ""
+				end,
+				reveal = false,
+				truncate = true,
+				shrink = 1,
+				min_w = 0,
+				color = "$text.secondary",
+				text_size = "$font.size.xs",
+			},
 		},
+		ui.show(function(): boolean
+			return account().error ~= nil
+		end, ui.text {
+			function(): string
+				return account().error or ""
+			end,
+			wrap = true,
+			color = "$warning",
+		}),
+		ui.each(ui.computed(function(): { string }
+			local labels: { string } = {}
+			for _, w in account().windows or {} do
+				table.insert(labels, w.label)
+			end
+			return labels
+		end), function(label: string): Node
+			return window_row(board, key, label)
+		end, {
+			key = function(label: string): string
+				return label
+			end,
+			w_full = true,
+			gap = "$space.2",
+		}),
 	}
-	if a.error then
-		table.insert(rows, ui.text { a.error, wrap = true, color = "$warning" })
-	end
-	for _, w in a.windows do
-		table.insert(rows, window_row(w, w == binding))
-	end
-	return ui.column(rows)
 end
 
 -- The ring's card: each account's windows, else what the ring says.
 local function hover_card(): Node
+	local board = ui.computed(function(): Board
+		local list = live_accounts()
+		local best = tightest(list)
+		local binding: { key: string, label: string }? = nil
+		if best then
+			local fullest: any = nil
+			for _, w in best.account.windows do
+				if fullest == nil or w.used > fullest.used then
+					fullest = w
+				end
+			end
+			if fullest then
+				binding = { key = live_key(best), label = fullest.label }
+			end
+		end
+		local order: { string } = {}
+		local by_key: { [string]: Live } = {}
+		for _, live in list do
+			local key = live_key(live)
+			table.insert(order, key)
+			by_key[key] = live
+		end
+		return { order = order, by_key = by_key, binding = binding }
+	end)
+	local order = ui.computed(function(): { string }
+		return board:get().order
+	end)
 	return HoverCard.Card {
 		id = "rail-usage-hover-card",
 		w = function(): any
-			return if #live_accounts() > 0 then CARD_W else "auto"
+			return if #order:get() > 0 then CARD_W else "auto"
 		end,
 		p = 0,
 		gap = 0,
 		text_size = "$font.size.xs",
 		ui.switch(function(): string
-			return if #live_accounts() > 0 then "accounts" else "none"
+			return if #order:get() > 0 then "accounts" else "none"
 		end, {
 			accounts = ui.column {
 				w_full = true,
@@ -546,27 +671,11 @@ local function hover_card(): Node
 					ui.column {
 						w_full = true,
 						gap = "$space.3",
-						ui.each(ui.computed(function(): { any }
-							local list = live_accounts()
-							local best = tightest(list)
-							local binding: any = nil
-							if best then
-								for _, w in best.account.windows do
-									if binding == nil or w.used > binding.used then
-										binding = w
-									end
-								end
-							end
-							local out: { any } = {}
-							for _, live in list do
-								table.insert(out, { live = live, binding = binding })
-							end
-							return out
-						end), function(item: any): Node
-							return account_section(item.live, item.binding)
+						ui.each(order, function(key: string): Node
+							return account_section(board, key)
 						end, {
-							key = function(item: any): string
-								return `{item.live.harness.id}:{item.live.account.id}`
+							key = function(key: string): string
+								return key
 							end,
 							gap = "$space.3",
 						}),
