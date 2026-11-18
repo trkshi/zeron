@@ -1239,6 +1239,73 @@ local function Transcript(props: Props): Node
 	end
 	-- Each mounted row, by id: what a place in the window is part of.
 	local rows: { [string]: { outer: Ref, inner: Ref, index: State<number>, m: Message } } = {}
+	-- The way back (Jump to latest), gliding to the end rather than cut to it.
+	-- From further than a few views off, it steps to a view above the end
+	-- first (a glide across a long way would build every row on it), the last
+	-- row scrolled to and measured if it isn't built; landed, it rests at the
+	-- end as `show_end` leaves it, following again. A scroll meanwhile stops it
+	-- where it is (`wheeled`, as a send's glide).
+	local JUMP_MS = 320
+	local function glide_to_end()
+		waiting = nil
+		local n = count:peek()
+		local el = list:peek()
+		if n == 0 or not el or motion.reduced_now() then
+			show_end()
+			return
+		end
+		if glide then
+			glide:pause()
+			glide = nil
+		end
+		glides += 1
+		local turn = glides
+		local function last_row(): any
+			local m = messages:at(count:peek())
+			local r = m and rows[m.id]
+			return r and r.outer:peek()
+		end
+		local function run()
+			if glides ~= turn then
+				return
+			end
+			local row_el, list_el = last_row(), list:peek()
+			if not row_el or not list_el or row_el.y == nil or list_el.y == nil then
+				show_end()
+				return
+			end
+			local view_h = list_el.height or 0
+			local from = offset:peek()
+			local target = from + (row_el.y + row_el.height) - (list_el.y + view_h)
+			if target - from < 1 then
+				show_end()
+				return
+			end
+			if target - from > view_h * 3 then
+				from = math.max(0, target - view_h)
+			end
+			gliding:set(true)
+			glide = anime.animate(offset, {
+				value = { from, target },
+				duration = motion.ms(JUMP_MS),
+				ease = "outQuad",
+				onComplete = function()
+					if glides ~= turn then
+						return
+					end
+					glide = nil
+					gliding:set(false)
+					show_end()
+				end,
+			})
+		end
+		if last_row() then
+			run()
+		else
+			el:scroll_to_row(n, { align = "start" })
+			ui.after(16, run)
+		end
+	end
 	-- A find's current match in a message that isn't laid out (the list
 	-- virtualizes): that message scrolled to, its block revealed once it's
 	-- built. (One that is laid out is left to the reveal: a reply taller
@@ -2194,7 +2261,7 @@ local function Transcript(props: Props): Node
 						end
 						props.on_jump()
 					end
-					show_end()
+					glide_to_end()
 				end
 				pill[1] = ui.show(writing, status.StatusDot { kind = "working" })
 				pill[2] = ui.text(function()
