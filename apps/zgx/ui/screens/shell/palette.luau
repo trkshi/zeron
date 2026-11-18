@@ -64,7 +64,7 @@ local function session_items(): { Item }
 			},
 			verb = locale.s("shell.palette.open"),
 			run = function()
-				route.open_session(c.id)
+				route.open_session_in_tab(c.id)
 			end,
 			alt = if archived
 				then {

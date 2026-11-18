@@ -419,6 +419,19 @@ function M.open_session(id: string)
 	go("session", { id = id })
 end
 
+-- Set by the tabs (screens/shell/split), where the interface has them: keeps
+-- the tab navigating would replace, so a chat in no tab takes one of its own.
+M.keep_tabs = nil :: ((id: string) -> ())?
+
+-- A chat opened in a tab of its own, as a browser opens a link in a new tab
+-- (the palette's), or brought up in the tab it's in already.
+function M.open_session_in_tab(id: string)
+	if M.keep_tabs then
+		M.keep_tabs(id)
+	end
+	M.open_session(id)
+end
+
 -- Launched (not the scripts reloaded), it starts where it was left (see
 -- `kept`), and once the chats have come, settles: a session left open
 -- that's still there stays open; one archived or gone since, and a first

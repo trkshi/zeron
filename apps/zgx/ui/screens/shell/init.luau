@@ -302,7 +302,7 @@ return function(): Node
 			local sidebar: any = boundary.load("@app/screens/shell/sidebar")
 			local id = sidebar and sidebar.order:peek()[i]
 			if id then
-				route.open_session(id)
+				route.open_session_in_tab(id)
 			end
 		end
 	end

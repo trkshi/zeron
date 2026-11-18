@@ -237,7 +237,8 @@ ui.effect(function()
 		return
 	end
 	if id and id ~= route.chat:peek().session then
-		route.open_session(id)
+		-- (In a tab of its own, as the palette opens one: never in another's place.)
+		route.open_session_in_tab(id)
 	end
 end)
 ui.effect(function()

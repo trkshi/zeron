@@ -527,6 +527,32 @@ ui.effect(function()
 		trees:set(out)
 	end
 end)
+-- Opening `id` in a tab of its own (route.open_session_in_tab): in no tab yet, the
+-- chat alone's tab navigating would replace is kept first, wherever it stands, so
+-- `id` takes a new one at the end (below) rather than that one's place.
+route.keep_tabs = function(id: string)
+	local list = trees:peek()
+	for _, t in list do
+		if holds(t, id) then
+			return
+		end
+	end
+	local out: { Node } = {}
+	local changed = false
+	for _, t in list do
+		if replaceable(t) then
+			local k = table.clone(t)
+			k.kept = true
+			table.insert(out, k)
+			changed = true
+		else
+			table.insert(out, t)
+		end
+	end
+	if changed then
+		trees:set(out)
+	end
+end
 -- A chat focused with no tab takes the one tab for a chat alone, in its place, or a
 -- new one at the end: navigating replaces it, until chats are composed in it or it's
 -- kept (above). (As the focus moves, not as the tabs change: a tab just closed, the

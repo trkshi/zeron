@@ -375,15 +375,13 @@ end)
 local function close(key: string)
 	local before = shown:peek()
 	local at = table.find(before, key)
-	-- (A kept one closes as a browser's tab does, to the one beside it.)
-	local alone = #splits.panes(key) == 1 and not splits.kept(key)
 	local was_showing = splits.current_key() == key
 	splits.close_tabs({ key })
 	if was_showing then
-		-- The one beside it, else a new chat. (A chat alone, not kept: always a new
-		-- chat.)
+		-- The one beside it, as a browser's tab closes, else a new chat (the
+		-- last tab gone).
 		local after = shown:peek()
-		local next_key = if at and not alone then after[math.min(at, #after)] else nil
+		local next_key = if at then after[math.min(at, #after)] else nil
 		if next_key then
 			route.open_session(face(next_key))
 		else
