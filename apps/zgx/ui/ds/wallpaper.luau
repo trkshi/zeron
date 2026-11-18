@@ -222,7 +222,7 @@ function M.Wallpaper(props: Props): Node
 	-- settles (Zeron v2's, composer_dock.rs: over most of the move). Its
 	-- layer is kept until it's gone. With `animate` off, or motion reduced,
 	-- at once.
-	local shown_k = ui.state(if shown() then 1 else 0)
+	local shown_k = ui.use_state(if shown() then 1 else 0)
 	local unfolding: any = nil
 	ui.effect(function()
 		local on = shown()

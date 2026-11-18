@@ -971,7 +971,9 @@ function M.Strip(props: { window_x: () -> number, start: () -> number, right: ()
 			grow = 1,
 			min_w = 0,
 			h_full = true,
-			ml = start,
+			ml = function(): number
+				return ui.raw(start(), "past the window's own controls, followed as the sidebar folds")
+			end,
 			pt = ui.raw(DROP, "a tab stands on the card's top edge"),
 			items = "start",
 			window_drag = true,
