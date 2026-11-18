@@ -383,14 +383,65 @@ local catalog = ui.shared("chat.catalog", { state = "looking", harnesses = {}, m
 
 type Live = { harness: any, account: any }
 
--- One an agent: its account in use, while that reports windows.
+-- The agent you're working with: the open chat's, or on a new chat the one
+-- its composer's model belongs to (screens/chat/completions `agent_of`); nil
+-- on a page with no chat of its own, or before the chat or catalog arrive.
+local chat_model = ui.state("chat_model", nil :: string?)
+local function place_agent(): string?
+	local c = route.current:get()
+	if c.name == "plugin" or c.name == "settings" then
+		return nil
+	end
+	if c.session then
+		for _, chat in sessions.now:get().chats do
+			if chat.id == c.session then
+				return chat.harness
+			end
+		end
+		return nil
+	end
+	local chosen = chat_model:get()
+	if chosen then
+		for _, m in catalog:get().models or {} do
+			if m.value == chosen then
+				return m.harness
+			end
+		end
+	end
+	return nil
+end
+-- The last of them, kept as `held_key` is: on Usage or Settings the ring
+-- still shows the agent you came from.
+local held_agent = ui.state("shell_rail_usage_held_agent", "")
+ui.effect(function()
+	local agent = place_agent()
+	if agent ~= nil and held_agent:peek() ~= agent then
+		held_agent:set(agent)
+	end
+end)
+local function ring_agent(): string?
+	local agent = place_agent()
+	if agent ~= nil then
+		return agent
+	end
+	local held = held_agent:get()
+	return if held ~= "" then held else nil
+end
+
+-- The agent in use's account while it reports windows (none for an agent
+-- with no plan limits, such as DeepSeek); before any agent is known, each
+-- agent's.
 local function live_accounts(): { Live }
 	local on = agents.on_device:get()[ring_key()]
 	local out: { Live } = {}
 	if not on then
 		return out
 	end
+	local only = ring_agent()
 	for _, h in catalog:get().harnesses or {} do
+		if only ~= nil and h.id ~= only then
+			continue
+		end
 		for _, account in on[h.id] or {} do
 			if account.active and account.windows and #account.windows > 0 then
 				table.insert(out, { harness = h, account = account })
