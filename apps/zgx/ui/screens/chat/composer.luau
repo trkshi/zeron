@@ -62,7 +62,7 @@ local defaults = ui.persist("chat_new_defaults", {
 	options = nil :: { [string]: string }?,
 	access = "full" :: string?,
 	plan = false,
-	checkout = "worktree" :: string?,
+	checkout = "local" :: string?,
 	device = nil :: string?,
 	-- Where (nil: none picked yet; screens/chat/where picks one).
 	project = nil :: string?,
@@ -186,7 +186,7 @@ local function Composer(): Node
 	local access = ui.state("chat_access", "full" :: string?)
 	local plan = ui.state("chat_plan", false)
 	local device = ui.state("chat_device", nil :: string?)
-	local checkout = ui.state("chat_checkout", "worktree" :: string?)
+	local checkout = ui.state("chat_checkout", "local" :: string?)
 	local branch = ui.state("chat_branch", nil :: string?)
 	local project = ui.state("chat_project", nil :: string?)
 	local locals: { [string]: State<any> } =
@@ -1289,9 +1289,6 @@ local function Composer(): Node
 			branches = where.branches,
 			branches_empty = where.branches_empty,
 			branch_fixed = branch_fixed,
-			-- (An open chat's footer has no where-it-works chip: only a new
-			-- chat's picker shows.)
-			fixed_place = false,
 			cargo = shared.cargo,
 			on_remove_cargo = shared.remove_cargo,
 			on_attach = function()

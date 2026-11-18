@@ -62,7 +62,7 @@ local defaults = ui.persist("chat_new_defaults", {
 	options = nil :: { [string]: string }?,
 	access = "full" :: string?,
 	plan = false,
-	checkout = "worktree" :: string?,
+	checkout = "local" :: string?,
 	device = nil :: string?,
 	-- Where (nil: none picked yet; screens/chat/where picks one).
 	project = nil :: string?,
@@ -186,7 +186,7 @@ local function Composer(): Node
 	local access = ui.state("chat_access", "full" :: string?)
 	local plan = ui.state("chat_plan", false)
 	local device = ui.state("chat_device", nil :: string?)
-	local checkout = ui.state("chat_checkout", "worktree" :: string?)
+	local checkout = ui.state("chat_checkout", "local" :: string?)
 	local branch = ui.state("chat_branch", nil :: string?)
 	local project = ui.state("chat_project", nil :: string?)
 	local locals: { [string]: State<any> } =
