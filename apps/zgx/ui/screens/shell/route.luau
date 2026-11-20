@@ -756,6 +756,12 @@ function M.leave_settings()
 	end
 end
 
+-- Off a chat that's gone (a temporary one deleted, screens/chat/temporary): a
+-- new chat in its place in the history, so Back steps past it.
+function M.leave_gone()
+	go("home", nil, true)
+end
+
 function M.back()
 	if router then
 		router.back()

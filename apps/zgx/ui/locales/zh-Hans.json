@@ -2874,6 +2874,16 @@
       "stop_waiting": "停止等待",
       "stop_waiting_failed": "无法停止等待",
       "wake_failed": "无法唤醒此会话"
+    },
+    "tabs": {
+      "temporary": {
+        "close_title": "关闭临时聊天？",
+        "close_body": "它会连同其侧边聊天和子代理被永久删除。保存后会保留在你的聊天中。",
+        "delete": "删除",
+        "save": "保存聊天",
+        "toggle": "临时聊天",
+        "toggle_off": "关闭临时聊天"
+      }
     }
   },
   "onboarding": {
@@ -3136,6 +3146,12 @@
         "appshot": "应用截图",
         "image": "图片",
         "file": "文件"
+      },
+      "temporary": {
+        "new": "临时聊天：不会出现在列表中，关闭后即被删除。",
+        "open": "临时聊天：关闭后即被删除。",
+        "save": "保存聊天",
+        "elsewhere": "临时聊天无法在 Cloud 上运行。"
       }
     },
     "dictation": {

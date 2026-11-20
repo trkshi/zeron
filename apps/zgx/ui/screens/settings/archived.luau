@@ -16,6 +16,7 @@ local ContextMenu = require("@ds/context_menu")
 local locale = require("@ds/locale")
 local sessions = require("@account/sessions")
 local route = require("@app/screens/shell/route")
+local temporary = require("@app/screens/chat/temporary")
 
 local M = {}
 
@@ -33,8 +34,15 @@ local delete_all_ids = ui.state("settings_archived_delete_all_ids", {} :: { stri
 local busy = ui.state("settings_archived_busy", 0)
 
 
+-- (Not a temporary chat's, archived from another device: screens/chat/temporary.)
 local function all(): { sessions.Chat }
-	return sessions.now:get().archived or {}
+	local out: { sessions.Chat } = {}
+	for _, c in sessions.now:get().archived or {} do
+		if not temporary.hidden(c.id) then
+			table.insert(out, c)
+		end
+	end
+	return out
 end
 local function device_of(id: string?): sessions.Device?
 	for _, d in sessions.devices:get() or {} do

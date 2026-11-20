@@ -33,6 +33,7 @@ local CloudTray = require("@app/screens/chat/cloud_tray")
 local Held = require("@app/screens/chat/held")
 local CloudMachine = require("@app/screens/chat/cloud_machine")
 local Where = require("@app/screens/chat/where")
+local temporary = require("@app/screens/chat/temporary")
 local DropOverlay = require("@ds/drop_overlay")
 local Asks = require("@app/screens/chat/asks")
 local Invocations = require("@app/screens/chat/invocations")
@@ -714,13 +715,31 @@ local function Composer(): Node
 				end
 			end
 		end
-		return LinkNotice.of {
+		local link = LinkNotice.of {
 			connection = sessions.connection:get(),
 			cloud = machine.cloud_link(string.find(shared.text:get(), "%S") ~= nil or #shared.cargo:get() > 0 or #queue:get() > 0),
 			host_unreachable = host_unreachable,
 			host = host,
 			intent = string.find(shared.text:get(), "%S") ~= nil or #shared.cargo:get() > 0 or #queue:get() > 0,
 		}
+		if link then
+			return link
+		end
+		-- Temporary (screens/chat/temporary): a new chat to be started so, or
+		-- one open, with Save.
+		local id = session_id:get()
+		if id == nil and temporary.next:get() then
+			return { tone = "info", text = ui.t("chat.composer.temporary.new"):get(), dismissable = false }
+		end
+		if temporary.is(id) then
+			return {
+				tone = "info",
+				text = ui.t("chat.composer.temporary.open"):get(),
+				action = ui.t("chat.composer.temporary.save"):get(),
+				dismissable = false,
+			}
+		end
+		return nil
 	end)
 
 	-- The models looked up once: not again on each reload after a lookup
@@ -865,7 +884,7 @@ local function Composer(): Node
 		end)
 	end)
 
-	local function send(text: string)
+	local function send(text: string): boolean?
 		-- Editing a queued message: Send saves it.
 		if editing:peek() then
 			end_edit("commit")
@@ -878,6 +897,12 @@ local function Composer(): Node
 			shared.text:set("")
 			ZeronCommands.run(zeron, session_id:peek())
 			return
+		end
+		-- A temporary chat can't start on Cloud (its machine outlives it): said
+		-- before the draft is taken, so the words and what's carried stay.
+		if session_id:peek() == nil and temporary.next:peek() and where.plan().cloud then
+			own_notice:set { tone = "warning", key = "chat.composer.temporary.elsewhere", dismissable = true }
+			return false
 		end
 		local typed, carried = shared.take()
 		local pack = Carried.pack(carried, typed, text)
@@ -1006,6 +1031,19 @@ local function Composer(): Node
 				shared.text:set(text_out)
 			end
 		end
+		-- Temporary (never on Cloud: refused above): in the project's own
+		-- checkout (a worktree would outlive it), under an id made here and
+		-- marked before the engine makes it, so a quit at any point leaves one
+		-- the next launch deletes. (Refused, it's deleted too: nothing, or what
+		-- was made of it.)
+		local is_temporary = temporary.next:peek() and not plan.cloud
+		local temporary_id: string? = nil
+		if is_temporary then
+			-- (A worktree's plan already names the project's folder as its cwd.)
+			plan.worktree = false
+			temporary_id = store.new_id()
+			temporary.mark(temporary_id :: string)
+		end
 		-- On Cloud, as the shipping app starts one: the chat opens at once
 		-- under the id it's made with, your message in it, sending, and its
 		-- machine starting under that (a tool row, as the machine's own setup
@@ -1065,6 +1103,7 @@ local function Composer(): Node
 		req.branch = plan.branch
 		sessions
 			.create({
+				id = temporary_id,
 				project = plan.project,
 				device = if plan.project then nil else plan.device,
 				branch = plan.branch,
@@ -1074,6 +1113,9 @@ local function Composer(): Node
 			:after(function(made: any)
 				local id = if plan.cloud and type(made) == "table" then made.id else made
 				if type(id) ~= "string" then
+					if temporary_id then
+						temporary.discard(temporary_id)
+					end
 					failed()
 					return
 				end
@@ -1095,6 +1137,10 @@ local function Composer(): Node
 				-- fails then says so on that message, with Retry, as any
 				-- chat's does.
 				own_notice:set(nil)
+				-- (Marked before it was made: its tab's never one navigating replaces.)
+				if is_temporary then
+					temporary.next:set(false)
+				end
 				store.open(id)
 				-- (Down with its prompt: the dock's one slide.)
 				slide_to = id
@@ -1105,6 +1151,10 @@ local function Composer(): Node
 				local why = if plan.cloud and type(e) == "table" and type(e.message) == "string" and string.find(e.message, " ", 1, true)
 					then e.message
 					else nil
+				-- (Refused: deleted, in case the engine made it after all.)
+				if temporary_id then
+					temporary.discard(temporary_id)
+				end
 				failed(why)
 			end)
 	end
@@ -1431,8 +1481,16 @@ local function Composer(): Node
 			on_dismiss_notice = function()
 				own_notice:set(nil)
 			end,
-			-- (The only notice with an action: a sleeping machine's Wake.)
-			on_notice_action = machine.wake,
+			-- (The notices with an action: a temporary chat's Save, a sleeping
+			-- machine's Wake.)
+			on_notice_action = function()
+				local id = session_id:peek()
+				if temporary.peek(id) then
+					temporary.save(id :: string)
+					return
+				end
+				machine.wake()
+			end,
 			alerts = machine.alerts,
 			on_alert_action = machine.on_alert,
 			on_dismiss_alert = machine.dismiss,

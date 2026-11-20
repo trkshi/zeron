@@ -27,6 +27,7 @@ local boundary = require("@app/screens/shell/boundary")
 local updates = require("@app/screens/shell/updates")
 local splits = require("@app/screens/shell/split")
 local session_tabs = require("@app/screens/shell/session_tabs")
+local temporary = require("@app/screens/chat/temporary")
 local lanes = require("@app/screens/chat/lanes")
 local LaneTab = require("@app/screens/chat/lane_tab")
 local chat_shared = require("@app/screens/chat/shared")
@@ -652,6 +653,65 @@ return function(props: Props): Node
 			}
 		)
 	)
+	-- Temporary chats (screens/chat/temporary), at the card's top right: on a new
+	-- chat, whether it starts temporary; on a temporary chat, Save. (Not in a
+	-- split, nor over a plugin's page.)
+	table.insert(pane, ui.show(function(): boolean
+		if on_plugin() or grouped() then
+			return false
+		end
+		if home() then
+			return true
+		end
+		local s = route.session:get()
+		return in_session() and s ~= nil and temporary.is(s.id)
+	end, ui.div {
+		absolute = true,
+		top = ui.raw(10, "in from the card's corner"),
+		right = ui.raw(10, "in from the card's corner"),
+		-- A round badge on glass, over a new chat's art as over a chat: the
+		-- bookmark, filled while temporary (on, or a temporary chat open).
+		ui.presence(function(): string
+			if in_session() then
+				return "save"
+			end
+			return if temporary.next:get() then "on" else "off"
+		end, function(which: string): Node
+			local props: { [any]: any } = {
+				id = "page-temporary",
+				label = if which == "save"
+					then ui.t("chat.composer.temporary.save")
+					elseif which == "on" then ui.t("shell.tabs.temporary.toggle_off")
+					else ui.t("shell.tabs.temporary.toggle"),
+				tooltip = if which == "save"
+					then ui.t("chat.composer.temporary.save"):get()
+					elseif which == "on" then ui.t("shell.tabs.temporary.toggle_off"):get()
+					else ui.t("shell.tabs.temporary.toggle"):get(),
+				tooltip_placement = require("@ds/icon_button").placement("bottom"),
+				w = 32,
+				h = 32,
+				items = "center",
+				justify = "center",
+				rounded = "$radius.full",
+				cursor = "pointer",
+				color = if which == "off" then "$text.secondary" else "$text.primary",
+				hover = { color = "$text.primary" },
+				focus = control.ring,
+				on_click = function()
+					local s = route.session:peek()
+					if s then
+						temporary.save(s.id)
+					else
+						temporary.next:set(not temporary.next:peek())
+					end
+				end,
+				ds.Icon { name = if which == "off" then "bookmark" else "bookmark-bold", size = 16, glyph_stroke = true },
+			}
+			Glass.style(props, "island")
+			props.rounded = "$radius.full"
+			return ui.button(props)
+		end),
+	}))
 	-- A plugin's page ("pages.add"; screens/plugins lists them in the
 	-- sidebar): a page of its own, on the window's material as any page is;
 	-- the chat's stays as it was under it, unseen (`on_plugin`). Its plugin

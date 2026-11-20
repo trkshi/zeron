@@ -2874,6 +2874,16 @@
       "stop_waiting": "Stop waiting",
       "stop_waiting_failed": "Couldn't stop waiting",
       "wake_failed": "Couldn't wake this chat"
+    },
+    "tabs": {
+      "temporary": {
+        "close_title": "Close temporary chat?",
+        "close_body": "It's deleted for good, with its side chats and subagents. Save it to keep it in your chats.",
+        "delete": "Delete",
+        "save": "Save chat",
+        "toggle": "Temporary chat",
+        "toggle_off": "Turn off temporary chat"
+      }
     }
   },
   "onboarding": {
@@ -3136,6 +3146,12 @@
         "appshot": "Appshot",
         "image": "Image",
         "file": "File"
+      },
+      "temporary": {
+        "new": "Temporary chat: it isn't listed, and it's deleted when you close it.",
+        "open": "Temporary chat: deleted when you close it.",
+        "save": "Save chat",
+        "elsewhere": "A temporary chat can't run on Cloud."
       }
     },
     "dictation": {

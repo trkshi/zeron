@@ -15,6 +15,7 @@
 
 local files = require("@app/screens/files/api")
 local sessions = require("@account/sessions")
+local temporary = require("@app/screens/chat/temporary")
 local Carried = require("@app/screens/chat/carried")
 local ChatLinks = require("@app/screens/chat/chat_links")
 local locale = require("@ds/locale")
@@ -94,7 +95,8 @@ function M.bind(b: Bind): { [string]: any }
 		end
 		local out = {}
 		for _, c in now.chats or {} do
-			if c.id ~= here and ChatLinks.valid(c.id) then
+			-- (A temporary chat lists nowhere: screens/chat/temporary.)
+			if c.id ~= here and ChatLinks.valid(c.id) and not temporary.hidden(c.id) then
 				local title = ChatLinks.title(c.title)
 				table.insert(out, {
 					section = "chats",

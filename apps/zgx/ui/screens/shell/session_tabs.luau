@@ -23,6 +23,7 @@ local TabStrip = require("@ds/tab_strip")
 local route = require("@app/screens/shell/route")
 local sessions = require("@account/sessions")
 local splits = require("@app/screens/shell/split")
+local temporary = require("@app/screens/chat/temporary")
 
 local M = {}
 
@@ -372,7 +373,7 @@ ui.effect(function()
 	end
 end)
 
-local function close(key: string)
+local function close_now(key: string)
 	local before = shown:peek()
 	local at = table.find(before, key)
 	local was_showing = splits.current_key() == key
@@ -388,6 +389,62 @@ local function close(key: string)
 			route.new_chat()
 		end
 	end
+end
+
+-- A tab with a temporary chat in it (screens/chat/temporary) asks first: closed,
+-- that chat's deleted for good; Save keeps it as a chat like any other.
+local closing_temporary = ui.state("session_tabs_closing_temporary", nil :: string?)
+local closing_open = ui.state("session_tabs_closing_open", false)
+local function temporary_in(key: string): { string }
+	local out: { string } = {}
+	for _, id in splits.panes(key) do
+		if temporary.peek(id) then
+			table.insert(out, id)
+		end
+	end
+	return out
+end
+local function close(key: string)
+	if #temporary_in(key) > 0 then
+		closing_temporary:set(key)
+		closing_open:set(true)
+		return
+	end
+	close_now(key)
+end
+local function closing_dialog(): Node
+	local function finish(save: boolean)
+		local key = closing_temporary:peek()
+		closing_temporary:set(nil)
+		if not key then
+			return
+		end
+		if save then
+			for _, id in temporary_in(key) do
+				temporary.save(id)
+			end
+		end
+		close_now(key)
+	end
+	return ds.Dialog {
+		open = closing_open,
+		title = locale.t("shell.tabs.temporary.close_title") :: any,
+		body = locale.t("shell.tabs.temporary.close_body") :: any,
+		tone = "danger",
+		size = "sm",
+		confirm = {
+			label = locale.t("shell.tabs.temporary.delete") :: any,
+			on_click = function()
+				finish(false)
+			end,
+		},
+		aside = {
+			label = locale.t("shell.tabs.temporary.save") :: any,
+			on_click = function()
+				finish(true)
+			end,
+		},
+	}
 end
 
 -- The tab showing closed, or the chat alone (⌘W): true if there was one.
@@ -752,6 +809,19 @@ local Tab = ui.component(function(props: { chat: string, strip: any, order: () -
 			end,
 			rule(id, props.order),
 			tile(id),
+			-- (Temporary: the top bar's bookmark, before its title.)
+			ui.show(function(): boolean
+				for _, pane in splits.panes(id) do
+					if temporary.is(pane) then
+						return true
+					end
+				end
+				return false
+			end, ui.row {
+				shrink = 0,
+				color = "$text.tertiary",
+				ds.Icon { name = "bookmark", size = 14 },
+			}),
 			ds.FadeText {
 				function(): string
 					return title(id)
@@ -961,6 +1031,7 @@ function M.Strip(props: { window_x: () -> number, start: () -> number, right: ()
 		h = BAR + 1,
 		pointer_events = "none",
 		surface,
+		closing_dialog(),
 		ui.row(strip.zone {
 			id = "session-tabs",
 			role = "tablist",

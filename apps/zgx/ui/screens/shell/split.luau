@@ -37,6 +37,7 @@
 
 local route = require("@app/screens/shell/route")
 local sessions = require("@account/sessions")
+local temporary = require("@app/screens/chat/temporary")
 
 local motion = require("@ds/motion")
 
@@ -371,9 +372,11 @@ local function holds(t: Node, id: string): boolean
 	return table.find(leaves(t), id) ~= nil
 end
 
--- The tab navigating replaces: a chat alone's, not kept.
+-- The tab navigating replaces: a chat alone's, not kept. (Never a temporary
+-- chat's: its tab going deletes it, so only closing it does.)
 local function replaceable(t: Node): boolean
-	return #leaves(t) == 1 and not t.kept
+	local only = leaves(t)
+	return #only == 1 and not t.kept and not temporary.peek(only[1])
 end
 
 local function tab_with_key(list: { Node }, key: string?): Node?
@@ -609,6 +612,86 @@ ui.effect(function()
 		end
 	end
 	trees:set(out)
+end)
+
+-- Temporary chats (screens/chat/temporary): one deleted (its tab closed, the
+-- launch's sweep of those a quit left) leaves every tab, a tab left with no
+-- chats going.
+ui.effect(function()
+	local gone = temporary.gone:get()
+	local list = trees:get()
+	if next(gone) == nil then
+		return
+	end
+	local out: { Node } = {}
+	local changed = false
+	for _, t in list do
+		local rest: Node? = t
+		for _, id in leaves(t) do
+			if gone[id] and rest then
+				local left = without(rest, id)
+				rest = if left then keyed(left, key_of(t)) else nil
+				changed = true
+			end
+		end
+		if rest then
+			table.insert(out, rest)
+		end
+	end
+	if changed then
+		trees:set(out)
+	end
+end)
+-- Saved, its tab's kept as it was (a chat alone's left by navigating), not
+-- one navigating replaces.
+temporary.on_save = function(id: string)
+	local out: { Node } = {}
+	local changed = false
+	for _, t in trees:peek() do
+		if holds(t, id) and #leaves(t) == 1 and not t.kept then
+			local k = table.clone(t)
+			k.kept = true
+			table.insert(out, k)
+			changed = true
+		else
+			table.insert(out, t)
+		end
+	end
+	if changed then
+		trees:set(out)
+	end
+end
+-- One open (in a tab, or focused on its way to one) and then neither: deleted.
+-- (Its tab closed, the pane closed out of a split, or a tab of others closed.)
+local temporary_held: { [string]: boolean } = {}
+ui.effect(function()
+	local marked = temporary.ids:get()
+	local list = trees:get()
+	local focused = M.focused:get()
+	-- (Read so it runs again as the sweep does.)
+	local _ = temporary.swept:get()
+	for id in marked do
+		-- (Those left from the last run, until the launch's sweep: its to
+		-- delete, their tabs kept from before.)
+		if temporary.from_last_run(id) then
+			continue
+		end
+		local held = focused == id
+		if not held then
+			for _, t in list do
+				if holds(t, id) then
+					held = true
+					break
+				end
+			end
+		end
+		if held then
+			temporary_held[id] = true
+		elseif temporary_held[id] then
+			temporary_held[id] = nil
+			temporary.discard(id)
+		end
+	end
 end)
 
 -- The tabs open, in their order, by key.

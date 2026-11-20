@@ -11,6 +11,7 @@
 
 local ds = require("@ds")
 local sessions = require("@account/sessions")
+local temporary = require("@app/screens/chat/temporary")
 local project_calls = require("@account/projects")
 -- The project editor (screens/shell/project_editor, its emoji picker and
 -- the emoji's data): loaded as it's first opened, not with the window, and
@@ -511,7 +512,7 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 	local just_group = if just then by[just] else nil
 	local listed: { [any]: boolean } = {}
 	for _, c in now.chats do
-		local group = if c.project then by[c.project] else nil
+		local group = if c.project and not temporary.hidden(c.id) then by[c.project] else nil
 		if group then
 			listed[group] = true
 		end
@@ -534,6 +535,10 @@ local projects = ui.computed(function(): { ds.SidebarProject }
 	end
 	for _, c in now.chats do
 		if just and not (just_group and c.project and by[c.project] == just_group) then
+			continue
+		end
+		-- (A temporary chat lists nowhere: its tab alone shows it.)
+		if temporary.hidden(c.id) then
 			continue
 		end
 		local group = (c.project and by[c.project]) or loose

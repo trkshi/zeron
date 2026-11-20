@@ -103,6 +103,8 @@ export type Name =
 	| "action-debug"
 	| "eye"
 	| "eye-closed"
+	| "bookmark"
+	| "bookmark-bold"
 	| "collapse-arrows"
 	| "expand-arrows"
 	| "minus"

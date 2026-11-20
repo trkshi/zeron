@@ -188,7 +188,8 @@ export type Props = {
 	-- Whether that fixed chip shows at all (false: an existing chat's
 	-- footer has no where-it-works chip; a new chat's picker still shows).
 	fixed_place: boolean?,
-	on_send: ((text: string) -> ())?,
+	-- (Returning false: refused, the draft kept as it stands.)
+	on_send: ((text: string) -> boolean?)?,
 	on_stop: (() -> ())?,
 	-- A bare Escape no one else took (no mention list, question or
 	-- dictation): true if it did something with it.
@@ -1137,8 +1138,8 @@ return ui.component(function(props: Props): Node
 		if not string.find(text, "%S") and not has_cargo() then
 			return
 		end
-		if props.on_send then
-			props.on_send(text)
+		if props.on_send and props.on_send(text) == false then
+			return
 		end
 		value:set("")
 	end

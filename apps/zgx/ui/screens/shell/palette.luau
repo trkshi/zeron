@@ -11,6 +11,7 @@ local CommandPalette = require("@ds/command_palette")
 local material = require("@ds/material")
 local locale = require("@ds/locale")
 local sessions = require("@account/sessions")
+local temporary = require("@app/screens/chat/temporary")
 local route = require("@app/screens/shell/route")
 local view = require("@app/screens/shell/view")
 local fit = require("@app/screens/shell/fit")
@@ -77,10 +78,15 @@ local function session_items(): { Item }
 		})
 	end
 	for _, c in now.chats do
-		add(c, false)
+		-- (A temporary chat lists nowhere.)
+		if not temporary.hidden(c.id) then
+			add(c, false)
+		end
 	end
 	for _, c in now.archived or {} do
-		add(c, true)
+		if not temporary.hidden(c.id) then
+			add(c, true)
+		end
 	end
 	return out
 end

@@ -25,6 +25,7 @@
 --   activity.wakes_in(until)    how soon that is, as a row's corner says it
 
 local sessions = require("@account/sessions")
+local temporary = require("@app/screens/chat/temporary")
 local locale = require("@ds/locale")
 local toast = require("@ds/toast")
 local route = require("@app/screens/shell/route")
@@ -232,6 +233,7 @@ local function sweep()
 		local idle_since = math.max(c.updated or 0, came_back[c.id] or 0)
 		if
 			not pinned[c.id]
+			and not temporary.hidden(c.id, true)
 			and c.id ~= open
 			and not c.sleep_until
 			and not c.woke
