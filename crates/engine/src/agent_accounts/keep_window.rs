@@ -88,9 +88,9 @@ fn keeps_harness(harness: HarnessId) -> bool {
 }
 
 /// Whether `account`'s probe says no 5-hour window is running: its window's
-/// reset has passed (or it names none), Codex reports zero session usage,
-/// or there's no 5-hour window beside other windows. `None`: the probe
-/// can't say (none yet, failing, or old).
+/// reset has passed (or it names none: an unstarted Codex window reads none,
+/// `zeron_proto::plan_usage`), or there's no 5-hour window beside other
+/// windows. `None`: the probe can't say (none yet, failing, or old).
 fn window_idle(account: &AgentAccount, now: i64) -> Option<bool> {
     let fetched = account.usage_fetched_at?;
     if account.usage_error.is_some()
@@ -101,11 +101,7 @@ fn window_idle(account: &AgentAccount, now: i64) -> Option<bool> {
     }
     let now = Utc::now();
     Some(match account.usage_windows.iter().find(|w| w.label == SESSION) {
-        Some(w) => {
-            // Codex can report a future reset before the first request starts the window.
-            (account.harness == HarnessId::Codex && w.used_fraction == 0.0)
-                || w.resets_at.is_none_or(|at| at <= now)
-        }
+        Some(w) => w.resets_at.is_none_or(|at| at <= now),
         None => true,
     })
 }
@@ -383,15 +379,12 @@ mod tests {
     }
 
     #[test]
-    fn only_codex_treats_zero_usage_with_a_future_reset_as_idle() {
-        let mut a = account(vec![window(SESSION, Some(18_000))]);
-        a.usage_windows[0].used_fraction = 0.0;
-        assert_eq!(window_idle(&a, now_ms()), Some(false));
-
+    fn a_pinged_codex_window_at_zero_percent_is_running() {
+        // A one-line ping rounds to 0%; its fixed reset says the window runs,
+        // so the account isn't taken for a dud.
+        let mut a = account(vec![window(SESSION, Some(17_955))]);
         a.harness = HarnessId::Codex;
-        assert_eq!(window_idle(&a, now_ms()), Some(true));
-
-        a.usage_windows[0].used_fraction = 0.01;
+        a.usage_windows[0].used_fraction = 0.0;
         assert_eq!(window_idle(&a, now_ms()), Some(false));
     }
 

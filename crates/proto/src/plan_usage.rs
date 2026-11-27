@@ -55,7 +55,11 @@ pub fn codex(body: &serde_json::Value) -> Option<(Vec<AgentUsageWindow>, Option<
             windows.push(AgentUsageWindow {
                 label: codex_window_label(span).to_string(),
                 used_fraction: (used / 100.0) as f32,
-                resets_at: parse_when(w.get("reset_at")),
+                resets_at: if codex_window_unstarted(w, used, span) {
+                    None
+                } else {
+                    parse_when(w.get("reset_at"))
+                },
             });
         }
     }
@@ -67,6 +71,17 @@ pub fn codex(body: &serde_json::Value) -> Option<(Vec<AgentUsageWindow>, Option<
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
     Some((windows, codex_plan(plan)))
+}
+
+/// Whether a Codex window hasn't started: nothing used, and its reset a whole
+/// window away. Codex quotes an idle window's reset as now plus its length,
+/// moving with every reply, where a started one's stays put; a reset there
+/// is no reset at all (the keep-window check reads none as no window running,
+/// crates/engine/src/agent_accounts/keep_window.rs). Read from the reply's own
+/// `reset_after_seconds`, so neither clock's skew matters.
+fn codex_window_unstarted(window: &serde_json::Value, used_percent: f64, span: i64) -> bool {
+    let after = window.get("reset_after_seconds").and_then(|v| v.as_i64());
+    used_percent == 0.0 && span > 0 && after.is_some_and(|after| after >= span - 1)
 }
 
 /// "ChatGPT Plus" from Codex's `plan_type`.
@@ -105,5 +120,32 @@ pub fn parse_when(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
             .ok()
             .map(|t| t.with_timezone(&Utc)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn primary(used: i64, after: i64) -> serde_json::Value {
+        serde_json::json!({ "rate_limit": { "primary_window": {
+            "used_percent": used, "limit_window_seconds": 18000,
+            "reset_after_seconds": after, "reset_at": 1_795_745_802,
+        } } })
+    }
+
+    #[test]
+    fn an_unstarted_codex_window_has_no_reset() {
+        let (windows, _) = codex(&primary(0, 18000)).unwrap();
+        assert_eq!(windows[0].resets_at, None);
+    }
+
+    #[test]
+    fn a_started_codex_window_keeps_its_reset_even_at_zero_percent() {
+        // A one-line turn rounds to 0%, but its window is running.
+        let (windows, _) = codex(&primary(0, 1093)).unwrap();
+        assert!(windows[0].resets_at.is_some());
+        let (windows, _) = codex(&primary(3, 18000)).unwrap();
+        assert!(windows[0].resets_at.is_some());
     }
 }
